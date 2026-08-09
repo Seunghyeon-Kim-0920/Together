@@ -11,8 +11,8 @@ This repository is an early product implementation, not a production travel book
 - Route optimization, transport alternatives, share links, PDF export, profiles, saved trips, expense categories, and equal splits have UI and domain implementations.
 - Protected records use the authenticated user's server-side identity and Cloudflare D1 storage.
 - The current transport fallback uses geographic distance and configured timing assumptions. It is clearly labelled as an estimate and is not yet connected to live flight, rail, bus, airport-transfer, baggage, border-control, or delay providers.
-- A deployed production environment still needs D1 migrations, provider credentials, monitoring, a privacy policy, and end-to-end security/accessibility testing.
-- A signed APK cannot be produced until a production HTTPS URL and an Android signing key are available. The included GitHub Actions workflow performs that release step without committing signing material.
+- The public web build is deployed at `https://together-travel-0920.ocvi-85.chatgpt.site`. Production authentication-backed CRUD still needs a real signed-in-account verification pass; live transport-provider credentials, monitoring, a privacy policy, and broader security/accessibility testing are also outstanding.
+- Signed Android v0.1.0 APK/AAB artifacts have been generated for `com.together.travel`. Their release certificate is linked to the deployed origin through `public/.well-known/assetlinks.json`; binaries and signing material remain outside Git tracking.
 
 ## Local development
 
@@ -52,6 +52,8 @@ npm run pwa:check -- https://your-production-domain.example
 
 Android packaging uses Bubblewrap and a Trusted Web Activity, so the Android app loads the same deployed HTTPS PWA rather than carrying a second, divergent frontend. `android/twa-manifest.template.json` is source-controlled; generated Gradle files, APKs, bundles, and signing files are ignored.
 
+The current local release is documented in `release/README.md`. The generated Android manifest was independently parsed and reports version `0.1.0.0` (code `1`), minimum SDK 23, target/compile SDK 36, and package ID `com.together.travel`. The APK certificate SHA-256 matches the checked-in Digital Asset Links statement.
+
 Configure these GitHub repository secrets:
 
 | Secret | Purpose |
@@ -68,10 +70,10 @@ Then run the **Build signed Android APK** workflow manually with the deployed si
 3. generates and builds the TWA project;
 4. uploads the signed APK/App Bundle, checksums, and `assetlinks.json` as a private workflow artifact.
 
-After the first signed build, publish the generated `assetlinks.json` at:
+After each signing-key change, publish the generated `assetlinks.json` at:
 
 ```text
-https://your-production-domain.example/.well-known/assetlinks.json
+https://together-travel-0920.ocvi-85.chatgpt.site/.well-known/assetlinks.json
 ```
 
 Redeploy the website before distributing the APK. The certificate fingerprint, Android package ID, and deployed Digital Asset Links statement must match; otherwise Android opens the site as a Custom Tab instead of a verified TWA.
@@ -90,7 +92,7 @@ Do not commit a keystore, passwords, generated Android project files, APK/AAB fi
 
 ## Deployment and storage
 
-`.openai/hosting.json` declares the Sites D1 binding. Production deployment must configure the database binding, run the checked-in migrations, and verify authenticated CRUD before release. Public share snapshots must not include private profile data or expense records.
+`.openai/hosting.json` declares the deployed Sites project and D1 binding. Database migrations are checked in; authenticated production CRUD must still be verified with a real account. Public share snapshots must not include private profile data or expense records.
 
 GitHub Actions CI validates the PWA contract, TypeScript, lint, production build, and tests on pull requests and `main`.
 
