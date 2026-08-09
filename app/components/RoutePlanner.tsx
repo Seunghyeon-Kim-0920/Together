@@ -80,6 +80,20 @@ function componentLabel(kind: DurationComponentKind, locale: SupportedLocale) {
   return labels[kind][locale];
 }
 
+function modeLabel(mode: TransportMode, locale: SupportedLocale) {
+  const labels: Record<TransportMode, Record<SupportedLocale, string>> = {
+    walk: { ko: "도보", en: "Walk", fr: "Marche", ja: "徒歩", zh: "步行" },
+    taxi: { ko: "택시", en: "Taxi", fr: "Taxi", ja: "タクシー", zh: "出租车" },
+    car: { ko: "자동차", en: "Car", fr: "Voiture", ja: "自動車", zh: "汽车" },
+    bus: { ko: "버스", en: "Bus", fr: "Bus", ja: "バス", zh: "巴士" },
+    train: { ko: "기차", en: "Train", fr: "Train", ja: "鉄道", zh: "火车" },
+    flight: { ko: "항공", en: "Flight", fr: "Avion", ja: "航空便", zh: "航班" },
+    ferry: { ko: "페리", en: "Ferry", fr: "Ferry", ja: "フェリー", zh: "渡轮" },
+    metro: { ko: "지하철", en: "Metro", fr: "Métro", ja: "地下鉄", zh: "地铁" },
+  };
+  return labels[mode][locale];
+}
+
 function RouteMap({ itinerary, locale }: { itinerary: OptimizedItinerary; locale: SupportedLocale }) {
   const points = itinerary.cityOrder.map((cityId, index) => {
     const city = getCity(cityId);
@@ -118,7 +132,7 @@ function LegRow({ leg, index, locale }: { leg: OptimizedItinerary["legs"][number
       <button className="leg-summary" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
         <span className="leg-number">{index + 1}</span>
         <span className="mode-icon"><ModeGlyph mode={leg.modes[0]} /></span>
-        <span className="leg-cities"><strong>{from.names[locale]} → {to.names[locale]}</strong><small>{leg.modes.join(" + ")}</small></span>
+        <span className="leg-cities"><strong>{from.names[locale]} → {to.names[locale]}</strong><small>{leg.modes.map((mode) => modeLabel(mode, locale)).join(" + ")}</small></span>
         <span className="leg-duration">{formatDuration(leg.totalMinutes ?? 0, locale)}</span>
         {expanded ? <ChevronUp size={19} aria-hidden="true" /> : <ChevronDown size={19} aria-hidden="true" />}
       </button>

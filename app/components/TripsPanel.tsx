@@ -9,6 +9,11 @@ import type { RouteSnapshot } from "./RoutePlanner";
 
 type SavedTrip = { id: string; name: string; payload: RouteSnapshot | null; updatedAt: string };
 
+function parseLocalDate(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
 export function TripsPanel({ locale, user, signInUrl, refreshKey, onOpen, onNotify }: {
   locale: SupportedLocale;
   user: { displayName: string; email: string } | null;
@@ -68,7 +73,7 @@ export function TripsPanel({ locale, user, signInUrl, refreshKey, onOpen, onNoti
                   <strong>{trip.name}</strong>
                   {snapshot ? <p>{snapshot.cityOrder.map((id) => getCity(id).names[locale]).join(" → ")}</p> : null}
                   <div className="saved-trip-meta">
-                    {snapshot ? <span><CalendarDays size={14} />{new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale).format(new Date(snapshot.departureDate))}</span> : null}
+                    {snapshot ? <span><CalendarDays size={14} />{new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale).format(parseLocalDate(snapshot.departureDate))}</span> : null}
                     {snapshot ? <span><Clock3 size={14} />{formatDuration(snapshot.totalMinutes, locale)}</span> : null}
                     {snapshot ? <span><MapPin size={14} />{snapshot.cityOrder.length}</span> : null}
                   </div>
