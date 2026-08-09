@@ -116,3 +116,22 @@ test("ships installable metadata and a private-save boundary", async () => {
   });
   assert.equal(privateTrips.status, 401);
 });
+
+test("serves Android Digital Asset Links at the required origin path", async () => {
+  const response = await fetch(`${baseUrl}/.well-known/assetlinks.json`, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^application\/json\b/i);
+  const statements = await response.json();
+  assert.equal(statements[0].target.package_name, "com.together.travel");
+  assert.deepEqual(statements[0].target.sha256_cert_fingerprints, [
+    "48:B5:B1:3F:A7:03:D2:D9:57:67:3F:F1:08:60:B5:6B:73:C1:2E:C8:15:A5:50:AE:31:1A:B4:51:C1:6C:7E:B7",
+  ]);
+
+  const unknown = await fetch(`${baseUrl}/not-a-real-route`, {
+    signal: AbortSignal.timeout(10_000),
+  });
+  assert.equal(unknown.status, 404);
+});
