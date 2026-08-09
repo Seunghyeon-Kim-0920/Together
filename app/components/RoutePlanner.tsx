@@ -26,6 +26,8 @@ type RoutePlannerProps = {
   user: { displayName: string; email: string } | null;
   signInUrl: string;
   initialCityIds?: string[];
+  initialDepartureDate?: string;
+  initialTimestamp: string;
   onNotify: (message: string, tone?: "success" | "error" | "info") => void;
   onTripSaved: () => void;
 };
@@ -135,9 +137,9 @@ function LegRow({ leg, index, locale }: { leg: OptimizedItinerary["legs"][number
   );
 }
 
-export function RoutePlanner({ locale, user, signInUrl, initialCityIds, onNotify, onTripSaved }: RoutePlannerProps) {
+export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialDepartureDate, initialTimestamp, onNotify, onTripSaved }: RoutePlannerProps) {
   const [cityIds, setCityIds] = useState<string[]>(initialCityIds?.length ? initialCityIds : ["seoul", "tokyo", "paris", "barcelona"]);
-  const [departureDate, setDepartureDate] = useState(() => new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10));
+  const [departureDate, setDepartureDate] = useState(() => initialDepartureDate ?? new Date(Date.parse(initialTimestamp) + 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10));
   const [fixedStart, setFixedStart] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -326,7 +328,7 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, onNotify
             <div className="legs-list">
               {itinerary.legs.map((leg, index) => <LegRow key={leg.id} leg={leg} index={index} locale={locale} />)}
             </div>
-            <p className="provider-note"><AlertTriangle size={16} />{translate(locale, "providerRequired")} <span>{translate(locale, "dataUpdated")}: {new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date())}</span></p>
+            <p className="provider-note"><AlertTriangle size={16} />{translate(locale, "providerRequired")} <span>{translate(locale, "dataUpdated")}: {new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale, { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(initialTimestamp))} UTC</span></p>
             <div className="route-actions">
               <button type="button" onClick={shareRoute}><Share2 size={18} />{translate(locale, "share")}</button>
               <button type="button" onClick={downloadPdf} disabled={busy}><FileDown size={18} />{translate(locale, "pdf")}</button>

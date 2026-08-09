@@ -10,6 +10,7 @@ export default async function Home() {
       user={user ? { displayName: user.displayName, email: user.email } : null}
       signInUrl={chatGPTSignInPath("/")}
       signOutUrl={chatGPTSignOutPath("/")}
+      initialTimestamp={new Date().toISOString()}
     />
   );
 }

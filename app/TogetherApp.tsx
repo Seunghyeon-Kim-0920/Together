@@ -25,14 +25,16 @@ function decodeSnapshot(encoded: string): RouteSnapshot | null {
   }
 }
 
-export function TogetherApp({ user, signInUrl, signOutUrl }: {
+export function TogetherApp({ user, signInUrl, signOutUrl, initialTimestamp }: {
   user: { displayName: string; email: string } | null;
   signInUrl: string;
   signOutUrl: string;
+  initialTimestamp: string;
 }) {
   const [locale, setLocale] = useState<SupportedLocale>("ko");
   const [activeView, setActiveView] = useState<ViewName>("route");
   const [routeSeed, setRouteSeed] = useState<string[]>(["seoul", "tokyo", "paris", "barcelona"]);
+  const [routeDepartureDate, setRouteDepartureDate] = useState<string | undefined>();
   const [routeKey, setRouteKey] = useState(0);
   const [tripRefreshKey, setTripRefreshKey] = useState(0);
   const [toast, setToast] = useState<ToastState>(null);
@@ -46,6 +48,7 @@ export function TogetherApp({ user, signInUrl, signOutUrl }: {
         const snapshot = decodeSnapshot(shared);
         if (snapshot) {
           setRouteSeed(snapshot.cityOrder);
+          setRouteDepartureDate(snapshot.departureDate);
           setRouteKey((value) => value + 1);
           setActiveView("route");
         }
@@ -67,6 +70,7 @@ export function TogetherApp({ user, signInUrl, signOutUrl }: {
 
   const openTrip = (snapshot: RouteSnapshot) => {
     setRouteSeed(snapshot.cityOrder);
+    setRouteDepartureDate(snapshot.departureDate);
     setRouteKey((value) => value + 1);
     setActiveView("route");
   };
@@ -74,7 +78,7 @@ export function TogetherApp({ user, signInUrl, signOutUrl }: {
   return (
     <div className="app-shell">
       <Header locale={locale} onLocaleChange={changeLocale} activeView={activeView} onViewChange={setActiveView} user={user} signInUrl={signInUrl} signOutUrl={signOutUrl} />
-      {activeView === "route" ? <RoutePlanner key={routeKey} locale={locale} user={user} signInUrl={signInUrl} initialCityIds={routeSeed} onNotify={notify} onTripSaved={() => setTripRefreshKey((value) => value + 1)} /> : null}
+      {activeView === "route" ? <RoutePlanner key={routeKey} locale={locale} user={user} signInUrl={signInUrl} initialCityIds={routeSeed} initialDepartureDate={routeDepartureDate} initialTimestamp={initialTimestamp} onNotify={notify} onTripSaved={() => setTripRefreshKey((value) => value + 1)} /> : null}
       {activeView === "trips" ? <TripsPanel locale={locale} user={user} signInUrl={signInUrl} refreshKey={tripRefreshKey} onOpen={openTrip} onNotify={notify} /> : null}
       {activeView === "expenses" ? <ExpensesPanel locale={locale} user={user} signInUrl={signInUrl} onNotify={notify} /> : null}
       {activeView === "profile" ? <ProfilePanel locale={locale} user={user} signInUrl={signInUrl} onNotify={notify} /> : null}
