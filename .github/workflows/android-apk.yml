@@ -1,0 +1,130 @@
+name: Build signed Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      site_url:
+        description: Production HTTPS URL of the deployed Together PWA
+        required: true
+        type: string
+      version_name:
+        description: Human-readable Android version
+        required: true
+        default: 0.1.0
+        type: string
+      version_code:
+        description: Monotonically increasing Android version code
+        required: true
+        default: "1"
+        type: string
+      package_id:
+        description: Lowercase Android application ID
+        required: true
+        default: com.together.travel
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      TOGETHER_SITE_URL: ${{ inputs.site_url }}
+      ANDROID_VERSION_NAME: ${{ inputs.version_name }}
+      ANDROID_VERSION_CODE: ${{ inputs.version_code }}
+      ANDROID_PACKAGE_ID: ${{ inputs.package_id }}
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: sdkmanager "platform-tools" "platforms;android-35" "platforms;android-36" "build-tools;35.0.0" "build-tools;36.0.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify deployed PWA
+        run: npm run pwa:check -- "$TOGETHER_SITE_URL"
+
+      - name: Verify application code
+        run: npm run typecheck && npm run test:domain
+
+      - name: Validate signing secrets
+        shell: bash
+        run: |
+          : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 secret}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD secret}"
+          : "${ANDROID_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS secret}"
+          : "${ANDROID_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD secret}"
+
+      - name: Restore signing key
+        shell: bash
+        run: printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/release.keystore
+
+      - name: Configure Bubblewrap
+        run: npx --yes @bubblewrap/cli@1.25.0 updateConfig --jdkPath "$JAVA_HOME" --androidSdkPath "$ANDROID_SDK_ROOT"
+
+      - name: Prepare TWA manifest
+        run: npm run android:prepare
+
+      - name: Generate Android project
+        working-directory: android
+        run: npx --yes @bubblewrap/cli@1.25.0 update --skipVersionUpgrade
+
+      - name: Build signed APK and app bundle
+        working-directory: android
+        run: npx --yes @bubblewrap/cli@1.25.0 build --skipPwaValidation
+
+      - name: Generate Digital Asset Links statement
+        id: certificate
+        shell: bash
+        run: |
+          fingerprint="$(keytool -list -v -keystore android/release.keystore -alias "$ANDROID_KEY_ALIAS" -storepass:env ANDROID_KEYSTORE_PASSWORD | sed -n 's/.*SHA256: //p' | head -n 1)"
+          test -n "$fingerprint"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          ANDROID_SHA256_FINGERPRINT="$fingerprint" npm run android:assetlinks
+
+      - name: Collect release files
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          find android -type f \( -name '*.apk' -o -name '*.aab' \) -exec cp '{}' artifacts/ \;
+          test -n "$(find artifacts -maxdepth 1 -type f \( -name '*.apk' -o -name '*.aab' \) -print -quit)"
+          cp android/assetlinks.json artifacts/assetlinks.json
+          (cd artifacts && find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt)
+
+      - name: Upload signed Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: together-android-${{ inputs.version_name }}-${{ inputs.version_code }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
