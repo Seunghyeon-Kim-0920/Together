@@ -10,9 +10,11 @@ This repository is an early product implementation, not a production travel book
 
 - Route optimization, transport alternatives, share links, PDF export, profiles, saved trips, expense categories, and equal splits have UI and domain implementations.
 - Protected records use the authenticated user's server-side identity and Cloudflare D1 storage.
-- The current transport fallback uses geographic distance and configured timing assumptions. It is clearly labelled as an estimate and is not yet connected to live flight, rail, bus, airport-transfer, baggage, border-control, or delay providers.
-- The public web build is deployed at `https://together-travel-0920.ocvi-85.chatgpt.site`. Production authentication-backed CRUD still needs a real signed-in-account verification pass; live transport-provider credentials, monitoring, a privacy policy, and broader security/accessibility testing are also outstanding.
-- Signed Android v0.1.0 APK/AAB artifacts have been generated for `com.together.travel`. Their release certificate is linked to the deployed origin through `public/.well-known/assetlinks.json`; binaries and signing material remain outside Git tracking.
+- Global city search uses the no-key Open-Meteo Geocoding endpoint backed by GeoNames for the current non-commercial beta. Search results include provider attribution, and dynamic city coordinates/time zones are validated again before routing.
+- Rail and coach options for up to four selected cities are checked against Transitous/MOTIS public timetables with bounded concurrency, cancellation, caching, and a 12-second batch deadline. Coverage is best-effort and provider/source specific.
+- Flights remain explicitly labelled planning estimates. They include modeled city-to-airport, check-in/security, air time, operational buffer, and airport-to-city time, but do not claim a live flight exists or that the result is a measured historical average.
+- The public web build is deployed at `https://together-travel-0920.ocvi-85.chatgpt.site`. Production authentication-backed CRUD still needs a real signed-in-account verification pass; monitoring, a privacy policy, and broader security/accessibility testing remain pre-launch work.
+- Android source and automation target v0.2.0 (version code 2) for `com.together.travel`. The release certificate remains linked to the deployed origin through `public/.well-known/assetlinks.json`; signing material must never enter Git.
 
 ## Local development
 
@@ -50,9 +52,9 @@ npm run pwa:check -- https://your-production-domain.example
 
 ## Android APK / App Bundle
 
-Android packaging uses Bubblewrap and a Trusted Web Activity, so the Android app loads the same deployed HTTPS PWA rather than carrying a second, divergent frontend. `android/twa-manifest.template.json` is source-controlled; generated Gradle files, APKs, bundles, and signing files are ignored.
+Android packaging uses Bubblewrap and a Trusted Web Activity, so the Android app loads the same deployed HTTPS PWA rather than carrying a second, divergent frontend. `android/twa-manifest.template.json` is source-controlled; generated Gradle files and signing files are ignored. Verified, versioned APK/AAB deliverables are intentionally published under `release/`.
 
-The current local release is documented in `release/README.md`. The generated Android manifest was independently parsed and reports version `0.1.0.0` (code `1`), minimum SDK 23, target/compile SDK 36, and package ID `com.together.travel`. The APK certificate SHA-256 matches the checked-in Digital Asset Links statement.
+The current release is documented in `release/README.md`. Android v0.2.0 uses version code 2, minimum SDK 23, target/compile SDK 36, and package ID `com.together.travel`. The APK certificate SHA-256 must match the checked-in Digital Asset Links statement.
 
 Configure these GitHub repository secrets:
 
@@ -83,12 +85,13 @@ For a configured local Android toolchain, the manifest preparation step is:
 ```powershell
 $env:TOGETHER_SITE_URL = "https://your-production-domain.example"
 $env:ANDROID_PACKAGE_ID = "com.together.travel"
-$env:ANDROID_VERSION_CODE = "1"
+$env:ANDROID_VERSION_CODE = "2"
+$env:ANDROID_VERSION_NAME = "0.2.0"
 $env:ANDROID_KEY_ALIAS = "together-release"
 npm run android:prepare
 ```
 
-Do not commit a keystore, passwords, generated Android project files, APK/AAB files, `.env` files, or local logs.
+Do not commit a keystore, passwords, generated Android project files, unsigned Android outputs, `.env` files, or local logs. Only verified, signed, versioned APK/AAB deliverables belong under `release/`.
 
 ## Deployment and storage
 
@@ -98,4 +101,4 @@ GitHub Actions CI validates the PWA contract, TypeScript, lint, production build
 
 ## Repository safety
 
-The repository ignores local logs, TypeScript build caches, Cloudflare/vinext output, generated Android projects, signing material, and release binaries. Before publishing, inspect `git status`, staged files, and the remote destination; never use a blanket commit if unrelated or sensitive files are present.
+The repository ignores local logs, TypeScript build caches, Cloudflare/vinext output, generated Android projects, signing material, and unversioned Android outputs. Versioned deliverables under `release/` are deliberately tracked. Before publishing, inspect `git status`, staged files, and the remote destination; never use a blanket commit if unrelated or sensitive files are present.

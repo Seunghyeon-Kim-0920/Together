@@ -4,6 +4,7 @@ import {
   DomainValidationError,
   TRANSPORT_MODES,
   type DataProvenance,
+  type City,
   type DurationBreakdown,
   type DurationComponent,
   type DurationComponentKind,
@@ -38,9 +39,60 @@ export interface TravelLegInput {
 export interface OptimizeItineraryOptions {
   readonly startCityId?: string;
   readonly endCityId?: string;
+  readonly cities?: readonly City[];
 }
 
 export type EstimatedFallbackMode = "flight" | "train" | "bus";
+
+type EstimatedSurfaceMode = Exclude<EstimatedFallbackMode, "flight">;
+
+interface SurfaceCorridor {
+  readonly cityIds: readonly [string, string];
+  readonly modes: readonly EstimatedSurfaceMode[];
+}
+
+// Surface fallbacks are deliberately curated. Great-circle distance alone cannot
+// establish that a rail line, road border crossing, tunnel, or coach service exists.
+const SURFACE_CORRIDORS: readonly SurfaceCorridor[] = Object.freeze([
+  { cityIds: ["seoul", "busan"], modes: ["train", "bus"] },
+  { cityIds: ["tokyo", "osaka"], modes: ["train", "bus"] },
+  { cityIds: ["paris", "lyon"], modes: ["train", "bus"] },
+  { cityIds: ["paris", "brussels"], modes: ["train", "bus"] },
+  { cityIds: ["paris", "london"], modes: ["train", "bus"] },
+  { cityIds: ["brussels", "amsterdam"], modes: ["train", "bus"] },
+  { cityIds: ["madrid", "barcelona"], modes: ["train", "bus"] },
+  { cityIds: ["rome", "milan"], modes: ["train", "bus"] },
+  { cityIds: ["berlin", "prague"], modes: ["train", "bus"] },
+  { cityIds: ["vienna", "budapest"], modes: ["train", "bus"] },
+  { cityIds: ["tallinn", "riga"], modes: ["bus"] },
+]);
+
+function unorderedCityPairKey(leftCityId: string, rightCityId: string): string {
+  return [leftCityId, rightCityId].sort(compareText).join("|");
+}
+
+const surfaceModesByPair = new Map<string, readonly EstimatedSurfaceMode[]>(
+  SURFACE_CORRIDORS.map((corridor) => [
+    unorderedCityPairKey(...corridor.cityIds),
+    Object.freeze([...corridor.modes]),
+  ]),
+);
+
+// Benchmarks are fallback door-to-door totals in minutes, not claims of live
+// schedules. Keeping them per corridor avoids treating every railway as a
+// straight 160 km/h line.
+const TRAIN_DOOR_TO_DOOR_MINUTES_BY_PAIR = new Map<string, number>([
+  [unorderedCityPairKey("seoul", "busan"), 220],
+  [unorderedCityPairKey("tokyo", "osaka"), 230],
+  [unorderedCityPairKey("paris", "lyon"), 195],
+  [unorderedCityPairKey("paris", "brussels"), 160],
+  [unorderedCityPairKey("paris", "london"), 250],
+  [unorderedCityPairKey("brussels", "amsterdam"), 190],
+  [unorderedCityPairKey("madrid", "barcelona"), 240],
+  [unorderedCityPairKey("rome", "milan"), 270],
+  [unorderedCityPairKey("berlin", "prague"), 330],
+  [unorderedCityPairKey("vienna", "budapest"), 230],
+]);
 
 const provenancePriority: Readonly<Record<DataProvenance["kind"], number>> = {
   observed: 0,
@@ -338,20 +390,30 @@ export function selectFastestLeg(
   fromCityId: string,
   toCityId: string,
 ): TravelLeg | undefined {
-  return legs
-    .filter(
-      (leg) =>
-        leg.fromCityId === fromCityId &&
-        leg.toCityId === toCityId &&
-        leg.totalMinutes !== null,
-    )
+  const candidates = legs.filter(
+    (leg) =>
+      leg.fromCityId === fromCityId &&
+      leg.toCityId === toCityId &&
+      leg.totalMinutes !== null,
+  );
+  const familyOrder: readonly TransportMode[] = ["flight", "train", "bus", "ferry", "metro", "car", "taxi", "walk"];
+  const family = (leg: TravelLeg): TransportMode => familyOrder.find((mode) => leg.modes.includes(mode)) ?? "walk";
+  const strongestByFamily = new Map<TransportMode, number>();
+  for (const candidate of candidates) {
+    const key = family(candidate);
+    const priority = provenancePriority[candidate.provenance.kind];
+    strongestByFamily.set(key, Math.min(strongestByFamily.get(key) ?? Infinity, priority));
+  }
+
+  return candidates
+    // A published or measured option replaces a model estimate for the same
+    // transport family. Different transport families still compete on time.
+    .filter((leg) => provenancePriority[leg.provenance.kind] === strongestByFamily.get(family(leg)))
     .sort((left, right) => {
       const durationDifference =
         (left.totalMinutes ?? Infinity) - (right.totalMinutes ?? Infinity);
       if (durationDifference !== 0) return durationDifference;
-      const provenanceDifference =
-        provenancePriority[left.provenance.kind] -
-        provenancePriority[right.provenance.kind];
+      const provenanceDifference = provenancePriority[left.provenance.kind] - provenancePriority[right.provenance.kind];
       return provenanceDifference || compareText(left.id, right.id);
     })[0];
 }
@@ -397,7 +459,14 @@ export function optimizeItinerary(
   if (uniqueCityIds.size !== cityIds.length) {
     throw new DomainValidationError("A route cannot contain duplicate cities");
   }
-  cityIds.forEach(getCity);
+  if (options.cities) {
+    const suppliedCityIds = new Set(options.cities.map((city) => city.id));
+    if (suppliedCityIds.size !== options.cities.length || cityIds.some((cityId) => !suppliedCityIds.has(cityId))) {
+      throw new DomainValidationError("Every route city needs valid location metadata");
+    }
+  } else {
+    cityIds.forEach(getCity);
+  }
 
   const startIndex = options.startCityId
     ? cityIds.indexOf(options.startCityId)
@@ -515,12 +584,10 @@ export function optimizeItinerary(
   });
 }
 
-export function haversineDistanceKm(
-  fromCityId: string,
-  toCityId: string,
+export function haversineDistanceBetweenCities(
+  from: City,
+  to: City,
 ): number {
-  const from = getCity(fromCityId);
-  const to = getCity(toCityId);
   const radians = (degrees: number) => (degrees * Math.PI) / 180;
   const latitudeDelta = radians(
     to.coordinates.latitude - from.coordinates.latitude,
@@ -538,22 +605,57 @@ export function haversineDistanceKm(
   return 6_371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+export function haversineDistanceKm(
+  fromCityId: string,
+  toCityId: string,
+): number {
+  return haversineDistanceBetweenCities(getCity(fromCityId), getCity(toCityId));
+}
+
 function estimateMinutes(distanceKm: number, speedKmPerHour: number): number {
   return Math.max(1, Math.round((distanceKm / speedKmPerHour) * 60));
 }
 
-export function createEstimatedFallbackLeg(
+export function getEstimatedFallbackModes(
   fromCityId: string,
   toCityId: string,
+): readonly EstimatedFallbackMode[] {
+  return getEstimatedFallbackModesForCities(getCity(fromCityId), getCity(toCityId));
+}
+
+export function getEstimatedFallbackModesForCities(
+  fromCity: City,
+  toCity: City,
+): readonly EstimatedFallbackMode[] {
+  const fromCityId = fromCity.id;
+  const toCityId = toCity.id;
+  if (fromCityId === toCityId) return Object.freeze([]);
+
+  const surfaceModes =
+    surfaceModesByPair.get(unorderedCityPairKey(fromCityId, toCityId)) ?? [];
+  return Object.freeze(["flight", ...surfaceModes]);
+}
+
+export function createEstimatedFallbackLegForCities(
+  fromCity: City,
+  toCity: City,
   mode: EstimatedFallbackMode,
 ): TravelLeg {
+  const fromCityId = fromCity.id;
+  const toCityId = toCity.id;
   if (!(mode === "flight" || mode === "train" || mode === "bus")) {
     throw new DomainValidationError(`Unsupported fallback mode: ${mode}`);
   }
-  getCity(fromCityId);
-  getCity(toCityId);
-  const distanceKm = haversineDistanceKm(fromCityId, toCityId);
-  const methodology = `${mode} fallback derived from great-circle distance; replace with provider data`;
+  if (!getEstimatedFallbackModesForCities(fromCity, toCity).includes(mode)) {
+    throw new DomainValidationError(
+      `No curated ${mode} fallback corridor connects ${fromCityId} and ${toCityId}`,
+    );
+  }
+  const distanceKm = haversineDistanceBetweenCities(fromCity, toCity);
+  const methodology =
+    mode === "train"
+      ? "Curated corridor-specific door-to-door rail benchmark; replace with provider data"
+      : `${mode} fallback derived from great-circle distance; replace with provider data`;
   const provenance: DataProvenance = { kind: "estimated", methodology };
   const fromCentre = `${fromCityId}:city-centre`;
   const toCentre = `${toCityId}:city-centre`;
@@ -602,8 +704,53 @@ export function createEstimatedFallbackLeg(
     });
   }
 
-  const speed = mode === "train" ? 160 : 72;
-  const routeFactor = mode === "train" ? 1.18 : 1.25;
+  if (mode === "train") {
+    const pairKey = unorderedCityPairKey(fromCityId, toCityId);
+    const doorToDoorMinutes = TRAIN_DOOR_TO_DOOR_MINUTES_BY_PAIR.get(pairKey);
+    if (!doorToDoorMinutes) {
+      throw new DomainValidationError(
+        `No rail benchmark is configured for ${fromCityId} and ${toCityId}`,
+      );
+    }
+    const isParisLondon = pairKey === unorderedCityPairKey("paris", "london");
+    const components: readonly DurationComponentInput[] = isParisLondon
+      ? [
+          { kind: "city_to_terminal", label: "City to rail terminal", minutes: 25 },
+          { kind: "waiting", label: "International train boarding wait", minutes: 20 },
+          { kind: "check_in_security", label: "Rail security screening", minutes: 15 },
+          { kind: "border_control", label: "Exit and entry border controls", minutes: 25 },
+          { kind: "in_vehicle", label: "Cross-Channel rail journey", minutes: 140 },
+          { kind: "terminal_to_city", label: "Rail terminal to city", minutes: 15 },
+          { kind: "buffer", label: "Operational buffer", minutes: 10 },
+        ]
+      : [
+          { kind: "city_to_terminal", label: "City to rail terminal", minutes: 25 },
+          { kind: "waiting", label: "Boarding wait", minutes: 20 },
+          {
+            kind: "in_vehicle",
+            label: "Corridor rail benchmark",
+            minutes: doorToDoorMinutes - 80,
+          },
+          { kind: "terminal_to_city", label: "Rail terminal to city", minutes: 20 },
+          { kind: "buffer", label: "Operational buffer", minutes: 15 },
+        ];
+    return createTravelLeg({
+      id: `fallback:${fromCityId}:${toCityId}:train`,
+      fromCityId,
+      toCityId,
+      segments: [
+        createTransportSegment({
+          id: `fallback:${fromCityId}:${toCityId}:train:segment`,
+          mode: "train",
+          from: fromCentre,
+          to: toCentre,
+          provenance,
+          components,
+        }),
+      ],
+    });
+  }
+
   return createTravelLeg({
     id: `fallback:${fromCityId}:${toCityId}:${mode}`,
     fromCityId,
@@ -616,10 +763,10 @@ export function createEstimatedFallbackLeg(
         to: toCentre,
         provenance,
         components: [
-          { kind: "city_to_terminal", label: "City to terminal", minutes: mode === "train" ? 25 : 20 },
-          { kind: "waiting", label: "Boarding wait", minutes: mode === "train" ? 20 : 15 },
-          { kind: "in_vehicle", label: "Travel time", minutes: estimateMinutes(distanceKm * routeFactor, speed) },
-          { kind: "terminal_to_city", label: "Terminal to city", minutes: mode === "train" ? 20 : 15 },
+          { kind: "city_to_terminal", label: "City to terminal", minutes: 20 },
+          { kind: "waiting", label: "Boarding wait", minutes: 15 },
+          { kind: "in_vehicle", label: "Travel time", minutes: estimateMinutes(distanceKm * 1.25, 72) },
+          { kind: "terminal_to_city", label: "Terminal to city", minutes: 15 },
           { kind: "buffer", label: "Operational buffer", minutes: 15 },
         ],
       }),
@@ -627,17 +774,35 @@ export function createEstimatedFallbackLeg(
   });
 }
 
-export function buildEstimatedFallbackOptions(
-  cityIds: readonly string[],
+export function createEstimatedFallbackLeg(
+  fromCityId: string,
+  toCityId: string,
+  mode: EstimatedFallbackMode,
+): TravelLeg {
+  return createEstimatedFallbackLegForCities(
+    getCity(fromCityId),
+    getCity(toCityId),
+    mode,
+  );
+}
+
+export function buildEstimatedFallbackOptionsForCities(
+  cities: readonly City[],
 ): readonly TravelLeg[] {
   const legs: TravelLeg[] = [];
-  for (const fromCityId of cityIds) {
-    for (const toCityId of cityIds) {
-      if (fromCityId === toCityId) continue;
-      for (const mode of ["flight", "train", "bus"] as const) {
-        legs.push(createEstimatedFallbackLeg(fromCityId, toCityId, mode));
+  for (const fromCity of cities) {
+    for (const toCity of cities) {
+      if (fromCity.id === toCity.id) continue;
+      for (const mode of getEstimatedFallbackModesForCities(fromCity, toCity)) {
+        legs.push(createEstimatedFallbackLegForCities(fromCity, toCity, mode));
       }
     }
   }
   return Object.freeze(legs);
+}
+
+export function buildEstimatedFallbackOptions(
+  cityIds: readonly string[],
+): readonly TravelLeg[] {
+  return buildEstimatedFallbackOptionsForCities(cityIds.map(getCity));
 }

@@ -1,9 +1,8 @@
 /* global self, caches, fetch, URL */
 
-const CACHE_VERSION = "together-static-v1";
+const CACHE_VERSION = "together-static-v2";
 const PRECACHE_URLS = [
   "/offline.html",
-  "/manifest.webmanifest",
   "/favicon.svg",
   "/icon-192.png",
   "/icon-512.png",

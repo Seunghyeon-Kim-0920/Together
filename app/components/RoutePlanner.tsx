@@ -3,23 +3,17 @@
 import {
   AlertTriangle, ArrowDown, ArrowUp, Bookmark, Bus, CalendarDays, CarFront, ChevronDown,
   ChevronUp, CircleDot, Clock3, Database, FileDown, GripVertical, MapPin, Plane, Plus,
-  RotateCcw, Share2, Train, X,
+  RotateCcw, Search, Share2, Train, X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { CITIES, getCity } from "../../lib/cities";
-import type { DurationComponentKind, OptimizedItinerary, SupportedLocale, TransportMode } from "../../lib/domain";
-import { buildEstimatedFallbackOptions, optimizeItinerary } from "../../lib/routing";
-import { formatDuration, translate } from "../../lib/i18n";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CITIES } from "../../lib/cities";
+import { provenanceLabel, SUPPORTED_LOCALES, type City, type DurationComponentKind, type OptimizedItinerary, type SupportedLocale, type TransportMode, type TravelLeg } from "../../lib/domain";
+import { buildEstimatedFallbackOptionsForCities, optimizeItinerary } from "../../lib/routing";
+import { formatDateTime, formatDuration, LANGUAGE_TAGS, translate } from "../../lib/i18n";
+import type { RouteSnapshot } from "../../lib/route-snapshot";
 
-export type RouteSnapshot = {
-  version: 1;
-  name: string;
-  departureDate: string;
-  cityOrder: string[];
-  totalMinutes: number;
-  createdAt: string;
-  provenance: "estimated" | "scheduled" | "observed";
-};
+export { parseRouteSnapshot } from "../../lib/route-snapshot";
+export type { RouteSnapshot } from "../../lib/route-snapshot";
 
 type RoutePlannerProps = {
   locale: SupportedLocale;
@@ -27,16 +21,93 @@ type RoutePlannerProps = {
   signInUrl: string;
   initialCityIds?: string[];
   initialDepartureDate?: string;
+  initialSnapshot?: RouteSnapshot;
   initialTimestamp: string;
   onNotify: (message: string, tone?: "success" | "error" | "info") => void;
   onTripSaved: () => void;
 };
 
-function encodeSnapshot(snapshot: RouteSnapshot) {
-  const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+type ScheduleResult = {
+  key: string;
+  legs: readonly TravelLeg[];
+  partial: boolean;
+  calculatedAt: string;
+};
+
+type CitySearchResult = {
+  readonly id: string;
+  readonly name: string;
+  readonly country: string;
+  readonly countryCode: string;
+  readonly admin1?: string;
+  readonly latitude: number;
+  readonly longitude: number;
+  readonly timeZone: string;
+  readonly names?: Readonly<Record<SupportedLocale, string>>;
+};
+
+function routeCity(cities: ReadonlyMap<string, City>, cityId: string): City {
+  const city = cities.get(cityId);
+  if (!city) throw new Error(`Missing route city: ${cityId}`);
+  return city;
+}
+
+function localizedCountryNames(countryCode: string, fallback: string): City["country"]["names"] {
+  const displayName = (locale: SupportedLocale) => {
+    try {
+      return new Intl.DisplayNames([LANGUAGE_TAGS[locale]], { type: "region" }).of(countryCode) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  return Object.freeze({
+    ko: displayName("ko"),
+    en: displayName("en"),
+    fr: displayName("fr"),
+    ja: displayName("ja"),
+    zh: displayName("zh"),
+  });
+}
+
+function cityFromSearchResult(result: CitySearchResult, localizedNames?: City["names"]): City {
+  const staticMatch = CITIES.find((city) =>
+    city.country.code === result.countryCode &&
+    Math.abs(city.coordinates.latitude - result.latitude) < 0.03 &&
+    Math.abs(city.coordinates.longitude - result.longitude) < 0.03
+  );
+  if (staticMatch) return staticMatch;
+  const names = localizedNames ?? Object.freeze({ ko: result.name, en: result.name, fr: result.name, ja: result.name, zh: result.name });
+  return Object.freeze({
+    id: result.id,
+    names,
+    country: Object.freeze({
+      code: result.countryCode,
+      names: localizedCountryNames(result.countryCode, result.country),
+    }),
+    coordinates: Object.freeze({ latitude: result.latitude, longitude: result.longitude }),
+    timeZone: result.timeZone,
+  });
+}
+
+function encodeBytes(bytes: Uint8Array): string {
   let binary = "";
   bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function copyToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
+async function encodeSnapshot(snapshot: RouteSnapshot): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+  if (typeof CompressionStream !== "undefined") {
+    const stream = new Blob([copyToArrayBuffer(bytes)]).stream().pipeThrough(new CompressionStream("gzip"));
+    return `g.${encodeBytes(new Uint8Array(await new Response(stream).arrayBuffer()))}`;
+  }
+  return `j.${encodeBytes(bytes)}`;
 }
 
 async function copyShareUrl(value: string): Promise<boolean> {
@@ -65,11 +136,15 @@ function ModeGlyph({ mode }: { mode: TransportMode }) {
   return <CarFront size={21} strokeWidth={1.9} aria-hidden="true" />;
 }
 
+function primaryTransportMode(modes: readonly TransportMode[]): TransportMode {
+  return (["flight", "train", "bus", "ferry", "metro", "car", "taxi", "walk"] as const).find((mode) => modes.includes(mode)) ?? "walk";
+}
+
 function componentLabel(kind: DurationComponentKind, locale: SupportedLocale) {
   const labels: Record<DurationComponentKind, Record<SupportedLocale, string>> = {
     city_to_terminal: { ko: "도심→터미널", en: "City to terminal", fr: "Ville → terminal", ja: "市内→ターミナル", zh: "市区→交通枢纽" },
-    waiting: { ko: "탑승·대기", en: "Boarding wait", fr: "Embarquement", ja: "乗車・待機", zh: "候车/登机" },
-    check_in_security: { ko: "체크인·보안", en: "Check-in & security", fr: "Enregistrement", ja: "搭乗・保安検査", zh: "值机与安检" },
+    waiting: { ko: "탑승·대기", en: "Boarding wait", fr: "Attente et embarquement", ja: "乗車・待機", zh: "候车/登机" },
+    check_in_security: { ko: "체크인·보안", en: "Check-in & security", fr: "Enregistrement et sûreté", ja: "チェックイン・保安検査", zh: "值机与安检" },
     border_control: { ko: "출입국", en: "Border control", fr: "Contrôle frontière", ja: "出入国審査", zh: "边境检查" },
     in_vehicle: { ko: "탑승 이동", en: "In-vehicle", fr: "Temps à bord", ja: "乗車時間", zh: "乘坐时间" },
     transfer: { ko: "환승", en: "Transfer", fr: "Correspondance", ja: "乗り換え", zh: "换乘" },
@@ -94,15 +169,15 @@ function modeLabel(mode: TransportMode, locale: SupportedLocale) {
   return labels[mode][locale];
 }
 
-function RouteMap({ itinerary, locale }: { itinerary: OptimizedItinerary; locale: SupportedLocale }) {
+function RouteMap({ itinerary, locale, cities }: { itinerary: OptimizedItinerary; locale: SupportedLocale; cities: ReadonlyMap<string, City> }) {
   const points = itinerary.cityOrder.map((cityId, index) => {
-    const city = getCity(cityId);
+    const city = routeCity(cities, cityId);
     const x = Math.min(93, Math.max(7, ((city.coordinates.longitude + 180) / 360) * 100));
     const y = Math.min(82, Math.max(15, ((78 - city.coordinates.latitude) / 145) * 100));
     return { city, index, x, y };
   });
   return (
-    <div className="route-map" role="img" aria-label={itinerary.cityOrder.map((id) => getCity(id).names[locale]).join(" → ")}>
+    <div className="route-map" role="img" aria-label={itinerary.cityOrder.map((id) => routeCity(cities, id).names[locale]).join(" → ")}>
       <div className="map-paper" />
       {points.slice(0, -1).map((point, index) => {
         const next = points[index + 1];
@@ -122,21 +197,22 @@ function RouteMap({ itinerary, locale }: { itinerary: OptimizedItinerary; locale
   );
 }
 
-function LegRow({ leg, index, locale }: { leg: OptimizedItinerary["legs"][number]; index: number; locale: SupportedLocale }) {
+function LegRow({ leg, index, locale, cities, forceExpanded = false }: { leg: OptimizedItinerary["legs"][number]; index: number; locale: SupportedLocale; cities: ReadonlyMap<string, City>; forceExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(index === 0);
-  const from = getCity(leg.fromCityId);
-  const to = getCity(leg.toCityId);
+  const detailsVisible = expanded || forceExpanded;
+  const from = routeCity(cities, leg.fromCityId);
+  const to = routeCity(cities, leg.toCityId);
   const components = leg.segments.flatMap((segment) => segment.duration?.components ?? []);
   return (
-    <article className={expanded ? "leg-row expanded" : "leg-row"}>
-      <button className="leg-summary" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+    <article className={detailsVisible ? "leg-row expanded" : "leg-row"}>
+      <button className="leg-summary" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={detailsVisible}>
         <span className="leg-number">{index + 1}</span>
-        <span className="mode-icon"><ModeGlyph mode={leg.modes[0]} /></span>
-        <span className="leg-cities"><strong>{from.names[locale]} → {to.names[locale]}</strong><small>{leg.modes.map((mode) => modeLabel(mode, locale)).join(" + ")}</small></span>
+        <span className="mode-icon"><ModeGlyph mode={primaryTransportMode(leg.modes)} /></span>
+        <span className="leg-cities"><strong>{from.names[locale]} → {to.names[locale]}</strong><small>{leg.modes.map((mode) => modeLabel(mode, locale)).join(" + ")}<span className={`leg-provenance ${leg.provenance.kind}`}>{provenanceLabel(leg.provenance, locale)}</span></small></span>
         <span className="leg-duration">{formatDuration(leg.totalMinutes ?? 0, locale)}</span>
-        {expanded ? <ChevronUp size={19} aria-hidden="true" /> : <ChevronDown size={19} aria-hidden="true" />}
+        {detailsVisible ? <ChevronUp size={19} aria-hidden="true" /> : <ChevronDown size={19} aria-hidden="true" />}
       </button>
-      {expanded ? (
+      {detailsVisible ? (
         <div className="leg-breakdown">
           {components.map((component, componentIndex) => (
             <div className="breakdown-item" key={`${component.kind}-${componentIndex}`}>
@@ -151,18 +227,92 @@ function LegRow({ leg, index, locale }: { leg: OptimizedItinerary["legs"][number
   );
 }
 
-export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialDepartureDate, initialTimestamp, onNotify, onTripSaved }: RoutePlannerProps) {
-  const [cityIds, setCityIds] = useState<string[]>(initialCityIds?.length ? initialCityIds : ["seoul", "tokyo", "paris", "barcelona"]);
-  const [departureDate, setDepartureDate] = useState(() => initialDepartureDate ?? new Date(Date.parse(initialTimestamp) + 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10));
-  const [fixedStart, setFixedStart] = useState(true);
+export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialDepartureDate, initialSnapshot, initialTimestamp, onNotify, onTripSaved }: RoutePlannerProps) {
+  const initialSelectedCityIds = initialSnapshot?.selectedCityIds ?? initialSnapshot?.cityOrder ?? initialCityIds;
+  const initialRouteDate = initialSnapshot?.departureDate ?? initialDepartureDate ?? new Date(Date.parse(initialTimestamp) + 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10);
+  const initialFixedStart = initialSnapshot?.fixedStart ?? true;
+  const initialExtraCities = (initialSnapshot?.cities ?? []).filter((city) => !CITIES.some((catalogueCity) => catalogueCity.id === city.id));
+  const [cityIds, setCityIds] = useState<string[]>(initialSelectedCityIds?.length ? [...initialSelectedCityIds] : ["paris", "brussels", "amsterdam", "berlin"]);
+  const [extraCities, setExtraCities] = useState<readonly City[]>(initialExtraCities);
+  const [cityQuery, setCityQuery] = useState("");
+  const [citySearchResults, setCitySearchResults] = useState<readonly CitySearchResult[]>([]);
+  const [citySearchLoading, setCitySearchLoading] = useState(false);
+  const [citySearchError, setCitySearchError] = useState(false);
+  const [addingCityId, setAddingCityId] = useState<string | null>(null);
+  const addingCityIds = useRef(new Set<string>());
+  const [departureDate, setDepartureDate] = useState(initialRouteDate);
+  const [fixedStart, setFixedStart] = useState(initialFixedStart);
   const [busy, setBusy] = useState(false);
+  const [calculating, setCalculating] = useState(false);
+  const [pdfMode, setPdfMode] = useState(false);
   const [error, setError] = useState("");
+  const [scheduleResult, setScheduleResult] = useState<ScheduleResult | null>(null);
+  const [restoredRoute, setRestoredRoute] = useState(() => initialSnapshot?.itinerary ? {
+    key: `${initialRouteDate}:${initialFixedStart ? "fixed" : "open"}:${(initialSelectedCityIds ?? initialSnapshot.cityOrder).join(",")}`,
+    itinerary: initialSnapshot.itinerary,
+    calculatedAt: initialSnapshot.createdAt,
+  } : null);
+
+  const scheduleKey = `${departureDate}:${cityIds.join(",")}`;
+  const routeStateKey = `${departureDate}:${fixedStart ? "fixed" : "open"}:${cityIds.join(",")}`;
+  const activeSchedule = scheduleResult?.key === scheduleKey ? scheduleResult : null;
+  const availableCities = useMemo(() => [...CITIES, ...extraCities], [extraCities]);
+  const cityMap = useMemo(() => new Map(availableCities.map((city) => [city.id, city])), [availableCities]);
+  const selectedCities = useMemo(
+    () => cityIds.map((cityId) => cityMap.get(cityId)).filter((city): city is City => Boolean(city)),
+    [cityIds, cityMap],
+  );
+  const departureBounds = useMemo(() => {
+    const base = new Date(initialTimestamp);
+    const asDate = (offsetDays: number) => new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + offsetDays)).toISOString().slice(0, 10);
+    return { minimum: asDate(-1), maximum: asDate(365) };
+  }, [initialTimestamp]);
+  const displayedCalculatedAt = restoredRoute?.key === routeStateKey
+    ? restoredRoute.calculatedAt
+    : activeSchedule?.calculatedAt ?? initialTimestamp;
 
   const itinerary = useMemo(() => {
-    if (cityIds.length < 2 || cityIds.some((id) => !CITIES.some((city) => city.id === id)) || new Set(cityIds).size !== cityIds.length) return null;
-    const candidates = buildEstimatedFallbackOptions(cityIds);
-    return optimizeItinerary(cityIds, candidates, fixedStart ? { startCityId: cityIds[0] } : {});
-  }, [cityIds, fixedStart]);
+    if (cityIds.length < 2 || selectedCities.length !== cityIds.length || new Set(cityIds).size !== cityIds.length) return null;
+    if (restoredRoute?.key === routeStateKey) return restoredRoute.itinerary;
+    const candidates = [...buildEstimatedFallbackOptionsForCities(selectedCities), ...(activeSchedule?.legs ?? [])];
+    return optimizeItinerary(cityIds, candidates, {
+      ...(fixedStart ? { startCityId: cityIds[0] } : {}),
+      cities: selectedCities,
+    });
+  }, [activeSchedule, cityIds, fixedStart, restoredRoute, routeStateKey, selectedCities]);
+
+  useEffect(() => {
+    const query = cityQuery.trim();
+    if (query.length < 2) {
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      setCitySearchLoading(true);
+      setCitySearchError(false);
+      try {
+        const params = new URLSearchParams({ q: query, locale });
+        const response = await fetch(`/api/cities/search?${params}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("city search unavailable");
+        const data = await response.json() as { results?: CitySearchResult[] };
+        setCitySearchResults(Array.isArray(data.results) ? data.results : []);
+      } catch (searchError) {
+        if (searchError instanceof DOMException && searchError.name === "AbortError") return;
+        setCitySearchResults([]);
+        setCitySearchError(true);
+      } finally {
+        if (!controller.signal.aborted) setCitySearchLoading(false);
+      }
+    }, 350);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [cityQuery, locale]);
+
+  const selectedHasScheduled = Boolean(itinerary?.legs.some((leg) => leg.provenance.kind === "scheduled"));
+  const selectedHasEstimated = Boolean(itinerary?.legs.some((leg) => leg.provenance.kind === "estimated"));
+  const selectedProvenanceKey = selectedHasScheduled && selectedHasEstimated ? "mixedData" : selectedHasScheduled ? "scheduled" : itinerary?.provenance.kind === "observed" ? "observed" : "estimated";
 
   const updateCity = (index: number, cityId: string) => {
     setError("");
@@ -189,24 +339,97 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
     if (next) setCityIds((items) => [...items, next.id]);
   };
 
-  const calculate = () => {
+  const addSearchResult = async (result: CitySearchResult) => {
+    if (cityIds.length >= 10) return setError(translate(locale, "cityLimit"));
+    if (addingCityIds.current.has(result.id)) return;
+    addingCityIds.current.add(result.id);
+    setAddingCityId(result.id);
+    const localizationQuery = cityQuery.trim() || result.name;
+    let localizedResult: CitySearchResult | undefined;
+    try {
+      const params = new URLSearchParams({ q: localizationQuery, locale, translations: "1" });
+      const response = await fetch(`/api/cities/search?${params}`);
+      if (response.ok) {
+        const data = await response.json() as { results?: CitySearchResult[] };
+        localizedResult = data.results?.find((candidate) => candidate.id === result.id);
+      }
+    } catch {
+      // The selected provider label remains a safe proper-name fallback.
+    }
+    const localizedNames = localizedResult?.names ?? Object.freeze(Object.fromEntries(
+      SUPPORTED_LOCALES.map((resultLocale) => [resultLocale, result.name]),
+    )) as City["names"];
+    const city = cityFromSearchResult(result, localizedNames);
+    if (cityIds.includes(city.id)) {
+      addingCityIds.current.delete(result.id);
+      setAddingCityId(null);
+      return setError(translate(locale, "duplicateCity"));
+    }
+    if (!CITIES.some((catalogueCity) => catalogueCity.id === city.id)) {
+      setExtraCities((items) => items.some((item) => item.id === city.id) ? items : [...items, city]);
+    }
+    setCityIds((items) => items.includes(city.id) || items.length >= 10 ? items : [...items, city.id]);
+    setCityQuery("");
+    setCitySearchResults([]);
+    addingCityIds.current.delete(result.id);
+    setAddingCityId(null);
+    setError("");
+  };
+
+  const calculate = async () => {
     if (cityIds.length < 2 || cityIds.length > 10) return setError(translate(locale, "cityLimit"));
     setError("");
     setBusy(true);
-    window.setTimeout(() => {
+    setCalculating(true);
+    setRestoredRoute(null);
+    try {
+      if (cityIds.length <= 4) {
+        const response = await fetch("/api/routes/schedule", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            cityIds,
+            cities: selectedCities.map((city) => ({
+              id: city.id,
+              latitude: city.coordinates.latitude,
+              longitude: city.coordinates.longitude,
+              timeZone: city.timeZone,
+            })),
+            departureDate,
+          }),
+        });
+        if (!response.ok) throw new Error("schedule unavailable");
+        const data = await response.json() as { legs?: TravelLeg[]; partial?: boolean; calculatedAt?: string };
+        setScheduleResult({
+          key: scheduleKey,
+          legs: Array.isArray(data.legs) ? data.legs : [],
+          partial: Boolean(data.partial) || !Array.isArray(data.legs) || data.legs.length === 0,
+          calculatedAt: typeof data.calculatedAt === "string" ? data.calculatedAt : new Date().toISOString(),
+        });
+      } else {
+        setScheduleResult({ key: scheduleKey, legs: [], partial: true, calculatedAt: new Date().toISOString() });
+      }
+    } catch {
+      setScheduleResult({ key: scheduleKey, legs: [], partial: true, calculatedAt: new Date().toISOString() });
+    } finally {
       setBusy(false);
-      document.getElementById("route-results")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 420);
+      setCalculating(false);
+      window.requestAnimationFrame(() => document.getElementById("route-results")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+    }
   };
 
   const snapshot = (): RouteSnapshot | null => itinerary ? {
-    version: 1,
-    name: `${getCity(itinerary.cityOrder[0]).names[locale]} → ${getCity(itinerary.cityOrder.at(-1) ?? itinerary.cityOrder[0]).names[locale]}`,
+    version: 2,
+    name: `${routeCity(cityMap, itinerary.cityOrder[0]).names[locale]} → ${routeCity(cityMap, itinerary.cityOrder.at(-1) ?? itinerary.cityOrder[0]).names[locale]}`,
     departureDate,
     cityOrder: [...itinerary.cityOrder],
     totalMinutes: itinerary.totalMinutes,
     createdAt: new Date().toISOString(),
     provenance: itinerary.provenance.kind === "observed" ? "observed" : itinerary.provenance.kind === "scheduled" ? "scheduled" : "estimated",
+    selectedCityIds: [...cityIds],
+    fixedStart,
+    itinerary,
+    cities: itinerary.cityOrder.map((cityId) => routeCity(cityMap, cityId)),
   } : null;
 
   const shareRoute = async () => {
@@ -214,7 +437,7 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
     if (!data) return;
     const url = new URL(window.location.href);
     url.search = "";
-    url.searchParams.set("share", encodeSnapshot(data));
+    url.searchParams.set("share", await encodeSnapshot(data));
     try {
       const copied = await copyShareUrl(url.toString());
       if (navigator.share && window.matchMedia("(max-width: 820px)").matches) {
@@ -229,12 +452,14 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
   };
 
   const downloadPdf = async () => {
-    const target = document.getElementById("route-export");
+    const target = document.getElementById("route-results");
     if (!target) return;
     setBusy(true);
+    setPdfMode(true);
     try {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
       const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import("html2canvas"), import("jspdf")]);
-      const canvas = await html2canvas(target, { scale: 1.8, backgroundColor: "#ffffff", useCORS: true });
+      const canvas = await html2canvas(target, { scale: 1.8, backgroundColor: "#ffffff", useCORS: true, ignoreElements: (element) => element.classList.contains("route-actions") });
       const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4", compress: true });
       const pageWidth = pdf.internal.pageSize.getWidth();
       const pageHeight = pdf.internal.pageSize.getHeight();
@@ -250,11 +475,12 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
         pdf.addImage(imageData, "JPEG", 0, offset, pageWidth, imageHeight, undefined, "FAST");
         remaining -= pageHeight;
       }
-      pdf.save(`Together-route-${departureDate}.pdf`);
+      pdf.save(`Together-${departureDate}.pdf`);
       onNotify(translate(locale, "pdfReady"), "success");
     } catch {
-      onNotify("PDF export failed. Please retry.", "error");
+      onNotify(translate(locale, "pdfError"), "error");
     } finally {
+      setPdfMode(false);
       setBusy(false);
     }
   };
@@ -281,15 +507,23 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
   };
 
   return (
-    <main className="route-page" id="route-export">
-      <section className="route-intro">
-        <div className="route-copy">
-          <h1>{translate(locale, "routeTitle")}</h1>
-          <p>{translate(locale, "routeDescription")}</p>
-        </div>
-        <div className="data-truth-note">
-          <AlertTriangle size={20} aria-hidden="true" />
-          <div><strong>{translate(locale, "estimatedLabel")}</strong><span>{translate(locale, "estimatedHelp")}</span></div>
+    <main className="route-page">
+      <section className="route-hero">
+        {/* Responsive WebP variants are pre-compressed and served directly by the PWA/worker. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img className="route-hero-image" src="/assets/eiffel-paris-hero.webp" srcSet="/assets/eiffel-paris-hero-mobile.webp 900w, /assets/eiffel-paris-hero.webp 1792w" sizes="(max-width: 820px) 100vw, 1500px" alt="" fetchPriority="high" aria-hidden="true" />
+        <div className="route-hero-wash" aria-hidden="true" />
+        <div className="route-intro">
+          <div className="route-copy">
+            <span className="travel-kicker">Together</span>
+            <h1>{translate(locale, "routeTitle")}</h1>
+            <p>{translate(locale, "routeDescription")}</p>
+            <p className="regional-focus"><MapPin size={17} aria-hidden="true" />{translate(locale, "regionalFocus")}</p>
+          </div>
+          <div className="data-truth-note">
+            <AlertTriangle size={20} aria-hidden="true" />
+            <div><strong>{translate(locale, "estimatedLabel")}</strong><span>{translate(locale, "scheduleHelp")}</span></div>
+          </div>
         </div>
       </section>
 
@@ -304,45 +538,77 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
                 <label>
                   <span className="sr-only">{translate(locale, "cities")} {index + 1}</span>
                   <select value={cityId} onChange={(event) => updateCity(index, event.target.value)}>
-                    {CITIES.map((city) => <option key={city.id} value={city.id}>{city.names[locale]} · {city.country.names[locale]}</option>)}
+                    {availableCities.map((city) => <option key={city.id} value={city.id}>{city.names[locale]} · {city.country.names[locale]}</option>)}
                   </select>
                 </label>
                 <span className="reorder-actions">
-                  <button type="button" onClick={() => moveCity(index, -1)} disabled={index === 0} aria-label="Move up"><ArrowUp size={15} /></button>
-                  <button type="button" onClick={() => moveCity(index, 1)} disabled={index === cityIds.length - 1} aria-label="Move down"><ArrowDown size={15} /></button>
+                  <button type="button" onClick={() => moveCity(index, -1)} disabled={index === 0} aria-label={translate(locale, "moveUp")}><ArrowUp size={15} /></button>
+                  <button type="button" onClick={() => moveCity(index, 1)} disabled={index === cityIds.length - 1} aria-label={translate(locale, "moveDown")}><ArrowDown size={15} /></button>
                 </span>
                 <button className="remove-city" type="button" onClick={() => setCityIds((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={cityIds.length <= 2} aria-label={translate(locale, "remove")}><X size={17} /></button>
               </div>
             ))}
           </div>
           <button className="add-city" type="button" onClick={addCity} disabled={cityIds.length >= 10}><Plus size={18} />{translate(locale, "addCity")}</button>
-          <label className="field-row date-field"><span><CalendarDays size={18} />{translate(locale, "departure")}</span><input type="date" value={departureDate} onChange={(event) => setDepartureDate(event.target.value)} /></label>
+          <div className="world-city-search">
+            <label>
+              <span className="sr-only">{translate(locale, "searchWorldCities")}</span>
+              <Search size={18} aria-hidden="true" />
+              <input type="search" value={cityQuery} onChange={(event) => {
+                const nextQuery = event.target.value;
+                setCityQuery(nextQuery);
+                if (nextQuery.trim().length < 2) {
+                  setCitySearchResults([]);
+                  setCitySearchLoading(false);
+                  setCitySearchError(false);
+                }
+              }} placeholder={translate(locale, "citySearchPlaceholder")} autoComplete="off" />
+              {citySearchLoading ? <RotateCcw className="spin" size={16} aria-label={translate(locale, "loading")} /> : null}
+            </label>
+            {citySearchResults.length > 0 ? (
+              <ul className="city-search-results">
+                {citySearchResults.map((result) => (
+                  <li key={result.id}>
+                    <button type="button" onClick={() => addSearchResult(result)} disabled={addingCityId !== null} aria-busy={addingCityId === result.id}>
+                      <strong>{result.name}</strong>
+                      <span>{[result.admin1, result.country].filter(Boolean).join(" · ")}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : cityQuery.trim().length >= 2 && !citySearchLoading ? (
+              <p className={citySearchError ? "city-search-status error" : "city-search-status"}>{translate(locale, citySearchError ? "citySearchError" : "noCityResults")}</p>
+            ) : null}
+            <small className="city-search-credit">{translate(locale, "citySearchHint")} <a href="https://open-meteo.com/en/docs/geocoding-api" target="_blank" rel="noreferrer">{translate(locale, "geocodingCredit")}</a></small>
+          </div>
+          <label className="field-row date-field"><span><CalendarDays size={18} />{translate(locale, "departure")}</span><input type="date" min={departureBounds.minimum} max={departureBounds.maximum} value={departureDate} onChange={(event) => setDepartureDate(event.target.value)} /></label>
           <label className="checkbox-row"><input type="checkbox" checked={fixedStart} onChange={(event) => setFixedStart(event.target.checked)} /><span>{translate(locale, "fixedStart")}</span></label>
           {error ? <p className="form-error" role="alert">{error}</p> : null}
-          <button className="primary-action find-route" type="button" onClick={calculate} disabled={busy}>{busy ? <RotateCcw className="spin" size={19} /> : <MapPin size={19} />}{translate(locale, "findRoute")}</button>
+          <button className="primary-action find-route" type="button" onClick={calculate} disabled={busy}>{calculating ? <RotateCcw className="spin" size={19} /> : <MapPin size={19} />}{translate(locale, calculating ? "scheduleLoading" : "findRoute")}</button>
+          {activeSchedule ? <p className={selectedHasScheduled ? "schedule-feedback success" : "schedule-feedback"}>{translate(locale, cityIds.length > 4 ? "scheduleLimit" : selectedHasScheduled && selectedHasEstimated ? "schedulePartial" : selectedHasScheduled ? "scheduleFound" : activeSchedule.legs.length ? "scheduleChecked" : "scheduleUnavailable")}</p> : null}
         </aside>
 
         {itinerary ? (
           <section className="route-results" id="route-results" aria-live="polite">
             <div className="result-heading">
               <div><h2>{translate(locale, "optimizedOrder")}</h2><p>{translate(locale, "exactOptimization")}</p></div>
-              <span className="provenance-state"><Database size={15} />{translate(locale, "estimated")}</span>
+              <span className="provenance-state"><Database size={15} />{translate(locale, selectedProvenanceKey)}</span>
             </div>
             <div className="order-rail" aria-label={translate(locale, "optimizedOrder")}>
               {itinerary.cityOrder.map((cityId, index) => (
-                <div className="order-city" key={cityId}><span>{index + 1}</span><strong>{getCity(cityId).names[locale]}</strong>{index < itinerary.cityOrder.length - 1 ? <i aria-hidden="true">→</i> : null}</div>
+                <div className="order-city" key={cityId}><span>{index + 1}</span><strong>{routeCity(cityMap, cityId).names[locale]}</strong>{index < itinerary.cityOrder.length - 1 ? <i aria-hidden="true">→</i> : null}</div>
               ))}
             </div>
-            <RouteMap itinerary={itinerary} locale={locale} />
+            <RouteMap itinerary={itinerary} locale={locale} cities={cityMap} />
             <div className="route-summary">
               <div><Clock3 size={22} /><span>{translate(locale, "totalTravel")}<strong>{formatDuration(itinerary.totalMinutes, locale)}</strong></span></div>
               <div><MapPin size={22} /><span>{itinerary.legs.length}<strong>{translate(locale, "legs")}</strong></span></div>
-              <div className="summary-source"><Database size={22} /><span>{translate(locale, "dataSource")}<strong>{translate(locale, "estimatedLabel")}</strong></span></div>
+              <div className="summary-source"><Database size={22} /><span>{translate(locale, "dataSource")}<strong>{translate(locale, selectedProvenanceKey === "estimated" ? "estimatedLabel" : selectedProvenanceKey)}</strong></span></div>
             </div>
             <div className="legs-list">
-              {itinerary.legs.map((leg, index) => <LegRow key={leg.id} leg={leg} index={index} locale={locale} />)}
+              {itinerary.legs.map((leg, index) => <LegRow key={leg.id} leg={leg} index={index} locale={locale} cities={cityMap} forceExpanded={pdfMode} />)}
             </div>
-            <p className="provider-note"><AlertTriangle size={16} />{translate(locale, "providerRequired")} <span>{translate(locale, "dataUpdated")}: {new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale, { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" }).format(new Date(initialTimestamp))} UTC</span></p>
+            <p className="provider-note"><AlertTriangle size={16} />{translate(locale, "providerRequired")} <a href="https://transitous.org/sources/" target="_blank" rel="noreferrer">{translate(locale, "transitDataCredit")}</a><span>{translate(locale, "dataUpdated")}: {formatDateTime(displayedCalculatedAt, locale)}</span></p>
             <div className="route-actions">
               <button type="button" onClick={shareRoute}><Share2 size={18} />{translate(locale, "share")}</button>
               <button type="button" onClick={downloadPdf} disabled={busy}><FileDown size={18} />{translate(locale, "pdf")}</button>

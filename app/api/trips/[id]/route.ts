@@ -9,7 +9,7 @@ export async function DELETE(_request: Request, context: { params: Promise<{ id:
   try {
     const { id } = await context.params;
     await getDb().delete(trips).where(and(eq(trips.id, id), eq(trips.ownerEmail, auth.user.email)));
-    return new Response(null, { status: 204 });
+    return new Response(null, { status: 204, headers: { "Cache-Control": "private, no-store" } });
   } catch (error) {
     return databaseError(error);
   }

@@ -9,10 +9,6 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function readJson(file) {
-  return JSON.parse(await readFile(file, "utf8"));
-}
-
 function pngDimensions(buffer, label) {
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   invariant(
@@ -77,9 +73,6 @@ function validateManifest(manifest, label) {
 }
 
 async function checkLocal() {
-  const manifest = await readJson(path.join(publicDir, "manifest.webmanifest"));
-  validateManifest(manifest, "public/manifest.webmanifest");
-
   await Promise.all([
     checkPng(path.join(publicDir, "icon-192.png"), 192, 192),
     checkPng(path.join(publicDir, "icon-512.png"), 512, 512),
@@ -87,11 +80,12 @@ async function checkLocal() {
     checkPng(path.join(publicDir, "apple-touch-icon.png"), 180, 180),
   ]);
 
-  const [serviceWorker, registration, layout, offline] = await Promise.all([
+  const [serviceWorker, registration, layout, offline, manifestRoute] = await Promise.all([
     readFile(path.join(publicDir, "sw.js"), "utf8"),
     readFile(path.join(root, "app", "PwaRegistration.tsx"), "utf8"),
     readFile(path.join(root, "app", "layout.tsx"), "utf8"),
     readFile(path.join(publicDir, "offline.html"), "utf8"),
+    readFile(path.join(root, "app", "manifest.webmanifest", "route.ts"), "utf8"),
   ]);
 
   for (const excludedPath of [
@@ -119,6 +113,11 @@ async function checkLocal() {
     "root metadata must link the web manifest",
   );
   invariant(offline.includes("Together"), "offline fallback must identify the app");
+  invariant(manifestRoute.includes('short_name: "Together"'), "dynamic manifest must identify the app");
+  invariant(manifestRoute.includes('translate(locale, "metadataDescription")'), "dynamic manifest must localize its description");
+  for (const icon of ["/icon-192.png", "/icon-512.png", "/maskable-512.png"]) {
+    invariant(manifestRoute.includes(icon), `dynamic manifest must include ${icon}`);
+  }
 }
 
 async function fetchOk(url, expectedType) {

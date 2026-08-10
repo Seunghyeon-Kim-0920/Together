@@ -1,10 +1,10 @@
 "use client";
 
-import { BedDouble, Bus, Check, Landmark, LockKeyhole, Plus, ReceiptText, Save, ShoppingBag, Utensils, WalletCards, X } from "lucide-react";
+import { BedDouble, Bus, Landmark, LockKeyhole, Plus, ReceiptText, Save, ShoppingBag, Utensils, WalletCards, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { Expense, ExpenseCategory, SupportedLocale } from "../../lib/domain";
-import { createEqualSplitExpense, settleExpensesByCurrency } from "../../lib/expenses";
-import { translate } from "../../lib/i18n";
+import { createEqualSplitExpense, parseExpenseLedger, settleExpensesByCurrency } from "../../lib/expenses";
+import { translate, translateWith, type MessageKey } from "../../lib/i18n";
 
 const participants = ["minji", "junho", "sora", "me"] as const;
 type VisibleCategory = Exclude<ExpenseCategory, "insurance">;
@@ -38,12 +38,12 @@ function formatMoney(minorUnits: number, locale: SupportedLocale) {
 }
 
 function seedExpenses(): readonly Expense[] {
-  const items: Array<[ExpenseCategory, string, number, string, string]> = [
-    ["accommodation", "Paris apartment", 64000, "junho", "2026-06-15"],
-    ["transport", "TGV tickets", 22800, "minji", "2026-06-16"],
-    ["food", "Dinner together", 15640, "me", "2026-06-16"],
-    ["activities", "Louvre tickets", 8800, "junho", "2026-06-17"],
-    ["shopping", "Groceries", 7220, "sora", "2026-06-18"],
+  const items: Array<[ExpenseCategory, MessageKey, number, string, string]> = [
+    ["accommodation", "sampleStay", 64000, "junho", "2026-06-15"],
+    ["transport", "sampleRail", 22800, "minji", "2026-06-16"],
+    ["food", "sampleDinner", 15640, "me", "2026-06-16"],
+    ["activities", "sampleMuseum", 8800, "junho", "2026-06-17"],
+    ["shopping", "sampleGroceries", 7220, "sora", "2026-06-18"],
   ];
   return items.map(([category, description, totalMinorUnits, paidBy, date], index) => createEqualSplitExpense({
     id: `seed-${index}`,
@@ -58,13 +58,26 @@ function seedExpenses(): readonly Expense[] {
   }));
 }
 
+export function initialExpensesForAccount(signedIn: boolean): readonly Expense[] {
+  return signedIn ? [] : seedExpenses();
+}
+
+function localizedDescription(expense: Expense, locale: SupportedLocale): string {
+  if (expense.id.startsWith("seed-") && ["sampleStay", "sampleRail", "sampleDinner", "sampleMuseum", "sampleGroceries"].includes(expense.description)) {
+    return translate(locale, expense.description as MessageKey);
+  }
+  return expense.description;
+}
+
 export function ExpensesPanel({ locale, user, signInUrl, onNotify }: {
   locale: SupportedLocale;
   user: { displayName: string; email: string } | null;
   signInUrl: string;
   onNotify: (message: string, tone?: "success" | "error" | "info") => void;
 }) {
-  const [expenses, setExpenses] = useState<readonly Expense[]>(seedExpenses);
+  // Guests see a localized demonstration ledger; authenticated accounts always
+  // start empty until their private data has been loaded.
+  const [expenses, setExpenses] = useState<readonly Expense[]>(() => initialExpensesForAccount(Boolean(user)));
   const [filter, setFilter] = useState<"all" | VisibleCategory>("all");
   const [formOpen, setFormOpen] = useState(true);
   const [description, setDescription] = useState("");
@@ -81,12 +94,11 @@ export function ExpensesPanel({ locale, user, signInUrl, onNotify }: {
     fetch("/api/expenses")
       .then(async (response) => {
         if (!response.ok) throw new Error("request failed");
-        return await response.json() as { expenses: { version?: number; expenses?: Expense[] } | null };
+        return await response.json() as { expenses: unknown };
       })
       .then((data) => {
-        if (active && Array.isArray(data.expenses?.expenses)) {
-          setExpenses(data.expenses.expenses);
-        }
+        const ledger = parseExpenseLedger(data.expenses);
+        if (active) setExpenses(ledger?.expenses ?? []);
       })
       .catch(() => {
         if (active) onNotify(translate(locale, "retry"), "error");
@@ -163,15 +175,15 @@ export function ExpensesPanel({ locale, user, signInUrl, onNotify }: {
             {categoryOrder.map((item) => <button type="button" role="tab" aria-selected={filter === item} key={item} onClick={() => setFilter(item)}>{translate(locale, item)}</button>)}
           </div>
           <div className="expense-table" role="table" aria-busy={loading}>
-            <div className="expense-table-head" role="row"><span>{translate(locale, "category")}</span><span>{translate(locale, "description")}</span><span>{translate(locale, "paidBy")}</span><span>{translate(locale, "amount")}</span></div>
+            <div className="expense-table-head" role="row"><span role="columnheader">{translate(locale, "category")}</span><span role="columnheader">{translate(locale, "description")}</span><span role="columnheader">{translate(locale, "paidBy")}</span><span role="columnheader">{translate(locale, "amount")}</span></div>
             {visibleExpenses.map((expense) => {
               const Icon = categoryIcon(expense.category);
               return (
                 <div className="expense-row" role="row" key={expense.id}>
-                  <span className="expense-category"><i><Icon size={17} /></i>{translate(locale, visibleCategory(expense.category))}</span>
-                  <span className="expense-description"><strong>{expense.description}</strong><small>{new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale).format(new Date(expense.occurredAt))}</small></span>
-                  <span className="payer"><i className="mini-avatar">{participantName(expense.paidBy, locale).slice(0, 1)}</i>{participantName(expense.paidBy, locale)}</span>
-                  <strong className="expense-amount">{formatMoney(expense.amount.minorUnits, locale)}</strong>
+                  <span className="expense-category" role="cell"><i><Icon size={17} /></i>{translate(locale, visibleCategory(expense.category))}</span>
+                  <span className="expense-description" role="cell"><strong>{localizedDescription(expense, locale)}</strong><small>{new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale).format(new Date(expense.occurredAt))}</small></span>
+                  <span className="payer" role="cell"><i className="mini-avatar">{participantName(expense.paidBy, locale).slice(0, 1)}</i>{participantName(expense.paidBy, locale)}</span>
+                  <strong className="expense-amount" role="cell">{formatMoney(expense.amount.minorUnits, locale)}</strong>
                 </div>
               );
             })}
@@ -187,7 +199,6 @@ export function ExpensesPanel({ locale, user, signInUrl, onNotify }: {
               </div>
             ))}
           </div>
-          <button className="secondary-action full" type="button"><Check size={18} />{translate(locale, "settleDone")}</button>
         </aside>
 
         {formOpen ? (
@@ -195,12 +206,12 @@ export function ExpensesPanel({ locale, user, signInUrl, onNotify }: {
             <div className="panel-heading"><h2>{translate(locale, "addExpense")}</h2><button type="button" onClick={() => setFormOpen(false)} aria-label={translate(locale, "close")}><X size={19} /></button></div>
             <div className="two-column-fields">
               <label><span>{translate(locale, "category")}</span><select value={category} onChange={(event) => setCategory(event.target.value as VisibleCategory)}>{categoryOrder.map((item) => <option key={item} value={item}>{translate(locale, item)}</option>)}</select></label>
-              <label><span>{translate(locale, "amount")}</span><div className="amount-input"><input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" /><i>EUR</i></div></label>
+              <label><span>{translate(locale, "amount")}</span><div className="amount-input"><input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder={locale === "fr" ? "0,00" : "0.00"} /><i>€</i></div></label>
             </div>
             <label><span>{translate(locale, "description")}</span><input value={description} onChange={(event) => setDescription(event.target.value)} maxLength={80} /></label>
             <label><span>{translate(locale, "paidBy")}</span><select value={paidBy} onChange={(event) => setPaidBy(event.target.value)}>{participants.map((person) => <option value={person} key={person}>{participantName(person, locale)}</option>)}</select></label>
             <fieldset><legend>{translate(locale, "splitWith")}</legend><div className="participant-checks">{participants.map((person) => <label key={person}><input type="checkbox" checked={selected.includes(person)} onChange={() => setSelected((items) => items.includes(person) ? items.filter((item) => item !== person) : [...items, person])} /><span className="mini-avatar">{participantName(person, locale).slice(0, 1)}</span>{participantName(person, locale)}</label>)}</div></fieldset>
-            <div className="split-method"><span>{translate(locale, "splitMethod")}</span><strong>{translate(locale, "equal")} · N = {selected.length}</strong></div>
+            <div className="split-method"><span>{translate(locale, "splitMethod")}</span><strong>{translateWith(locale, "selectedPeople", { count: selected.length })}</strong></div>
             <button className="primary-action full" type="button" onClick={addExpense} disabled={saving}><Save size={18} />{translate(locale, "saveExpense")}</button>
           </aside>
         ) : null}

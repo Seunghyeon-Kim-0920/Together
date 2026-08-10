@@ -65,11 +65,11 @@ export const PROVENANCE_LABELS: Readonly<
     zh: "观测平均",
   },
   scheduled: {
-    ko: "공식 운행표",
+    ko: "공개 운행표",
     en: "Published schedule",
     fr: "Horaire publié",
     ja: "公開時刻表",
-    zh: "公布时刻表",
+    zh: "公开时刻表",
   },
   estimated: {
     ko: "추정치",

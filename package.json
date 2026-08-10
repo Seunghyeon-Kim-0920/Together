@@ -1,6 +1,6 @@
 {
   "name": "together-global-travel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -9,7 +9,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "npm run build && tsx --test tests/domain.test.ts && node --test tests/rendered-html.test.mjs",
+    "test": "npm run build && tsx --test tests/domain.test.ts tests/i18n.test.ts tests/ui-data.test.ts tests/city-search.test.ts tests/request-json.test.ts && node --test tests/rendered-html.test.mjs",
     "test:domain": "tsx --test tests/domain.test.ts",
     "pwa:check": "node scripts/check-pwa.mjs",
     "android:prepare": "node scripts/prepare-twa.mjs",

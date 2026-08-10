@@ -5,13 +5,17 @@ import { useEffect, useState } from "react";
 import { getCity } from "../../lib/cities";
 import type { SupportedLocale } from "../../lib/domain";
 import { formatDuration, translate } from "../../lib/i18n";
-import type { RouteSnapshot } from "./RoutePlanner";
+import { parseRouteSnapshot, type RouteSnapshot } from "../../lib/route-snapshot";
 
-type SavedTrip = { id: string; name: string; payload: RouteSnapshot | null; updatedAt: string };
+type SavedTrip = { id: string; name: string; payload: unknown; updatedAt: string };
 
 function parseLocalDate(value: string) {
   const [year, month, day] = value.split("-").map(Number);
   return new Date(year, month - 1, day);
+}
+
+function savedRouteCity(snapshot: RouteSnapshot, cityId: string) {
+  return snapshot.cities?.find((city) => city.id === cityId) ?? getCity(cityId);
 }
 
 export function TripsPanel({ locale, user, signInUrl, refreshKey, onOpen, onNotify }: {
@@ -65,13 +69,13 @@ export function TripsPanel({ locale, user, signInUrl, refreshKey, onOpen, onNoti
       ) : (
         <div className="trip-list">
           {trips.map((trip) => {
-            const snapshot = trip.payload;
+            const snapshot = parseRouteSnapshot(trip.payload);
             return (
               <article className="saved-trip-row" key={trip.id}>
                 <div className="saved-trip-route-icon"><Route size={23} /></div>
                 <div className="saved-trip-main">
-                  <strong>{trip.name}</strong>
-                  {snapshot ? <p>{snapshot.cityOrder.map((id) => getCity(id).names[locale]).join(" → ")}</p> : null}
+                  <strong>{snapshot ? `${savedRouteCity(snapshot, snapshot.cityOrder[0]).names[locale]} → ${savedRouteCity(snapshot, snapshot.cityOrder.at(-1) ?? snapshot.cityOrder[0]).names[locale]}` : trip.name}</strong>
+                  {snapshot ? <p>{snapshot.cityOrder.map((id) => savedRouteCity(snapshot, id).names[locale]).join(" → ")}</p> : null}
                   <div className="saved-trip-meta">
                     {snapshot ? <span><CalendarDays size={14} />{new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale).format(parseLocalDate(snapshot.departureDate))}</span> : null}
                     {snapshot ? <span><Clock3 size={14} />{formatDuration(snapshot.totalMinutes, locale)}</span> : null}

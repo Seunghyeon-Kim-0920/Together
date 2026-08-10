@@ -14,7 +14,7 @@ const navigation: ReadonlyArray<{ id: ViewName; label: MessageKey; icon: typeof 
 
 export function BottomNav({ locale, activeView, onViewChange }: { locale: SupportedLocale; activeView: ViewName; onViewChange: (view: ViewName) => void }) {
   return (
-    <nav className="bottom-nav" aria-label="Mobile primary navigation">
+    <nav className="bottom-nav" aria-label={translate(locale, "mobilePrimaryNavigation")}>
       {navigation.map(({ id, label, icon: Icon }) => (
         <button key={id} type="button" className={activeView === id ? "bottom-nav-link active" : "bottom-nav-link"} onClick={() => onViewChange(id)}>
           <Icon size={22} strokeWidth={1.8} aria-hidden="true" />

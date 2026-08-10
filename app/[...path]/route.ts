@@ -21,6 +21,6 @@ export function GET(_request: Request, context: { params: Promise<{ path: string
       });
     }
 
-    return new NextResponse("Not Found", { status: 404 });
+    return new NextResponse(null, { status: 404 });
   });
 }

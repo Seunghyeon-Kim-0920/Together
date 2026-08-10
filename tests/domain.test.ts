@@ -24,14 +24,37 @@ import {
   createEstimatedFallbackLeg,
   createTransportSegment,
   createTravelLeg,
+  getEstimatedFallbackModes,
   optimizeItinerary,
   selectFastestLeg,
 } from "../lib/routing.js";
+import {
+  parseTransitousPlan,
+  parseClientIp,
+  POST as schedulePost,
+  SCHEDULE_BATCH_DEADLINE_MS,
+  SCHEDULE_FUTURE_DATE_HORIZON_DAYS,
+  SCHEDULE_MAX_CITIES,
+  SCHEDULE_MAX_PAIRS,
+  SCHEDULE_MAX_REQUEST_BYTES,
+  SCHEDULE_PAST_DATE_HORIZON_DAYS,
+  SCHEDULE_RATE_LIMIT_REQUESTS,
+  validateDepartureDate,
+} from "../app/api/routes/schedule/route.js";
 
 const estimate: DataProvenance = {
   kind: "estimated",
   methodology: "Test fixture only",
 };
+
+function utcDateFromToday(dayOffset: number): string {
+  const now = new Date();
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + dayOffset),
+  )
+    .toISOString()
+    .slice(0, 10);
+}
 
 function simpleLeg(
   fromCityId: string,
@@ -39,6 +62,7 @@ function simpleLeg(
   minutes: number,
   id = `${fromCityId}:${toCityId}:${minutes}`,
   provenance: DataProvenance = estimate,
+  mode: "bus" | "train" = "bus",
 ): TravelLeg {
   return createTravelLeg({
     id,
@@ -47,7 +71,7 @@ function simpleLeg(
     segments: [
       createTransportSegment({
         id: `${id}:segment`,
-        mode: "bus",
+        mode,
         from: `${fromCityId}:centre`,
         to: `${toCityId}:centre`,
         provenance,
@@ -57,6 +81,82 @@ function simpleLeg(
       }),
     ],
   });
+}
+
+function transitousPlanFixture() {
+  return {
+    itineraries: [
+      {
+        id: "provider-itinerary-fast",
+        duration: 12_600,
+        startTime: "2098-04-05T08:00:00Z",
+        endTime: "2098-04-05T11:30:00Z",
+        transfers: 2,
+        legs: [
+          {
+            mode: "WALK",
+            duration: 600,
+            startTime: "2098-04-05T08:10:00Z",
+            endTime: "2098-04-05T08:20:00Z",
+            from: { name: "START" },
+            to: { name: "Central station" },
+          },
+          {
+            mode: "SUBWAY",
+            duration: 1_200,
+            startTime: "2098-04-05T08:25:00Z",
+            endTime: "2098-04-05T08:45:00Z",
+            from: { name: "Central station" },
+            to: { name: "Rail terminal" },
+            routeShortName: "M1",
+          },
+          {
+            mode: "HIGHSPEED_RAIL",
+            duration: 7_200,
+            startTime: "2098-04-05T08:50:00Z",
+            endTime: "2098-04-05T10:50:00Z",
+            from: { name: "Rail terminal" },
+            to: { name: "Arrival terminal" },
+            displayName: "International Express",
+          },
+          {
+            mode: "COACH",
+            duration: 1_800,
+            startTime: "2098-04-05T10:55:00Z",
+            endTime: "2098-04-05T11:25:00Z",
+            from: { name: "Arrival terminal" },
+            to: { name: "City stop" },
+            routeShortName: "C2",
+          },
+          {
+            mode: "WALK",
+            duration: 300,
+            startTime: "2098-04-05T11:25:00Z",
+            endTime: "2098-04-05T11:30:00Z",
+            from: { name: "City stop" },
+            to: { name: "END" },
+          },
+        ],
+      },
+      {
+        id: "provider-itinerary-slower",
+        duration: 18_000,
+        startTime: "2098-04-05T07:00:00Z",
+        endTime: "2098-04-05T12:00:00Z",
+        transfers: 0,
+        legs: [
+          {
+            mode: "HIGHSPEED_RAIL",
+            duration: 18_000,
+            startTime: "2098-04-05T07:00:00Z",
+            endTime: "2098-04-05T12:00:00Z",
+            from: { name: "Paris" },
+            to: { name: "London" },
+          },
+        ],
+      },
+    ],
+  };
 }
 
 test("city catalogue has unique global city ids and valid location metadata", () => {
@@ -83,6 +183,57 @@ test("city catalogue has unique global city ids and valid location metadata", ()
     searchCities("Paris").map((city) => city.id),
     ["paris", "paris-texas"],
   );
+});
+
+test("new corridor cities keep exact names in all five supported languages", () => {
+  const expected = {
+    lyon: {
+      names: { ko: "리옹", en: "Lyon", fr: "Lyon", ja: "リヨン", zh: "里昂" },
+      countryCode: "FR",
+    },
+    milan: {
+      names: { ko: "밀라노", en: "Milan", fr: "Milan", ja: "ミラノ", zh: "米兰" },
+      countryCode: "IT",
+    },
+    brussels: {
+      names: { ko: "브뤼셀", en: "Brussels", fr: "Bruxelles", ja: "ブリュッセル", zh: "布鲁塞尔" },
+      countryCode: "BE",
+    },
+    amsterdam: {
+      names: { ko: "암스테르담", en: "Amsterdam", fr: "Amsterdam", ja: "アムステルダム", zh: "阿姆斯特丹" },
+      countryCode: "NL",
+    },
+    prague: {
+      names: { ko: "프라하", en: "Prague", fr: "Prague", ja: "プラハ", zh: "布拉格" },
+      countryCode: "CZ",
+    },
+    vienna: {
+      names: { ko: "빈", en: "Vienna", fr: "Vienne", ja: "ウィーン", zh: "维也纳" },
+      countryCode: "AT",
+    },
+    budapest: {
+      names: { ko: "부다페스트", en: "Budapest", fr: "Budapest", ja: "ブダペスト", zh: "布达佩斯" },
+      countryCode: "HU",
+    },
+    tallinn: {
+      names: { ko: "탈린", en: "Tallinn", fr: "Tallinn", ja: "タリン", zh: "塔林" },
+      countryCode: "EE",
+    },
+    riga: {
+      names: { ko: "리가", en: "Riga", fr: "Riga", ja: "リガ", zh: "里加" },
+      countryCode: "LV",
+    },
+    dublin: {
+      names: { ko: "더블린", en: "Dublin", fr: "Dublin", ja: "ダブリン", zh: "都柏林" },
+      countryCode: "IE",
+    },
+  } as const;
+
+  for (const [cityId, metadata] of Object.entries(expected)) {
+    const city = getCity(cityId);
+    assert.deepEqual(city.names, metadata.names);
+    assert.equal(city.country.code, metadata.countryCode);
+  }
 });
 
 test("duration totals are derived from components and forged totals fail", () => {
@@ -210,12 +361,12 @@ test("unavailable segments never expose a numeric travel total", () => {
   );
 });
 
-test("fastest-leg selection uses duration then stronger provenance", () => {
+test("fastest-leg selection replaces same-mode estimates but compares modes by duration", () => {
   const scheduled = simpleLeg("paris", "london", 100, "scheduled", {
     kind: "scheduled",
     source: "Timetable",
   });
-  const estimated = simpleLeg("paris", "london", 100, "estimated");
+  const fasterEstimated = simpleLeg("paris", "london", 80, "estimated");
   const slowerObserved = simpleLeg("paris", "london", 101, "observed", {
     kind: "observed",
     source: "Measured trips",
@@ -223,11 +374,30 @@ test("fastest-leg selection uses duration then stronger provenance", () => {
   });
   assert.equal(
     selectFastestLeg(
-      [estimated, slowerObserved, scheduled],
+      [fasterEstimated, slowerObserved, scheduled],
       "paris",
       "london",
     )?.id,
-    "scheduled",
+    "observed",
+  );
+
+  const fasterScheduled = simpleLeg("paris", "london", 95, "scheduled-fast", {
+    kind: "scheduled",
+    source: "Timetable",
+  });
+  assert.equal(
+    selectFastestLeg([scheduled, fasterScheduled], "paris", "london")?.id,
+    "scheduled-fast",
+  );
+
+  const scheduledTrain = simpleLeg("paris", "london", 100, "scheduled-train", {
+    kind: "scheduled",
+    source: "Rail timetable",
+  }, "train");
+  const estimatedBus = simpleLeg("paris", "london", 80, "estimated-bus");
+  assert.equal(
+    selectFastestLeg([scheduledTrain, estimatedBus], "paris", "london")?.id,
+    "estimated-bus",
   );
 });
 
@@ -345,6 +515,642 @@ test("fallback routes are always disclosed as estimates", () => {
   const options = buildEstimatedFallbackOptions(["paris", "london"]);
   assert.equal(options.length, 6);
   assert.ok(options.every((leg) => leg.provenance.kind === "estimated"));
+});
+
+test("surface fallbacks exist only on curated bilateral corridors", () => {
+  const railAndCoachCorridors = [
+    ["seoul", "busan"],
+    ["tokyo", "osaka"],
+    ["paris", "lyon"],
+    ["paris", "brussels"],
+    ["paris", "london"],
+    ["brussels", "amsterdam"],
+    ["madrid", "barcelona"],
+    ["rome", "milan"],
+    ["berlin", "prague"],
+    ["vienna", "budapest"],
+  ] as const;
+  for (const [fromCityId, toCityId] of railAndCoachCorridors) {
+    assert.deepEqual(getEstimatedFallbackModes(fromCityId, toCityId), [
+      "flight",
+      "train",
+      "bus",
+    ]);
+    assert.deepEqual(getEstimatedFallbackModes(toCityId, fromCityId), [
+      "flight",
+      "train",
+      "bus",
+    ]);
+  }
+
+  assert.deepEqual(getEstimatedFallbackModes("tallinn", "riga"), [
+    "flight",
+    "bus",
+  ]);
+  assert.deepEqual(getEstimatedFallbackModes("london", "dublin"), [
+    "flight",
+  ]);
+  assert.deepEqual(getEstimatedFallbackModes("seoul", "paris"), [
+    "flight",
+  ]);
+  assert.throws(
+    () => createEstimatedFallbackLeg("london", "dublin", "train"),
+    /No curated train fallback corridor/,
+  );
+  assert.throws(
+    () => createEstimatedFallbackLeg("seoul", "paris", "bus"),
+    /No curated bus fallback corridor/,
+  );
+});
+
+test("corridor rail benchmarks beat flights and disclose border processing", () => {
+  const fasterRailPairs = [
+    ["seoul", "busan"],
+    ["tokyo", "osaka"],
+    ["paris", "lyon"],
+    ["madrid", "barcelona"],
+    ["rome", "milan"],
+  ] as const;
+  for (const [fromCityId, toCityId] of fasterRailPairs) {
+    const train = createEstimatedFallbackLeg(fromCityId, toCityId, "train");
+    const flight = createEstimatedFallbackLeg(fromCityId, toCityId, "flight");
+    assert.ok(
+      (train.totalMinutes ?? Infinity) < (flight.totalMinutes ?? -Infinity),
+      `${fromCityId}-${toCityId} rail should beat its door-to-door flight fallback`,
+    );
+  }
+
+  const crossChannel = createEstimatedFallbackLeg("paris", "london", "train");
+  const componentKinds = crossChannel.segments.flatMap(
+    (segment) => segment.duration?.components.map((component) => component.kind) ?? [],
+  );
+  assert.ok(componentKinds.includes("waiting"));
+  assert.ok(componentKinds.includes("check_in_security"));
+  assert.ok(componentKinds.includes("border_control"));
+  assert.ok((crossChannel.totalMinutes ?? 0) >= 230);
+  assert.ok((crossChannel.totalMinutes ?? Infinity) <= 260);
+});
+
+test("Transitous parser selects the fastest valid public-transit itinerary", () => {
+  const parsed = parseTransitousPlan(
+    transitousPlanFixture(),
+    "paris",
+    "london",
+  );
+  assert.ok(parsed);
+  assert.equal(parsed.leg.fromCityId, "paris");
+  assert.equal(parsed.leg.toCityId, "london");
+  assert.deepEqual(parsed.leg.modes, ["walk", "metro", "train", "bus"]);
+  assert.equal(parsed.leg.provenance.kind, "scheduled");
+  assert.equal(parsed.leg.totalMinutes, 210);
+  assert.equal(parsed.schedule.providerItineraryId, "provider-itinerary-fast");
+  assert.equal(parsed.schedule.providerDurationSeconds, 12_600);
+  assert.equal(parsed.schedule.elapsedFromQuerySeconds, 12_600);
+  assert.equal(parsed.schedule.departureTime, "2098-04-05T08:00:00Z");
+  assert.equal(parsed.schedule.arrivalTime, "2098-04-05T11:30:00Z");
+
+  const withPreDepartureWait = parseTransitousPlan(
+    transitousPlanFixture(),
+    "paris",
+    "london",
+    "2098-04-05T07:50:00Z",
+  );
+  assert.equal(withPreDepartureWait?.leg.totalMinutes, 220);
+  assert.equal(withPreDepartureWait?.schedule.elapsedFromQuerySeconds, 13_200);
+});
+
+test("schedule endpoint queries every ordered pair and keeps failures directional", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{
+    url: string;
+    userAgent: string | null;
+    fromPlace: string | null;
+    toPlace: string | null;
+  }> = [];
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(String(input));
+    calls.push({
+      url: url.toString(),
+      userAgent: new Headers(init?.headers).get("User-Agent"),
+      fromPlace: url.searchParams.get("fromPlace"),
+      toPlace: url.searchParams.get("toPlace"),
+    });
+    if (
+      url.searchParams.get("fromPlace") === "51.5072,-0.1276" &&
+      url.searchParams.get("toPlace") === "48.8566,2.3522"
+    ) {
+      return Response.json({ itineraries: [] });
+    }
+    return Response.json(transitousPlanFixture());
+  }) as typeof fetch;
+
+  try {
+    assert.equal(SCHEDULE_MAX_CITIES, 4);
+    assert.equal(SCHEDULE_MAX_PAIRS, 12);
+    const response = await schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.10",
+        },
+        body: JSON.stringify({
+          cityIds: ["paris", "london", "brussels"],
+          departureDate: utcDateFromToday(30),
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      source: string;
+      calculatedAt: string;
+      legs: TravelLeg[];
+      schedules: unknown[];
+      partial: boolean;
+      missingPairs: Array<{
+        fromCityId: string;
+        toCityId: string;
+        reason: string;
+      }>;
+      requestSummary: {
+        requestedPairCount: number;
+        providerRequestCount: number;
+      };
+      requestPolicy: {
+        batchDeadlineMs: number;
+        rateLimit: string;
+        departureDateHorizon: {
+          basis: string;
+          pastDays: number;
+          futureDays: number;
+        };
+      };
+    };
+    assert.equal(body.source, "transitous");
+    assert.doesNotThrow(() => new Date(body.calculatedAt).toISOString());
+    assert.equal(body.partial, true);
+    assert.equal(body.legs.length, 5);
+    assert.equal(body.schedules.length, 5);
+    assert.deepEqual(
+      body.missingPairs.map(({ fromCityId, toCityId, reason }) => ({
+        fromCityId,
+        toCityId,
+        reason,
+      })),
+      [
+        {
+          fromCityId: "london",
+          toCityId: "paris",
+          reason: "no_itinerary",
+        },
+      ],
+    );
+    assert.equal(body.requestSummary.requestedPairCount, 6);
+    assert.equal(body.requestSummary.providerRequestCount, 6);
+    assert.equal(body.requestPolicy.batchDeadlineMs, SCHEDULE_BATCH_DEADLINE_MS);
+    assert.match(body.requestPolicy.rateLimit, /instance-local/i);
+    assert.deepEqual(body.requestPolicy.departureDateHorizon, {
+      basis: "UTC calendar date, inclusive",
+      pastDays: SCHEDULE_PAST_DATE_HORIZON_DAYS,
+      futureDays: SCHEDULE_FUTURE_DATE_HORIZON_DAYS,
+    });
+    assert.equal(calls.length, 6);
+    assert.equal(response.headers.get("X-RateLimit-Limit"), "4");
+    assert.equal(response.headers.get("X-RateLimit-Remaining"), "3");
+    assert.ok(
+      calls.every(
+        (call) =>
+          call.userAgent ===
+          "Together/0.2 (https://together-travel-0920.ocvi-85.chatgpt.site)",
+      ),
+    );
+    assert.deepEqual(
+      calls.map((call) => `${call.fromPlace}->${call.toPlace}`).sort(),
+      [
+        "48.8566,2.3522->50.8503,4.3517",
+        "48.8566,2.3522->51.5072,-0.1276",
+        "50.8503,4.3517->48.8566,2.3522",
+        "50.8503,4.3517->51.5072,-0.1276",
+        "51.5072,-0.1276->48.8566,2.3522",
+        "51.5072,-0.1276->50.8503,4.3517",
+      ],
+    );
+    assert.ok(
+      calls.every((call) =>
+        call.url.includes("transitModes=RAIL%2CBUS%2CCOACH"),
+      ),
+    );
+    for (const call of calls) {
+      const query = new URL(call.url).searchParams;
+      assert.equal(query.get("timetableView"), "false");
+      assert.equal(query.get("arriveBy"), "false");
+      assert.equal(query.get("maxTransfers"), "8");
+      assert.equal(query.get("minTransferTime"), "5");
+      assert.equal(query.get("additionalTransferTime"), "5");
+      assert.equal(query.get("useRoutedTransfers"), "true");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("schedule endpoint rejects more than four cities before provider access", async () => {
+  const response = await schedulePost(
+    new Request("https://together.example/api/routes/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cityIds: ["paris", "london", "brussels", "lyon", "milan"],
+        departureDate: utcDateFromToday(31),
+      }),
+    }),
+  );
+  assert.equal(response.status, 400);
+  const body = (await response.json()) as { error?: { code?: string } };
+  assert.equal(body.error?.code, "invalid_schedule_request");
+});
+
+test("schedule endpoint routes validated Open-Meteo cities by request coordinates", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    calls.push(String(input));
+    return Response.json(transitousPlanFixture());
+  }) as typeof fetch;
+
+  try {
+    const response = await schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.120",
+        },
+        body: JSON.stringify({
+          cities: [
+            {
+              id: "open-meteo:2988507",
+              latitude: 48.8566,
+              longitude: 2.3522,
+              timeZone: "Europe/Paris",
+            },
+            {
+              id: "open-meteo:2643743",
+              latitude: 51.5072,
+              longitude: -0.1276,
+              timeZone: "Europe/London",
+            },
+          ],
+          departureDate: utcDateFromToday(70),
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      legs: TravelLeg[];
+      requestSummary: { dynamicCityCount: number };
+    };
+    assert.equal(body.requestSummary.dynamicCityCount, 2);
+    assert.deepEqual(
+      body.legs.map(({ fromCityId, toCityId }) => `${fromCityId}->${toCityId}`).sort(),
+      [
+        "open-meteo:2643743->open-meteo:2988507",
+        "open-meteo:2988507->open-meteo:2643743",
+      ],
+    );
+    assert.deepEqual(
+      calls
+        .map((call) => {
+          const query = new URL(call).searchParams;
+          return `${query.get("fromPlace")}->${query.get("toPlace")}`;
+        })
+        .sort(),
+      ["48.8566,2.3522->51.5072,-0.1276", "51.5072,-0.1276->48.8566,2.3522"],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("dynamic schedule city validation rejects forged ids and location metadata", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("Invalid city requests must not reach the provider");
+  }) as typeof fetch;
+  const validDynamicCity = {
+    id: "open-meteo:1234",
+    latitude: 45,
+    longitude: 5,
+    timeZone: "Europe/Paris",
+  };
+  const invalidCityLists = [
+    [validDynamicCity, { ...validDynamicCity, id: "open-meteo:0" }],
+    [validDynamicCity, { ...validDynamicCity, id: "open-meteo:01" }],
+    [validDynamicCity, { ...validDynamicCity, id: "open-meteo:9007199254740992" }],
+    [validDynamicCity, { ...validDynamicCity, id: "custom:55" }],
+    [validDynamicCity, { ...validDynamicCity, id: "open-meteo:2", latitude: 91 }],
+    [validDynamicCity, { ...validDynamicCity, id: "open-meteo:2", longitude: -181 }],
+    [validDynamicCity, { ...validDynamicCity, id: "open-meteo:2", timeZone: "Mars/Base" }],
+    [validDynamicCity, { ...validDynamicCity }],
+    [
+      {
+        id: "paris",
+        latitude: 0,
+        longitude: 0,
+        timeZone: "Europe/Paris",
+      },
+      validDynamicCity,
+    ],
+  ];
+
+  try {
+    for (const cities of invalidCityLists) {
+      const response = await schedulePost(
+        new Request("https://together.example/api/routes/schedule", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cities,
+            departureDate: utcDateFromToday(71),
+          }),
+        }),
+      );
+      assert.equal(response.status, 400);
+      const body = (await response.json()) as { error?: { code?: string } };
+      assert.equal(body.error?.code, "invalid_schedule_request");
+    }
+
+    const mismatch = await schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cityIds: ["open-meteo:2", "open-meteo:1234"],
+          cities: [validDynamicCity, { ...validDynamicCity, id: "open-meteo:2" }],
+          departureDate: utcDateFromToday(71),
+        }),
+      }),
+    );
+    assert.equal(mismatch.status, 400);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("dynamic schedule cache keys include coordinates and time zones", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = (async (input) => {
+    calls.push(String(input));
+    return Response.json({ itineraries: [] });
+  }) as typeof fetch;
+  const postCities = (cities: unknown[], clientIp: string) =>
+    schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": clientIp,
+        },
+        body: JSON.stringify({
+          cities,
+          departureDate: utcDateFromToday(72),
+        }),
+      }),
+    );
+
+  try {
+    const first = await postCities(
+      [
+        { id: "open-meteo:9101", latitude: 40, longitude: 2, timeZone: "Europe/Paris" },
+        { id: "open-meteo:9102", latitude: 41, longitude: 3, timeZone: "Europe/Paris" },
+      ],
+      "203.0.113.121",
+    );
+    const second = await postCities(
+      [
+        { id: "open-meteo:9101", latitude: 50, longitude: 12, timeZone: "Europe/Berlin" },
+        { id: "open-meteo:9102", latitude: 51, longitude: 13, timeZone: "Europe/Berlin" },
+      ],
+      "203.0.113.122",
+    );
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal(calls.length, 4);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("concurrent identical schedule requests share provider work", async () => {
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = (async () => {
+    providerCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    return Response.json(transitousPlanFixture());
+  }) as typeof fetch;
+  const body = JSON.stringify({
+    cities: [
+      { id: "open-meteo:9201", latitude: 43, longitude: 4, timeZone: "Europe/Paris" },
+      { id: "open-meteo:9202", latitude: 44, longitude: 5, timeZone: "Europe/Paris" },
+    ],
+    departureDate: utcDateFromToday(74),
+  });
+
+  try {
+    const [first, second] = await Promise.all([
+      schedulePost(new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.130" },
+        body,
+      })),
+      schedulePost(new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": "203.0.113.131" },
+        body,
+      })),
+    ]);
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal(providerCalls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("schedule endpoint enforces its byte payload limit before validation", async () => {
+  const response = await schedulePost(
+    new Request("https://together.example/api/routes/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(SCHEDULE_MAX_REQUEST_BYTES) }),
+    }),
+  );
+  assert.equal(response.status, 413);
+  const body = (await response.json()) as { error?: { code?: string } };
+  assert.equal(body.error?.code, "schedule_request_too_large");
+});
+
+test("schedule departure dates use an inclusive UTC -1/+365 day horizon", () => {
+  const fixedNow = Date.UTC(2026, 7, 9, 23, 59, 59);
+  assert.equal(validateDepartureDate("2026-08-08", fixedNow), "2026-08-08");
+  assert.equal(validateDepartureDate("2026-08-09", fixedNow), "2026-08-09");
+  assert.equal(validateDepartureDate("2027-08-09", fixedNow), "2027-08-09");
+  assert.equal(validateDepartureDate("2026-08-07", fixedNow), null);
+  assert.equal(validateDepartureDate("2027-08-10", fixedNow), null);
+  assert.equal(validateDepartureDate("2026-02-30", fixedNow), null);
+});
+
+test("schedule batch deadline is at most fifteen seconds", () => {
+  assert.ok(SCHEDULE_BATCH_DEADLINE_MS > 0);
+  assert.ok(SCHEDULE_BATCH_DEADLINE_MS <= 15_000);
+});
+
+test("request cancellation aborts active pairs and clears queued provider work", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const providerSignals: AbortSignal[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    assert.ok(init?.signal);
+    providerSignals.push(init.signal);
+    return await new Promise<Response>(() => undefined);
+  }) as typeof fetch;
+
+  try {
+    const startedAt = Date.now();
+    const pending = schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.88",
+        },
+        body: JSON.stringify({
+          cityIds: ["paris", "london", "brussels"],
+          departureDate: utcDateFromToday(60),
+        }),
+        signal: controller.signal,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+    const response = await pending;
+    const body = (await response.json()) as {
+      missingPairs: Array<{ reason: string }>;
+    };
+    assert.equal(response.status, 200);
+    assert.equal(providerSignals.length, 2);
+    assert.ok(providerSignals.every((signal) => signal.aborted));
+    assert.equal(body.missingPairs.length, 6);
+    assert.ok(
+      body.missingPairs.every(({ reason }) => reason === "provider_timeout"),
+    );
+    assert.ok(Date.now() - startedAt < 1_000);
+
+    let followUpCalls = 0;
+    globalThis.fetch = (async () => {
+      followUpCalls += 1;
+      return Response.json(transitousPlanFixture());
+    }) as typeof fetch;
+    const followUp = await schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.89",
+        },
+        body: JSON.stringify({
+          cityIds: ["paris", "london", "brussels"],
+          departureDate: utcDateFromToday(60),
+        }),
+      }),
+    );
+    assert.equal(followUp.status, 200);
+    assert.equal(followUpCalls, 6);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("client IP parsing uses only the first safe proxy address", () => {
+  assert.equal(
+    parseClientIp(
+      new Request("https://together.example", {
+        headers: {
+          "CF-Connecting-IP": "203.0.113.8, 10.0.0.1",
+          "X-Forwarded-For": "198.51.100.5",
+        },
+      }),
+    ),
+    "203.0.113.8",
+  );
+  assert.equal(
+    parseClientIp(
+      new Request("https://together.example", {
+        headers: {
+          "CF-Connecting-IP": "not-an-ip",
+          "X-Forwarded-For": "2001:DB8::1, 198.51.100.5",
+        },
+      }),
+    ),
+    "2001:db8::1",
+  );
+  assert.equal(
+    parseClientIp(
+      new Request("https://together.example", {
+        headers: { "X-Forwarded-For": "invalid, 198.51.100.5" },
+      }),
+    ),
+    "unknown",
+  );
+});
+
+test("schedule endpoint rate-limits calculations per client IP", async () => {
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = (async () => {
+    providerCalls += 1;
+    return Response.json(transitousPlanFixture());
+  }) as typeof fetch;
+
+  const makeRequest = () =>
+    schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Forwarded-For": "198.51.100.77, 10.0.0.1",
+        },
+        body: JSON.stringify({
+          cityIds: ["seoul", "busan"],
+          departureDate: utcDateFromToday(30),
+        }),
+      }),
+    );
+
+  try {
+    assert.equal(SCHEDULE_RATE_LIMIT_REQUESTS, 4);
+    for (let index = 0; index < SCHEDULE_RATE_LIMIT_REQUESTS; index += 1) {
+      const response = await makeRequest();
+      assert.equal(response.status, 200);
+      assert.equal(
+        response.headers.get("X-RateLimit-Remaining"),
+        String(SCHEDULE_RATE_LIMIT_REQUESTS - index - 1),
+      );
+    }
+
+    const limited = await makeRequest();
+    assert.equal(limited.status, 429);
+    assert.match(limited.headers.get("Retry-After") ?? "", /^\d+$/);
+    const retryAfter = Number(limited.headers.get("Retry-After"));
+    assert.ok(retryAfter >= 1 && retryAfter <= 60);
+    const body = (await limited.json()) as { error?: { code?: string } };
+    assert.equal(body.error?.code, "rate_limit_exceeded");
+    assert.equal(providerCalls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("equal splitting is integer-only, deterministic, and sum preserving", () => {

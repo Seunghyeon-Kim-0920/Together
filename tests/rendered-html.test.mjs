@@ -75,9 +75,9 @@ after(async () => {
   }
 });
 
-async function render(pathname = "/") {
+async function render(pathname = "/", headers = {}) {
   return fetch(`${baseUrl}${pathname}`, {
-    headers: { accept: "text/html" },
+    headers: { accept: "text/html", ...headers },
     signal: AbortSignal.timeout(10_000),
   });
 }
@@ -89,12 +89,13 @@ test("server-renders the Together travel product", async () => {
   const html = await response.text();
   assert.match(
     html,
-    /<title>Together \u2014 multi-city travel, in the fastest order<\/title>/i,
+    /<title>Together \| 여러 도시를 가장 빠른 순서로<\/title>/i,
   );
   assert.match(html, /Together/);
   assert.match(html, /여러 도시를, 가장 빠른 순서로\./);
   assert.match(html, /가장 빠른 동선 찾기/);
-  assert.match(html, /계획 모델 추정치/);
+  assert.match(html, /공개 운행표로 검증합니다/);
+  assert.match(html, /eiffel-paris-hero/);
   assert.match(html, /가계부/);
   assert.doesNotMatch(
     html,
@@ -109,12 +110,35 @@ test("ships installable metadata and a private-save boundary", async () => {
   const manifestHref = html.match(/<link rel="manifest" href="([^"]+)"/i)?.[1];
   assert.ok(manifestHref, "rendered HTML must include a web manifest link");
   assert.equal(new URL(manifestHref, baseUrl).pathname, "/manifest.webmanifest");
-  assert.match(html, /실제 공급자 키가 연결되기 전에는/);
+  assert.match(html, /공개 운행표를 사용할 수 없는 구간은/);
   const privateTrips = await fetch(`${baseUrl}/api/trips`, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(10_000),
   });
   assert.equal(privateTrips.status, 401);
+});
+
+test("server rendering and manifest honor every selected language without a fallback-language flash", async () => {
+  const cases = [
+    ["ko", "ko-KR", "여러 도시를, 가장 빠른 순서로."],
+    ["en", "en-US", "Many cities. The fastest order."],
+    ["fr", "fr-FR", "Plusieurs villes, dans l’ordre le plus rapide."],
+    ["ja", "ja-JP", "複数の都市を、最も速い順番で。"],
+    ["zh", "zh-CN", "多个城市，按最快顺序出发。"],
+  ];
+  for (const [locale, languageTag, routeTitle] of cases) {
+    const cookie = `together-locale=${locale}`;
+    const response = await render("/", { cookie });
+    const html = await response.text();
+    assert.match(html, new RegExp(`<html[^>]+lang="${languageTag}"`));
+    assert.ok(html.includes(routeTitle), `${locale} route title`);
+    const manifestResponse = await fetch(`${baseUrl}/manifest.webmanifest`, { headers: { cookie } });
+    assert.equal(manifestResponse.status, 200);
+    assert.match(manifestResponse.headers.get("content-type") ?? "", /application\/manifest\+json/);
+    const manifest = await manifestResponse.json();
+    assert.equal(manifest.lang, locale);
+    assert.equal(manifest.short_name, "Together");
+  }
 });
 
 test("serves Android Digital Asset Links at the required origin path", async () => {

@@ -34,10 +34,10 @@ export function Header({ locale, onLocaleChange, activeView, onViewChange, user,
 
   return (
     <header className="site-header">
-      <button className="brand" type="button" onClick={() => selectView("route")} aria-label="Together home">
+      <button className="brand" type="button" onClick={() => selectView("route")} aria-label={translate(locale, "brandHome")}>
         Together
       </button>
-      <nav className="desktop-nav" aria-label="Primary navigation">
+      <nav className="desktop-nav" aria-label={translate(locale, "primaryNavigation")}>
         {navigation.map(({ id, label, icon: Icon }) => (
           <button key={id} type="button" className={activeView === id ? "nav-link active" : "nav-link"} onClick={() => selectView(id)}>
             <Icon size={17} strokeWidth={1.8} aria-hidden="true" />
@@ -49,7 +49,7 @@ export function Header({ locale, onLocaleChange, activeView, onViewChange, user,
         <label className="language-select">
           <span className="sr-only">{translate(locale, "language")}</span>
           <select value={locale} onChange={(event) => onLocaleChange(event.target.value as SupportedLocale)}>
-            {SUPPORTED_LOCALES.map((item) => <option value={item} key={item}>{LOCALE_NAMES[item]}</option>)}
+            {SUPPORTED_LOCALES.map((item) => <option value={item} key={item}>{LOCALE_NAMES[locale][item]}</option>)}
           </select>
           <ChevronDown size={15} aria-hidden="true" />
         </label>
@@ -66,7 +66,7 @@ export function Header({ locale, onLocaleChange, activeView, onViewChange, user,
         </button>
       </div>
       {mobileOpen ? (
-        <nav className="mobile-menu" aria-label="Mobile navigation">
+        <nav className="mobile-menu" aria-label={translate(locale, "mobileNavigation")}>
           {navigation.map(({ id, label, icon: Icon }) => (
             <button key={id} type="button" className={activeView === id ? "mobile-menu-link active" : "mobile-menu-link"} onClick={() => selectView(id)}>
               <Icon size={20} aria-hidden="true" />

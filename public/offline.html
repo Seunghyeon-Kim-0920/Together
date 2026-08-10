@@ -1,28 +1,44 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko-KR">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#071b3a" />
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
-    />
-    <title>Offline · Together</title>
+    <meta name="theme-color" content="#fffdf8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <title>Together</title>
     <style>
-      :root { color-scheme: light; font-family: system-ui, sans-serif; background: #f7f4ee; color: #071b3a; }
-      body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; box-sizing: border-box; }
-      main { width: min(100%, 420px); text-align: center; background: #fff; border: 1px solid #dedbd4; border-radius: 24px; padding: 36px 28px; box-shadow: 0 18px 50px rgb(7 27 58 / 10%); }
+      :root { color-scheme: light; font-family: system-ui, sans-serif; background: #fffdf8; color: #13233d; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; box-sizing: border-box; background: linear-gradient(155deg, #eefaff, #fffdf8 55%, #fff2ea); }
+      main { width: min(100%, 420px); text-align: center; background: rgba(255,255,255,.94); border: 1px solid #dfe9ec; border-radius: 28px; padding: 36px 28px; box-shadow: 0 22px 60px rgb(24 58 80 / 12%); }
       img { width: 72px; height: 72px; border-radius: 18px; }
-      h1 { margin: 22px 0 10px; font-size: 1.65rem; }
-      p { margin: 0; color: #526079; line-height: 1.65; }
+      h1 { margin: 22px 0 8px; font-family: Georgia, serif; font-size: 2rem; }
+      h2 { margin: 0 0 10px; font-size: 1.2rem; }
+      p { margin: 0; color: #56657a; line-height: 1.65; }
     </style>
   </head>
   <body>
     <main>
-      <img src="/icons/icon-192.png" alt="" width="72" height="72" />
-      <h1>연결이 필요합니다</h1>
-      <p>인터넷 연결을 확인한 뒤 Together를 다시 열어 주세요.<br />Reconnect to continue planning your trip.</p>
+      <img src="/icon-192.png" alt="" width="72" height="72" />
+      <h1>Together</h1>
+      <h2 id="offline-title"></h2>
+      <p id="offline-description"></p>
     </main>
+    <script>
+      (() => {
+        const copy = {
+          ko: ["인터넷 연결이 필요합니다", "연결 상태를 확인한 뒤 Together를 다시 열어 주세요."],
+          en: ["An internet connection is required", "Check your connection, then open Together again."],
+          fr: ["Une connexion Internet est nécessaire", "Vérifiez votre connexion, puis ouvrez de nouveau Together."],
+          ja: ["インターネット接続が必要です", "接続を確認してから、Togetherをもう一度開いてください。"],
+          zh: ["需要连接互联网", "请检查网络连接，然后重新打开 Together。"],
+        };
+        const stored = localStorage.getItem("together-locale");
+        const browser = navigator.language.toLowerCase().split("-")[0];
+        const locale = copy[stored] ? stored : copy[browser] ? browser : "ko";
+        document.documentElement.lang = locale === "zh" ? "zh-CN" : locale;
+        document.getElementById("offline-title").textContent = copy[locale][0];
+        document.getElementById("offline-description").textContent = copy[locale][1];
+      })();
+    </script>
   </body>
 </html>

@@ -22,6 +22,30 @@ export interface EqualSplitExpenseInput {
   readonly occurredAt: string;
 }
 
+export interface ExpenseLedger {
+  readonly version: 1;
+  readonly expenses: readonly Expense[];
+}
+
+const MAX_LEDGER_EXPENSES = 1_000;
+const MAX_LEDGER_PARTICIPANTS = 100;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireBoundedText(
+  value: string,
+  fieldName: string,
+  maximum: number,
+): string {
+  const normalized = requireNonEmpty(value, fieldName);
+  if (normalized.length > maximum) {
+    throw new DomainValidationError(`${fieldName} is too long`);
+  }
+  return normalized;
+}
+
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -93,10 +117,25 @@ export function splitEvenly(
   );
 }
 export function assertExpenseInvariant(expense: Expense): void {
+  requireBoundedText(expense.id, "Expense id", 100);
+  requireBoundedText(expense.tripId, "Trip id", 100);
+  requireBoundedText(expense.paidBy, "Payer id", 100);
+  requireBoundedText(expense.description, "Expense description", 500);
+  if (!(EXPENSE_CATEGORIES as readonly string[]).includes(expense.category)) {
+    throw new DomainValidationError(`Unsupported category: ${expense.category}`);
+  }
+  if (typeof expense.occurredAt !== "string" || expense.occurredAt.length > 80 || Number.isNaN(Date.parse(expense.occurredAt))) {
+    throw new DomainValidationError("Occurrence timestamp must be ISO-compatible");
+  }
   if (!Number.isSafeInteger(expense.amount.minorUnits) || expense.amount.minorUnits <= 0) {
     throw new DomainValidationError("Expense amount must be a positive integer");
   }
-  normalizeCurrency(expense.amount.currency);
+  if (normalizeCurrency(expense.amount.currency) !== expense.amount.currency) {
+    throw new DomainValidationError("Expense currency must be canonical");
+  }
+  if (expense.shares.length > MAX_LEDGER_PARTICIPANTS) {
+    throw new DomainValidationError("Expense has too many participants");
+  }
   normalizeParticipantIds(expense.shares.map((share) => share.participantId));
   for (const share of expense.shares) {
     assertMinorUnits(share.minorUnits, false);
@@ -109,6 +148,46 @@ export function assertExpenseInvariant(expense: Expense): void {
     throw new DomainValidationError(
       `Expense shares ${shareTotal} do not equal amount ${expense.amount.minorUnits}`,
     );
+  }
+}
+
+export function parseExpenseLedger(value: unknown): ExpenseLedger | null {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.expenses) || value.expenses.length > MAX_LEDGER_EXPENSES) {
+    return null;
+  }
+  const expenses: Expense[] = [];
+  try {
+    for (const candidate of value.expenses) {
+      if (!isRecord(candidate) || !isRecord(candidate.amount) || !Array.isArray(candidate.shares)) return null;
+      if (typeof candidate.id !== "string" || typeof candidate.tripId !== "string" || typeof candidate.paidBy !== "string" || typeof candidate.description !== "string" || typeof candidate.occurredAt !== "string") return null;
+      if (typeof candidate.category !== "string" || !(EXPENSE_CATEGORIES as readonly string[]).includes(candidate.category)) return null;
+      if (typeof candidate.amount.currency !== "string" || !Number.isSafeInteger(candidate.amount.minorUnits)) return null;
+      if (candidate.shares.length < 1 || candidate.shares.length > MAX_LEDGER_PARTICIPANTS) return null;
+      const shares: ExpenseShare[] = [];
+      for (const share of candidate.shares) {
+        if (!isRecord(share) || typeof share.participantId !== "string" || !Number.isSafeInteger(share.minorUnits)) return null;
+        shares.push(Object.freeze({
+          participantId: requireBoundedText(share.participantId, "Participant id", 100),
+          minorUnits: share.minorUnits as number,
+        }));
+      }
+      const expense: Expense = Object.freeze({
+        id: requireBoundedText(candidate.id, "Expense id", 100),
+        tripId: requireBoundedText(candidate.tripId, "Trip id", 100),
+        paidBy: requireBoundedText(candidate.paidBy, "Payer id", 100),
+        category: candidate.category as ExpenseCategory,
+        description: requireBoundedText(candidate.description, "Expense description", 500),
+        amount: createMoney(candidate.amount.currency, candidate.amount.minorUnits as number),
+        shares: Object.freeze(shares),
+        occurredAt: candidate.occurredAt,
+      });
+      assertExpenseInvariant(expense);
+      expenses.push(expense);
+    }
+    if (new Set(expenses.map((expense) => expense.id)).size !== expenses.length) return null;
+    return Object.freeze({ version: 1, expenses: Object.freeze(expenses) });
+  } catch {
+    return null;
   }
 }
 
