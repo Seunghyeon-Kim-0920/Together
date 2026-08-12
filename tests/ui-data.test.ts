@@ -10,6 +10,22 @@ import type { City } from "../lib/domain";
 import { buildEstimatedFallbackOptions, buildEstimatedFallbackOptionsForCities, optimizeItinerary } from "../lib/routing";
 import { constrainRouteView, fitRouteView, projectRouteCities } from "../app/components/RouteMap";
 
+const plannerSource = readFileSync(new URL("../app/components/RoutePlanner.tsx", import.meta.url), "utf8");
+
+test("route endpoint selections are repaired atomically when a city is replaced or removed", () => {
+  assert.match(plannerSource, /if \(startCityId === previousCityId\) setStartCityId\(cityId\)/);
+  assert.match(plannerSource, /if \(endCityId === previousCityId\) setEndCityId\(cityId\)/);
+  assert.match(plannerSource, /const removeCity = \(index: number\)/);
+  assert.match(plannerSource, /setStartCityId\(nextStartCityId\)/);
+  assert.match(plannerSource, /setEndCityId\(nextEndCityId\)/);
+});
+
+test("city-search results are hidden synchronously when the selected language changes", () => {
+  assert.match(plannerSource, /citySearchResultLocale === locale \? citySearchResults : \[\]/);
+  assert.match(plannerSource, /setCitySearchResultLocale\(locale\)/);
+  assert.match(plannerSource, /visibleCitySearchResults\.map/);
+});
+
 test("new device storage is empty and rejects malformed collections", () => {
   assert.deepEqual(parseDeviceTrips(null), []);
   assert.deepEqual(parseDeviceExpenseLedger(null).participants, []);

@@ -211,6 +211,7 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
   const [extraCities, setExtraCities] = useState<readonly City[]>(initialExtraCities);
   const [cityQuery, setCityQuery] = useState("");
   const [citySearchResults, setCitySearchResults] = useState<readonly CitySearchResult[]>([]);
+  const [citySearchResultLocale, setCitySearchResultLocale] = useState<SupportedLocale | null>(null);
   const [citySearchLoading, setCitySearchLoading] = useState(false);
   const [citySearchError, setCitySearchError] = useState(false);
   const [addingCityId, setAddingCityId] = useState<string | null>(null);
@@ -242,6 +243,7 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
   const scheduleKey = `${departureDate}:${effectiveStartCityId}:${effectiveEndCityId}:${cityIds.join(",")}`;
   const routeStateKey = `${departureDate}:${effectiveStartCityId}:${effectiveEndCityId}:${cityIds.join(",")}`;
   const activeSchedule = scheduleResult?.key === scheduleKey ? scheduleResult : null;
+  const visibleCitySearchResults = citySearchResultLocale === locale ? citySearchResults : [];
   const departureBounds = useMemo(() => {
     const base = new Date(initialTimestamp);
     const asDate = (offsetDays: number) => new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + offsetDays)).toISOString().slice(0, 10);
@@ -277,9 +279,11 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
         if (!response.ok) throw new Error("city search unavailable");
         const data = await response.json() as { results?: CitySearchResult[] };
         setCitySearchResults(Array.isArray(data.results) ? data.results : []);
+        setCitySearchResultLocale(locale);
       } catch (searchError) {
         if (searchError instanceof DOMException && searchError.name === "AbortError") return;
         setCitySearchResults([]);
+        setCitySearchResultLocale(locale);
         setCitySearchError(true);
       } finally {
         if (!controller.signal.aborted) setCitySearchLoading(false);
@@ -301,7 +305,27 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
       setError(translate(locale, "duplicateCity"));
       return;
     }
+    const previousCityId = cityIds[index];
+    if (startCityId === previousCityId) setStartCityId(cityId);
+    if (endCityId === previousCityId) setEndCityId(cityId);
     setCityIds((items) => items.map((item, itemIndex) => itemIndex === index ? cityId : item));
+  };
+
+  const removeCity = (index: number) => {
+    if (cityIds.length <= 2) return;
+    const removedCityId = cityIds[index];
+    const remainingCityIds = cityIds.filter((_, itemIndex) => itemIndex !== index);
+    const nextStartCityId = removedCityId === startCityId || !remainingCityIds.includes(startCityId)
+      ? remainingCityIds[0] ?? ""
+      : startCityId;
+    const nextEndCityId = removedCityId === endCityId
+      || !remainingCityIds.includes(endCityId)
+      || endCityId === nextStartCityId
+      ? [...remainingCityIds].reverse().find((cityId) => cityId !== nextStartCityId) ?? ""
+      : endCityId;
+    setStartCityId(nextStartCityId);
+    setEndCityId(nextEndCityId);
+    setCityIds(remainingCityIds);
   };
 
   const moveCity = (index: number, direction: -1 | 1) => {
@@ -351,6 +375,7 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
     setCityIds((items) => items.includes(city.id) ? items : [...items, city.id]);
     setCityQuery("");
     setCitySearchResults([]);
+    setCitySearchResultLocale(null);
     addingCityIds.current.delete(result.id);
     setAddingCityId(null);
     setError("");
@@ -524,7 +549,7 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
                   <button type="button" onClick={() => moveCity(index, -1)} disabled={index === 0} aria-label={translate(locale, "moveUp")}><ArrowUp size={15} /></button>
                   <button type="button" onClick={() => moveCity(index, 1)} disabled={index === cityIds.length - 1} aria-label={translate(locale, "moveDown")}><ArrowDown size={15} /></button>
                 </span>
-                <button className="remove-city" type="button" onClick={() => setCityIds((items) => items.filter((_, itemIndex) => itemIndex !== index))} disabled={cityIds.length <= 2} aria-label={translate(locale, "remove")}><X size={17} /></button>
+                <button className="remove-city" type="button" onClick={() => removeCity(index)} disabled={cityIds.length <= 2} aria-label={translate(locale, "remove")}><X size={17} /></button>
               </div>
             ))}
           </div>
@@ -538,15 +563,16 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
                 setCityQuery(nextQuery);
                 if (nextQuery.trim().length < 2) {
                   setCitySearchResults([]);
+                  setCitySearchResultLocale(null);
                   setCitySearchLoading(false);
                   setCitySearchError(false);
                 }
               }} placeholder={translate(locale, "citySearchPlaceholder")} autoComplete="off" />
               {citySearchLoading ? <RotateCcw className="spin" size={16} aria-label={translate(locale, "loading")} /> : null}
             </label>
-            {citySearchResults.length > 0 ? (
+            {visibleCitySearchResults.length > 0 ? (
               <ul className="city-search-results">
-                {citySearchResults.map((result) => (
+                {visibleCitySearchResults.map((result) => (
                   <li key={result.id}>
                     <button type="button" onClick={() => addSearchResult(result)} disabled={addingCityId !== null} aria-busy={addingCityId === result.id}>
                       <strong>{result.name}</strong>

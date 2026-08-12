@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   CITY_SEARCH_MAX_RESULTS,
   GET,
+  japaneseCityFallbackQueries,
   parseCitySearchClientIp,
   parseCitySearchQuery,
   parseOpenMeteoCityResponse,
@@ -68,6 +69,94 @@ test("provider-id city hydration parses direct responses and blocks foreign-scri
   assert.equal(safeLocalizedCityName("佛罗伦萨", "zh", florence), "佛罗伦萨");
   assert.equal(safeLocalizedCityName("피렌체", "fr", florence), "IT 43.779, 11.246");
   assert.equal(safeLocalizedCityName("Firenze", "ko", florence), "IT 43.779, 11.246");
+});
+
+test("Japanese city spelling fallback is restricted to exactly two Han characters", () => {
+  assert.deepEqual(japaneseCityFallbackQueries("東京", "ja"), ["東京市", "東京都"]);
+  assert.deepEqual(japaneseCityFallbackQueries("京都", "ja"), ["京都市", "京都都"]);
+  assert.deepEqual(japaneseCityFallbackQueries("東京", "zh"), []);
+  assert.deepEqual(japaneseCityFallbackQueries("とうきょう", "ja"), []);
+  assert.deepEqual(japaneseCityFallbackQueries("横浜市", "ja"), []);
+});
+
+function providerCity(id: number, name: string) {
+  return {
+    id,
+    name,
+    latitude: 35.68,
+    longitude: 139.76,
+    feature_code: "PPLA",
+    country_code: "JP",
+    timezone: "Asia/Tokyo",
+    country: "日本",
+  };
+}
+
+test("Japanese Tokyo and Kyoto searches use bounded suffix fallbacks", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    const query = url.searchParams.get("name") ?? "";
+    calls.push(query);
+    if (query === "東京都") return Response.json({ results: [providerCity(1850147, "東京都")] });
+    if (query === "京都市") return Response.json({ results: [providerCity(1857910, "京都市")] });
+    return Response.json({});
+  };
+  try {
+    const tokyoResponse = await GET(new Request("https://example.test/api/cities/search?q=%E6%9D%B1%E4%BA%AC&locale=ja", {
+      headers: { "cf-connecting-ip": "203.0.113.31" },
+    }));
+    const tokyo = await tokyoResponse.json() as { results: Array<{ providerId: number }>; meta: { requestCost: number; fallbackQueriesTried: string[] } };
+    assert.equal(tokyo.results[0].providerId, 1850147);
+    assert.equal(tokyo.meta.requestCost, 3);
+    assert.deepEqual(tokyo.meta.fallbackQueriesTried, ["東京市", "東京都"]);
+    assert.deepEqual(calls, ["東京", "東京市", "東京都"]);
+
+    calls.length = 0;
+    const kyotoResponse = await GET(new Request("https://example.test/api/cities/search?q=%E4%BA%AC%E9%83%BD&locale=ja", {
+      headers: { "cf-connecting-ip": "203.0.113.32" },
+    }));
+    const kyoto = await kyotoResponse.json() as { results: Array<{ providerId: number }>; meta: { requestCost: number } };
+    assert.equal(kyoto.results[0].providerId, 1857910);
+    assert.equal(kyoto.meta.requestCost, 2);
+    assert.deepEqual(calls, ["京都", "京都市"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Japanese fallback performs no retry after a hit and never runs for other locales", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    const query = url.searchParams.get("name") ?? "";
+    calls.push(query);
+    return query === "横浜"
+      ? Response.json({ results: [providerCity(1848354, "横浜")] })
+      : Response.json({});
+  };
+  try {
+    const hitResponse = await GET(new Request("https://example.test/api/cities/search?q=%E6%A8%AA%E6%B5%9C&locale=ja", {
+      headers: { "cf-connecting-ip": "203.0.113.33" },
+    }));
+    const hit = await hitResponse.json() as { meta: { requestCost: number; fallbackQueriesTried: string[] } };
+    assert.equal(hit.meta.requestCost, 1);
+    assert.deepEqual(hit.meta.fallbackQueriesTried, []);
+    assert.deepEqual(calls, ["横浜"]);
+
+    calls.length = 0;
+    const otherLocaleResponse = await GET(new Request("https://example.test/api/cities/search?q=%E6%9D%B1%E4%BA%AC&locale=zh", {
+      headers: { "cf-connecting-ip": "203.0.113.34" },
+    }));
+    const otherLocale = await otherLocaleResponse.json() as { meta: { requestCost: number; fallbackQueriesTried: string[] } };
+    assert.equal(otherLocale.meta.requestCost, 1);
+    assert.deepEqual(otherLocale.meta.fallbackQueriesTried, []);
+    assert.deepEqual(calls, ["東京"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("translation hydration calls the stable provider id endpoint once per locale", async () => {

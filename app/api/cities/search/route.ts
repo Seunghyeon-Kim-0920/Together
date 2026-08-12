@@ -147,12 +147,21 @@ const LATIN_SCRIPT = /\p{Script=Latin}/u;
 const HANGUL_SCRIPT = /\p{Script=Hangul}/u;
 const JAPANESE_SCRIPT = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
 const HAN_SCRIPT = /\p{Script=Han}/u;
+const TWO_HAN_CHARACTERS = /^\p{Script=Han}{2}$/u;
 
 function usesLocaleScript(value: string, locale: CitySearchLocale): boolean {
   if (locale === "ko") return HANGUL_SCRIPT.test(value);
   if (locale === "ja") return JAPANESE_SCRIPT.test(value);
   if (locale === "zh") return HAN_SCRIPT.test(value);
   return LATIN_SCRIPT.test(value);
+}
+
+export function japaneseCityFallbackQueries(
+  query: string,
+  locale: CitySearchLocale,
+): readonly string[] {
+  if (locale !== "ja" || !TWO_HAN_CHARACTERS.test(query)) return [];
+  return [`${query}市`, `${query}都`];
 }
 
 export function neutralCityLabel(city: Pick<CitySearchResult, "countryCode" | "latitude" | "longitude">): string {
@@ -530,8 +539,9 @@ export async function GET(request: Request): Promise<Response> {
 
   // A five-language hydration may fan out to five provider lookups. Charge
   // that full cost so one client cannot multiply the no-key upstream quota.
-  const requestCost = validated.includeTranslations ? CITY_SEARCH_LOCALES.length : 1;
-  const rateLimit = consumeRateLimit(parseCitySearchClientIp(request), requestCost);
+  let requestCost = validated.includeTranslations ? CITY_SEARCH_LOCALES.length : 1;
+  const clientIp = parseCitySearchClientIp(request);
+  let rateLimit = consumeRateLimit(clientIp, requestCost);
   if (!rateLimit.allowed) {
     return errorResponse(
       429,
@@ -545,7 +555,31 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
-    const lookup = validated.includeTranslations ? null : await lookupCities(validated.query, validated.locale);
+    let lookup = validated.includeTranslations ? null : await lookupCities(validated.query, validated.locale);
+    const fallbackQueriesTried: string[] = [];
+    if (lookup && lookup.results.length === 0) {
+      for (const fallbackQuery of japaneseCityFallbackQueries(validated.query, validated.locale)) {
+        const retryRateLimit = consumeRateLimit(clientIp, 1);
+        if (!retryRateLimit.allowed) break;
+        rateLimit = retryRateLimit;
+        requestCost += 1;
+        fallbackQueriesTried.push(fallbackQuery);
+        try {
+          const fallbackLookup = await lookupCities(fallbackQuery, validated.locale);
+          const exactResults = fallbackLookup.results.filter(
+            (city) => city.name.normalize("NFKC") === fallbackQuery.normalize("NFKC"),
+          );
+          lookup = {
+            results: exactResults,
+            cacheHit: lookup.cacheHit && fallbackLookup.cacheHit,
+          };
+          if (exactResults.length > 0) break;
+        } catch {
+          // A bounded spelling fallback must not turn a valid empty search
+          // response into a provider error. The next suffix may still work.
+        }
+      }
+    }
     const localizedLookups = validated.includeTranslations
       ? await Promise.allSettled(CITY_SEARCH_LOCALES.map((locale) => lookupCity(validated.providerId!, locale)))
       : [];
@@ -571,6 +605,7 @@ export async function GET(request: Request): Promise<Response> {
           cacheHit: lookup?.cacheHit ?? false,
           translationsIncluded: validated.includeTranslations,
           requestCost,
+          fallbackQueriesTried,
           provider: "open-meteo-geocoding",
           dataset: "GeoNames",
           attribution: {
