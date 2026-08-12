@@ -51,8 +51,9 @@ interface SurfaceCorridor {
   readonly modes: readonly EstimatedSurfaceMode[];
 }
 
-// Surface fallbacks are deliberately curated. Great-circle distance alone cannot
-// establish that a rail line, road border crossing, tunnel, or coach service exists.
+// Known corridors supplement the conservative geographic fallback below. Every
+// fallback remains explicitly estimated; published provider legs replace it when
+// available.
 const SURFACE_CORRIDORS: readonly SurfaceCorridor[] = Object.freeze([
   { cityIds: ["seoul", "busan"], modes: ["train", "bus"] },
   { cityIds: ["tokyo", "osaka"], modes: ["train", "bus"] },
@@ -67,6 +68,37 @@ const SURFACE_CORRIDORS: readonly SurfaceCorridor[] = Object.freeze([
   { cityIds: ["tallinn", "riga"], modes: ["bus"] },
 ]);
 
+interface GeographicSurfaceCorridor {
+  readonly endpoints: readonly [
+    { readonly countryCode: string; readonly latitude: number; readonly longitude: number },
+    { readonly countryCode: string; readonly latitude: number; readonly longitude: number },
+  ];
+  readonly modes: readonly EstimatedSurfaceMode[];
+  readonly trainMinutes?: number;
+}
+
+// Provider ids vary, so a handful of high-confidence corridors are matched by
+// country and coordinates. This specifically covers the Venice–Florence case
+// without inventing rail links for same-country island pairs.
+const GEOGRAPHIC_SURFACE_CORRIDORS: readonly GeographicSurfaceCorridor[] = [
+  {
+    endpoints: [
+      { countryCode: "IT", latitude: 45.4408, longitude: 12.3155 },
+      { countryCode: "IT", latitude: 43.7696, longitude: 11.2558 },
+    ],
+    modes: ["train", "bus"],
+    trainMinutes: 125,
+  },
+  {
+    endpoints: [
+      { countryCode: "IT", latitude: 43.7696, longitude: 11.2558 },
+      { countryCode: "IT", latitude: 41.9028, longitude: 12.4964 },
+    ],
+    modes: ["train", "bus"],
+    trainMinutes: 95,
+  },
+];
+
 function unorderedCityPairKey(leftCityId: string, rightCityId: string): string {
   return [leftCityId, rightCityId].sort(compareText).join("|");
 }
@@ -78,21 +110,24 @@ const surfaceModesByPair = new Map<string, readonly EstimatedSurfaceMode[]>(
   ]),
 );
 
-// Benchmarks are fallback door-to-door totals in minutes, not claims of live
-// schedules. Keeping them per corridor avoids treating every railway as a
-// straight 160 km/h line.
-const TRAIN_DOOR_TO_DOOR_MINUTES_BY_PAIR = new Map<string, number>([
-  [unorderedCityPairKey("seoul", "busan"), 220],
-  [unorderedCityPairKey("tokyo", "osaka"), 230],
-  [unorderedCityPairKey("paris", "lyon"), 195],
-  [unorderedCityPairKey("paris", "brussels"), 160],
-  [unorderedCityPairKey("paris", "london"), 250],
-  [unorderedCityPairKey("brussels", "amsterdam"), 190],
-  [unorderedCityPairKey("madrid", "barcelona"), 240],
-  [unorderedCityPairKey("rome", "milan"), 270],
-  [unorderedCityPairKey("berlin", "prague"), 330],
-  [unorderedCityPairKey("vienna", "budapest"), 230],
+// Approximate train running times between city terminals. Unlike flights, rail
+// and coach fallbacks intentionally do not add city access, check-in, or buffer
+// time: the UI promise is a city-to-city public-transport duration.
+const TRAIN_IN_VEHICLE_MINUTES_BY_PAIR = new Map<string, number>([
+  [unorderedCityPairKey("seoul", "busan"), 165],
+  [unorderedCityPairKey("tokyo", "osaka"), 150],
+  [unorderedCityPairKey("paris", "lyon"), 120],
+  [unorderedCityPairKey("paris", "brussels"), 85],
+  [unorderedCityPairKey("paris", "london"), 140],
+  [unorderedCityPairKey("brussels", "amsterdam"), 120],
+  [unorderedCityPairKey("madrid", "barcelona"), 165],
+  [unorderedCityPairKey("rome", "milan"), 190],
+  [unorderedCityPairKey("berlin", "prague"), 250],
+  [unorderedCityPairKey("vienna", "budapest"), 160],
 ]);
+
+export const EXACT_OPTIMIZATION_MAX_CITIES = 10;
+const HEURISTIC_MAX_START_SEEDS = 12;
 
 const provenancePriority: Readonly<Record<DataProvenance["kind"], number>> = {
   observed: 0,
@@ -440,6 +475,326 @@ function isBetterState(
   );
 }
 
+function exactRouteState(
+  cityIds: readonly string[],
+  bestLegs: readonly (readonly (TravelLeg | undefined)[])[],
+  startIndex: number,
+  endIndex: number,
+): RouteState | undefined {
+  const count = cityIds.length;
+  const stateCount = 1 << count;
+  const states: Array<Array<RouteState | undefined>> = Array.from(
+    { length: stateCount },
+    () => Array<RouteState | undefined>(count),
+  );
+  const allowedStarts =
+    startIndex >= 0
+      ? [startIndex]
+      : Array.from({ length: count }, (_, index) => index).filter(
+          (index) => index !== endIndex,
+        );
+  for (const index of allowedStarts) {
+    states[1 << index][index] = { totalMinutes: 0, order: [index] };
+  }
+
+  for (let mask = 1; mask < stateCount; mask += 1) {
+    for (let last = 0; last < count; last += 1) {
+      const state = states[mask][last];
+      if (!state) continue;
+      for (let next = 0; next < count; next += 1) {
+        if ((mask & (1 << next)) !== 0) continue;
+        // A fixed destination can only be appended after every other city.
+        if (
+          next === endIndex &&
+          mask !== ((stateCount - 1) ^ (1 << endIndex))
+        ) {
+          continue;
+        }
+        const leg = bestLegs[last][next];
+        if (!leg || leg.totalMinutes === null) continue;
+        const nextMask = mask | (1 << next);
+        const candidate: RouteState = {
+          totalMinutes: state.totalMinutes + leg.totalMinutes,
+          order: [...state.order, next],
+        };
+        if (isBetterState(candidate, states[nextMask][next], cityIds)) {
+          states[nextMask][next] = candidate;
+        }
+      }
+    }
+  }
+
+  const fullMask = stateCount - 1;
+  const allowedEnds =
+    endIndex >= 0
+      ? [endIndex]
+      : Array.from({ length: count }, (_, index) => index);
+  let bestState: RouteState | undefined;
+  for (const index of allowedEnds) {
+    const candidate = states[fullMask][index];
+    if (candidate && isBetterState(candidate, bestState, cityIds)) {
+      bestState = candidate;
+    }
+  }
+  return bestState;
+}
+
+function routeStateForOrder(
+  order: readonly number[],
+  bestLegs: readonly (readonly (TravelLeg | undefined)[])[],
+): RouteState | undefined {
+  let totalMinutes = 0;
+  for (let index = 1; index < order.length; index += 1) {
+    const leg = bestLegs[order[index - 1]][order[index]];
+    if (!leg || leg.totalMinutes === null) return undefined;
+    totalMinutes += leg.totalMinutes;
+  }
+  return { totalMinutes, order };
+}
+
+function nearestNeighborRouteState(
+  cityIds: readonly string[],
+  bestLegs: readonly (readonly (TravelLeg | undefined)[])[],
+  startIndex: number,
+  endIndex: number,
+  firstVisitIndex?: number,
+): RouteState | undefined {
+  const order = [startIndex];
+  const unvisited = new Set(
+    Array.from({ length: cityIds.length }, (_, index) => index).filter(
+      (index) => index !== startIndex,
+    ),
+  );
+
+  if (firstVisitIndex !== undefined) {
+    if (
+      !unvisited.has(firstVisitIndex) ||
+      (firstVisitIndex === endIndex && unvisited.size > 1) ||
+      !Number.isFinite(edgeMinutes(bestLegs, startIndex, firstVisitIndex))
+    ) {
+      return undefined;
+    }
+    order.push(firstVisitIndex);
+    unvisited.delete(firstVisitIndex);
+  }
+
+  while (unvisited.size > 0) {
+    const current = order.at(-1) as number;
+    let next: number | undefined;
+    let nextMinutes = Number.POSITIVE_INFINITY;
+    for (const candidateIndex of unvisited) {
+      if (candidateIndex === endIndex && unvisited.size > 1) continue;
+      const candidateMinutes = edgeMinutes(
+        bestLegs,
+        current,
+        candidateIndex,
+      );
+      if (!Number.isFinite(candidateMinutes)) continue;
+      if (
+        candidateMinutes < nextMinutes ||
+        (candidateMinutes === nextMinutes &&
+          (next === undefined ||
+            compareText(cityIds[candidateIndex], cityIds[next]) < 0))
+      ) {
+        next = candidateIndex;
+        nextMinutes = candidateMinutes;
+      }
+    }
+    if (next === undefined) return undefined;
+    order.push(next);
+    unvisited.delete(next);
+  }
+  return routeStateForOrder(order, bestLegs);
+}
+
+function edgeMinutes(
+  bestLegs: readonly (readonly (TravelLeg | undefined)[])[],
+  fromIndex: number,
+  toIndex: number,
+): number {
+  return bestLegs[fromIndex][toIndex]?.totalMinutes ?? Number.POSITIVE_INFINITY;
+}
+
+// Directed 2-opt uses prefix sums for reversed internal edges, keeping each
+// improvement pass O(n²) instead of O(n³). A fixed first/last city is never
+// moved. Ties are resolved by city id so identical inputs are reproducible.
+function improveRouteWithTwoOpt(
+  initial: RouteState,
+  cityIds: readonly string[],
+  bestLegs: readonly (readonly (TravelLeg | undefined)[])[],
+  startIndex: number,
+  endIndex: number,
+): RouteState {
+  let current = initial;
+  const count = current.order.length;
+  const firstMovable = startIndex >= 0 ? 1 : 0;
+  const lastMovable = endIndex >= 0 ? count - 2 : count - 1;
+  const maximumPasses = Math.min(count, 12);
+
+  for (let pass = 0; pass < maximumPasses; pass += 1) {
+    const forwardPrefix = Array<number>(count).fill(0);
+    const reversePrefix = Array<number>(count).fill(0);
+    const reverseMissingPrefix = Array<number>(count).fill(0);
+    for (let index = 1; index < count; index += 1) {
+      forwardPrefix[index] =
+        forwardPrefix[index - 1] +
+        edgeMinutes(bestLegs, current.order[index - 1], current.order[index]);
+      const reverseMinutes = edgeMinutes(
+        bestLegs,
+        current.order[index],
+        current.order[index - 1],
+      );
+      reversePrefix[index] =
+        reversePrefix[index - 1] +
+        (Number.isFinite(reverseMinutes) ? reverseMinutes : 0);
+      reverseMissingPrefix[index] =
+        reverseMissingPrefix[index - 1] +
+        (Number.isFinite(reverseMinutes) ? 0 : 1);
+    }
+
+    let best = current;
+    for (let left = firstMovable; left < lastMovable; left += 1) {
+      for (let right = left + 1; right <= lastMovable; right += 1) {
+        const oldInternal = forwardPrefix[right] - forwardPrefix[left];
+        if (
+          reverseMissingPrefix[right] - reverseMissingPrefix[left] >
+          0
+        ) {
+          continue;
+        }
+        const newInternal = reversePrefix[right] - reversePrefix[left];
+
+        let candidateTotal = current.totalMinutes - oldInternal + newInternal;
+        if (left > 0) {
+          candidateTotal -= edgeMinutes(
+            bestLegs,
+            current.order[left - 1],
+            current.order[left],
+          );
+          candidateTotal += edgeMinutes(
+            bestLegs,
+            current.order[left - 1],
+            current.order[right],
+          );
+        }
+        if (right < count - 1) {
+          candidateTotal -= edgeMinutes(
+            bestLegs,
+            current.order[right],
+            current.order[right + 1],
+          );
+          candidateTotal += edgeMinutes(
+            bestLegs,
+            current.order[left],
+            current.order[right + 1],
+          );
+        }
+        if (!Number.isFinite(candidateTotal) || candidateTotal > best.totalMinutes) {
+          continue;
+        }
+
+        const candidate: RouteState = {
+          totalMinutes: candidateTotal,
+          order: [
+            ...current.order.slice(0, left),
+            ...current.order.slice(left, right + 1).reverse(),
+            ...current.order.slice(right + 1),
+          ],
+        };
+        if (isBetterState(candidate, best, cityIds)) best = candidate;
+      }
+    }
+    if (best.order === current.order) break;
+    current = best;
+  }
+
+  // Recompute from selected legs so floating-point prefix arithmetic can never
+  // become the persisted itinerary total.
+  return routeStateForOrder(current.order, bestLegs) ?? initial;
+}
+
+function heuristicRouteState(
+  cityIds: readonly string[],
+  bestLegs: readonly (readonly (TravelLeg | undefined)[])[],
+  startIndex: number,
+  endIndex: number,
+): RouteState | undefined {
+  const allAllowedStarts =
+    startIndex >= 0
+      ? [startIndex]
+      : Array.from({ length: cityIds.length }, (_, index) => index)
+          .filter((index) => index !== endIndex)
+          .sort((left, right) => compareText(cityIds[left], cityIds[right]));
+  // An unrestricted city list must not turn the heuristic into an O(n^3)
+  // search merely because neither endpoint was fixed. Evenly spaced seeds in
+  // stable city-id order keep the result reproducible while the nearest-neighbour
+  // and directed 2-opt work remains bounded by a small number of starts.
+  const allowedStarts =
+    allAllowedStarts.length <= HEURISTIC_MAX_START_SEEDS
+      ? allAllowedStarts
+      : Array.from(
+          { length: HEURISTIC_MAX_START_SEEDS },
+          (_, seedIndex) =>
+            allAllowedStarts[
+              Math.floor(
+                (seedIndex * (allAllowedStarts.length - 1)) /
+                  (HEURISTIC_MAX_START_SEEDS - 1),
+              )
+            ],
+        );
+  const greedySeeds: RouteState[] = [];
+  for (const candidateStart of allowedStarts) {
+    const firstVisits =
+      startIndex >= 0
+        ? Array.from({ length: cityIds.length }, (_, index) => index)
+            .filter(
+              (index) =>
+                index !== candidateStart &&
+                (index !== endIndex || cityIds.length === 2) &&
+                Number.isFinite(edgeMinutes(bestLegs, candidateStart, index)),
+            )
+            .sort(
+              (left, right) =>
+                edgeMinutes(bestLegs, candidateStart, left) -
+                  edgeMinutes(bestLegs, candidateStart, right) ||
+                compareText(cityIds[left], cityIds[right]),
+            )
+            .slice(0, 4)
+        : [undefined];
+    for (const firstVisit of firstVisits) {
+      const candidate = nearestNeighborRouteState(
+        cityIds,
+        bestLegs,
+        candidateStart,
+        endIndex,
+        firstVisit,
+      );
+      if (candidate) greedySeeds.push(candidate);
+    }
+  }
+  const seedsToImprove = greedySeeds
+    .sort((left, right) =>
+      isBetterState(left, right, cityIds)
+        ? -1
+        : isBetterState(right, left, cityIds)
+          ? 1
+          : 0,
+    )
+    .slice(0, 4);
+  let best: RouteState | undefined;
+  for (const seed of seedsToImprove) {
+    const improved = improveRouteWithTwoOpt(
+      seed,
+      cityIds,
+      bestLegs,
+      startIndex,
+      endIndex,
+    );
+    if (isBetterState(improved, best, cityIds)) best = improved;
+  }
+  return best;
+}
+
 export function optimizeItinerary(
   cityIdsInput: readonly string[],
   candidateLegs: readonly TravelLeg[],
@@ -447,11 +802,6 @@ export function optimizeItinerary(
 ): OptimizedItinerary {
   if (cityIdsInput.length < 2) {
     throw new DomainValidationError("At least two cities are required");
-  }
-  if (cityIdsInput.length > 10) {
-    throw new DomainValidationError(
-      "Exact route optimization supports at most 10 cities",
-    );
   }
 
   const cityIds = [...cityIdsInput];
@@ -485,6 +835,18 @@ export function optimizeItinerary(
   }
 
   const count = cityIds.length;
+  const candidateLegsByPair = new Map<string, TravelLeg[]>();
+  const directedPairKey = (fromCityId: string, toCityId: string) =>
+    `${fromCityId}\u0000${toCityId}`;
+  for (const candidateLeg of candidateLegs) {
+    const key = directedPairKey(
+      candidateLeg.fromCityId,
+      candidateLeg.toCityId,
+    );
+    const pairCandidates = candidateLegsByPair.get(key);
+    if (pairCandidates) pairCandidates.push(candidateLeg);
+    else candidateLegsByPair.set(key, [candidateLeg]);
+  }
   const bestLegs: Array<Array<TravelLeg | undefined>> = Array.from(
     { length: count },
     () => Array<TravelLeg | undefined>(count),
@@ -493,7 +855,9 @@ export function optimizeItinerary(
     for (let to = 0; to < count; to += 1) {
       if (from !== to) {
         bestLegs[from][to] = selectFastestLeg(
-          candidateLegs,
+          candidateLegsByPair.get(
+            directedPairKey(cityIds[from], cityIds[to]),
+          ) ?? [],
           cityIds[from],
           cityIds[to],
         );
@@ -501,53 +865,10 @@ export function optimizeItinerary(
     }
   }
 
-  const stateCount = 1 << count;
-  const states: Array<Array<RouteState | undefined>> = Array.from(
-    { length: stateCount },
-    () => Array<RouteState | undefined>(count),
-  );
-  const allowedStarts =
-    startIndex >= 0
-      ? [startIndex]
-      : Array.from({ length: count }, (_, index) => index).filter(
-          (index) => index !== endIndex,
-        );
-  for (const index of allowedStarts) {
-    states[1 << index][index] = { totalMinutes: 0, order: [index] };
-  }
-
-  for (let mask = 1; mask < stateCount; mask += 1) {
-    for (let last = 0; last < count; last += 1) {
-      const state = states[mask][last];
-      if (!state) continue;
-      for (let next = 0; next < count; next += 1) {
-        if ((mask & (1 << next)) !== 0) continue;
-        const leg = bestLegs[last][next];
-        if (!leg || leg.totalMinutes === null) continue;
-        const nextMask = mask | (1 << next);
-        const candidate: RouteState = {
-          totalMinutes: state.totalMinutes + leg.totalMinutes,
-          order: [...state.order, next],
-        };
-        if (isBetterState(candidate, states[nextMask][next], cityIds)) {
-          states[nextMask][next] = candidate;
-        }
-      }
-    }
-  }
-
-  const fullMask = stateCount - 1;
-  const allowedEnds =
-    endIndex >= 0
-      ? [endIndex]
-      : Array.from({ length: count }, (_, index) => index);
-  let bestState: RouteState | undefined;
-  for (const index of allowedEnds) {
-    const candidate = states[fullMask][index];
-    if (candidate && isBetterState(candidate, bestState, cityIds)) {
-      bestState = candidate;
-    }
-  }
+  const bestState =
+    count <= EXACT_OPTIMIZATION_MAX_CITIES
+      ? exactRouteState(cityIds, bestLegs, startIndex, endIndex)
+      : heuristicRouteState(cityIds, bestLegs, startIndex, endIndex);
 
   if (!bestState) {
     throw new DomainValidationError(
@@ -623,6 +944,56 @@ export function getEstimatedFallbackModes(
   return getEstimatedFallbackModesForCities(getCity(fromCityId), getCity(toCityId));
 }
 
+function matchesGeographicEndpoint(
+  city: City,
+  endpoint: GeographicSurfaceCorridor["endpoints"][number],
+): boolean {
+  return (
+    city.country.code === endpoint.countryCode &&
+    Math.abs(city.coordinates.latitude - endpoint.latitude) <= 0.2 &&
+    Math.abs(city.coordinates.longitude - endpoint.longitude) <= 0.25
+  );
+}
+
+function findGeographicSurfaceCorridor(
+  fromCity: City,
+  toCity: City,
+): GeographicSurfaceCorridor | undefined {
+  return GEOGRAPHIC_SURFACE_CORRIDORS.find(({ endpoints }) => {
+    const [left, right] = endpoints;
+    return (
+      (matchesGeographicEndpoint(fromCity, left) &&
+        matchesGeographicEndpoint(toCity, right)) ||
+      (matchesGeographicEndpoint(fromCity, right) &&
+        matchesGeographicEndpoint(toCity, left))
+    );
+  });
+}
+
+function isLikelyItalianMainlandCity(city: City): boolean {
+  if (city.country.code !== "IT") return false;
+  const { latitude, longitude } = city.coordinates;
+  if (latitude < 38.5) return false;
+  // Avoid treating Sardinian cities as rail-connected to mainland Italy. The
+  // remaining rule is intentionally conservative and explicitly estimated.
+  const isSardinia =
+    latitude <= 41.5 &&
+    longitude >= 8 &&
+    longitude <= 10.2;
+  return !isSardinia;
+}
+
+function hasConservativeSameCountrySurfaceFallback(
+  fromCity: City,
+  toCity: City,
+): boolean {
+  return (
+    isLikelyItalianMainlandCity(fromCity) &&
+    isLikelyItalianMainlandCity(toCity) &&
+    haversineDistanceBetweenCities(fromCity, toCity) <= 650
+  );
+}
+
 export function getEstimatedFallbackModesForCities(
   fromCity: City,
   toCity: City,
@@ -631,9 +1002,19 @@ export function getEstimatedFallbackModesForCities(
   const toCityId = toCity.id;
   if (fromCityId === toCityId) return Object.freeze([]);
 
-  const surfaceModes =
-    surfaceModesByPair.get(unorderedCityPairKey(fromCityId, toCityId)) ?? [];
-  return Object.freeze(["flight", ...surfaceModes]);
+  const surfaceModes = new Set<EstimatedSurfaceMode>(
+    surfaceModesByPair.get(unorderedCityPairKey(fromCityId, toCityId)) ?? [],
+  );
+  const geographicCorridor = findGeographicSurfaceCorridor(fromCity, toCity);
+  geographicCorridor?.modes.forEach((mode) => surfaceModes.add(mode));
+  if (hasConservativeSameCountrySurfaceFallback(fromCity, toCity)) {
+    surfaceModes.add("train");
+    surfaceModes.add("bus");
+  }
+  return Object.freeze([
+    "flight",
+    ...(["train", "bus"] as const).filter((mode) => surfaceModes.has(mode)),
+  ]);
 }
 
 export function createEstimatedFallbackLegForCities(
@@ -648,14 +1029,22 @@ export function createEstimatedFallbackLegForCities(
   }
   if (!getEstimatedFallbackModesForCities(fromCity, toCity).includes(mode)) {
     throw new DomainValidationError(
-      `No curated ${mode} fallback corridor connects ${fromCityId} and ${toCityId}`,
+      `No conservative ${mode} fallback connects ${fromCityId} and ${toCityId}`,
     );
   }
   const distanceKm = haversineDistanceBetweenCities(fromCity, toCity);
+  const pairKey = unorderedCityPairKey(fromCityId, toCityId);
+  const railBenchmarkMinutes =
+    TRAIN_IN_VEHICLE_MINUTES_BY_PAIR.get(pairKey) ??
+    findGeographicSurfaceCorridor(fromCity, toCity)?.trainMinutes;
   const methodology =
     mode === "train"
-      ? "Curated corridor-specific door-to-door rail benchmark; replace with provider data"
-      : `${mode} fallback derived from great-circle distance; replace with provider data`;
+      ? railBenchmarkMinutes
+        ? "Curated corridor city-to-city train running-time benchmark; replace with provider schedule data"
+        : "Estimated city-to-city train running time from geographic distance and conservative rail speeds; service existence must be verified with provider data"
+      : mode === "bus"
+        ? "Estimated city-to-city coach running time from geographic distance and conservative road speeds; service existence must be verified with provider data"
+        : "Estimated flight door-to-door time from great-circle distance, airport access, processing, baggage and operational allowances; replace with provider data";
   const provenance: DataProvenance = { kind: "estimated", methodology };
   const fromCentre = `${fromCityId}:city-centre`;
   const toCentre = `${toCityId}:city-centre`;
@@ -688,6 +1077,7 @@ export function createEstimatedFallbackLegForCities(
             { kind: "check_in_security", label: "Check-in and security", minutes: 120 },
             { kind: "in_vehicle", label: "Air time", minutes: estimateMinutes(distanceKm, 780) + 35 },
             { kind: "buffer", label: "Operational buffer", minutes: 25 },
+            { kind: "baggage", label: "Arrival and baggage allowance", minutes: 20 },
           ],
         }),
         createTransportSegment({
@@ -705,35 +1095,12 @@ export function createEstimatedFallbackLegForCities(
   }
 
   if (mode === "train") {
-    const pairKey = unorderedCityPairKey(fromCityId, toCityId);
-    const doorToDoorMinutes = TRAIN_DOOR_TO_DOOR_MINUTES_BY_PAIR.get(pairKey);
-    if (!doorToDoorMinutes) {
-      throw new DomainValidationError(
-        `No rail benchmark is configured for ${fromCityId} and ${toCityId}`,
-      );
-    }
-    const isParisLondon = pairKey === unorderedCityPairKey("paris", "london");
-    const components: readonly DurationComponentInput[] = isParisLondon
-      ? [
-          { kind: "city_to_terminal", label: "City to rail terminal", minutes: 25 },
-          { kind: "waiting", label: "International train boarding wait", minutes: 20 },
-          { kind: "check_in_security", label: "Rail security screening", minutes: 15 },
-          { kind: "border_control", label: "Exit and entry border controls", minutes: 25 },
-          { kind: "in_vehicle", label: "Cross-Channel rail journey", minutes: 140 },
-          { kind: "terminal_to_city", label: "Rail terminal to city", minutes: 15 },
-          { kind: "buffer", label: "Operational buffer", minutes: 10 },
-        ]
-      : [
-          { kind: "city_to_terminal", label: "City to rail terminal", minutes: 25 },
-          { kind: "waiting", label: "Boarding wait", minutes: 20 },
-          {
-            kind: "in_vehicle",
-            label: "Corridor rail benchmark",
-            minutes: doorToDoorMinutes - 80,
-          },
-          { kind: "terminal_to_city", label: "Rail terminal to city", minutes: 20 },
-          { kind: "buffer", label: "Operational buffer", minutes: 15 },
-        ];
+    const routeDistanceKm = distanceKm * 1.12;
+    const averageSpeedKmPerHour =
+      distanceKm <= 250 ? 110 : distanceKm <= 600 ? 145 : 155;
+    const trainMinutes =
+      railBenchmarkMinutes ??
+      estimateMinutes(routeDistanceKm, averageSpeedKmPerHour) + 5;
     return createTravelLeg({
       id: `fallback:${fromCityId}:${toCityId}:train`,
       fromCityId,
@@ -745,7 +1112,15 @@ export function createEstimatedFallbackLegForCities(
           from: fromCentre,
           to: toCentre,
           provenance,
-          components,
+          components: [
+            {
+              kind: "in_vehicle",
+              label: railBenchmarkMinutes
+                ? "Intercity train benchmark"
+                : "Estimated intercity train time",
+              minutes: trainMinutes,
+            },
+          ],
         }),
       ],
     });
@@ -763,11 +1138,11 @@ export function createEstimatedFallbackLegForCities(
         to: toCentre,
         provenance,
         components: [
-          { kind: "city_to_terminal", label: "City to terminal", minutes: 20 },
-          { kind: "waiting", label: "Boarding wait", minutes: 15 },
-          { kind: "in_vehicle", label: "Travel time", minutes: estimateMinutes(distanceKm * 1.25, 72) },
-          { kind: "terminal_to_city", label: "Terminal to city", minutes: 15 },
-          { kind: "buffer", label: "Operational buffer", minutes: 15 },
+          {
+            kind: "in_vehicle",
+            label: "Estimated intercity coach time",
+            minutes: estimateMinutes(distanceKm * 1.2, 68),
+          },
         ],
       }),
     ],

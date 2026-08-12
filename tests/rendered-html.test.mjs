@@ -94,7 +94,8 @@ test("server-renders the Together travel product", async () => {
   assert.match(html, /Together/);
   assert.match(html, /여러 도시를, 가장 빠른 순서로\./);
   assert.match(html, /가장 빠른 동선 찾기/);
-  assert.match(html, /공개 운행표로 검증합니다/);
+  assert.match(html, /철도·버스는 선택한 출발일의 공개 운행표를 우선 확인하며 구간 이동시간만 표시합니다/);
+  assert.match(html, /항공만 공항 이동·체크인·보안검색·도착 후 이동을 포함한 문전 간 계획 추정치/);
   assert.match(html, /eiffel-paris-hero/);
   assert.match(html, /가계부/);
   assert.doesNotMatch(
@@ -103,19 +104,20 @@ test("server-renders the Together travel product", async () => {
   );
 });
 
-test("ships installable metadata and a private-save boundary", async () => {
+test("ships installable metadata and device-only storage without login UI", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   const html = await response.text();
   const manifestHref = html.match(/<link rel="manifest" href="([^"]+)"/i)?.[1];
   assert.ok(manifestHref, "rendered HTML must include a web manifest link");
   assert.equal(new URL(manifestHref, baseUrl).pathname, "/manifest.webmanifest");
-  assert.match(html, /공개 운행표를 사용할 수 없는 구간은/);
-  const privateTrips = await fetch(`${baseUrl}/api/trips`, {
+  assert.match(html, /내 여행에 저장/);
+  assert.doesNotMatch(html, /로그인|계정|signin-with-chatgpt|signout-with-chatgpt/i);
+  const deviceTrips = await fetch(`${baseUrl}/api/trips`, {
     headers: { accept: "application/json" },
     signal: AbortSignal.timeout(10_000),
   });
-  assert.equal(privateTrips.status, 401);
+  assert.equal(deviceTrips.status, 401, "legacy account API must not be used by the guest UI");
 });
 
 test("server rendering and manifest honor every selected language without a fallback-language flash", async () => {

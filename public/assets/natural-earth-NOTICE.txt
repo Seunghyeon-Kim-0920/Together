@@ -1,0 +1,20 @@
+Natural Earth map data notice
+
+Asset: natural-earth-land-50m.svg
+Derived from: Natural Earth 1:50m Land polygons (package version marker 4.1.0)
+Official catalog: https://www.naturalearthdata.com/downloads/50m-physical-vectors/
+Official data CDN: https://naciscdn.org/naturalearth/50m/physical/ne_50m_land.zip
+Downloaded: 2026-08-12
+
+Natural Earth states that all raster and vector map data on its website are in
+the public domain and may be used and modified for any purpose. Attribution is
+not required, but Together displays “Map data: Natural Earth” (translated to the
+selected interface language) as a courtesy.
+
+Terms: https://www.naturalearthdata.com/about/terms-of-use/
+
+Transformation performed for Together:
+- ESRI Shapefile land polygons converted to a compact SVG path.
+- Coordinates projected with an equirectangular WGS84 mapping into the
+  1000 × 500 SVG viewBox used by Together's city markers.
+- Coordinate precision rounded to three SVG user-space decimals.

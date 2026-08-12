@@ -1,6 +1,5 @@
 import { findCity, getCity } from "../../../../lib/cities";
 import type {
-  DurationComponentKind,
   TransportMode,
   TravelLeg,
 } from "../../../../lib/domain";
@@ -12,25 +11,28 @@ import {
 
 const TRANSITOUS_PLAN_URL = "https://api.transitous.org/api/v6/plan";
 const TRANSITOUS_USER_AGENT =
-  "Together/0.2 (https://together-travel-0920.ocvi-85.chatgpt.site)";
+  "Together/0.3 (https://together-travel-0920.ocvi-85.chatgpt.site)";
 const TRANSITOUS_SOURCE = "Transitous / MOTIS public timetable";
 const TRANSITOUS_ATTRIBUTION = "https://transitous.org/sources/";
 const TRANSITOUS_TRANSIT_MODES = "RAIL,BUS,COACH";
 
-export const SCHEDULE_MAX_CITIES = 4;
-export const SCHEDULE_MAX_PAIRS =
-  SCHEDULE_MAX_CITIES * (SCHEDULE_MAX_CITIES - 1);
+// There is no city-count product limit. Large requests use a bounded,
+// deterministic set of geographically relevant timetable lookups while the
+// optimizer retains estimated alternatives for every pair.
+export const SCHEDULE_MAX_CITIES: null = null;
+export const SCHEDULE_MAX_PROVIDER_PAIRS = 12;
+export const SCHEDULE_MAX_PAIRS = SCHEDULE_MAX_PROVIDER_PAIRS;
 export const SCHEDULE_CACHE_TTL_SECONDS = 15 * 60;
-export const SCHEDULE_PROVIDER_TIMEOUT_MS = 8_000;
+export const SCHEDULE_PROVIDER_TIMEOUT_MS = 3_500;
 export const SCHEDULE_BATCH_DEADLINE_MS = 12_000;
 export const SCHEDULE_PAST_DATE_HORIZON_DAYS = 1;
 export const SCHEDULE_FUTURE_DATE_HORIZON_DAYS = 365;
 export const SCHEDULE_RATE_LIMIT_REQUESTS = 4;
 export const SCHEDULE_RATE_LIMIT_WINDOW_SECONDS = 60;
-export const SCHEDULE_MAX_REQUEST_BYTES = 4_096;
+export const SCHEDULE_MAX_REQUEST_BYTES = 65_536;
 
 const MAX_CACHE_ENTRIES = 256;
-const MAX_PROVIDER_CONCURRENCY = 2;
+const MAX_PROVIDER_CONCURRENCY = 4;
 const MAX_RATE_LIMIT_ENTRIES = 4_096;
 
 const TRAIN_MODES = new Set([
@@ -62,6 +64,8 @@ interface ValidScheduleRequest {
   readonly cityById: ReadonlyMap<string, ScheduleCity>;
   readonly dynamicCityCount: number;
   readonly departureDate: string;
+  readonly startCityId?: string;
+  readonly endCityId?: string;
 }
 
 interface TransitousLeg {
@@ -89,6 +93,7 @@ export interface TransitousScheduleMetadata {
   readonly departureTime: string;
   readonly arrivalTime: string;
   readonly providerDurationSeconds: number;
+  readonly intercityDurationSeconds: number;
   readonly elapsedFromQuerySeconds: number;
   readonly transfers: number;
 }
@@ -384,15 +389,58 @@ function mapTransitousMode(mode: string): TransportMode | null {
   return null;
 }
 
-function durationKindForMode(
-  mode: TransportMode,
-  index: number,
-  lastIndex: number,
-): DurationComponentKind {
-  if (mode !== "walk") return "in_vehicle";
-  if (index === 0) return "city_to_terminal";
-  if (index === lastIndex) return "terminal_to_city";
-  return "transfer";
+interface IntercitySurfaceLeg {
+  readonly providerLeg: TransitousLeg;
+  readonly mode: TransportMode;
+  readonly providerIndex: number;
+}
+
+function selectIntercitySurfaceLegs(
+  itinerary: TransitousItinerary,
+): readonly IntercitySurfaceLeg[] | null {
+  const primaryIndexes = itinerary.legs
+    .map((leg, index) => ({ leg, index }))
+    .filter(({ leg }) => TRAIN_MODES.has(leg.mode) || leg.mode === "COACH")
+    .map(({ index }) => index);
+  const busIndexes = itinerary.legs
+    .map((leg, index) => ({ leg, index }))
+    .filter(({ leg }) => leg.mode === "BUS")
+    .map(({ index }) => index);
+  const anchors = primaryIndexes.length > 0 ? primaryIndexes : busIndexes;
+  if (anchors.length === 0) return null;
+
+  const firstIndex = anchors[0];
+  const lastIndex = anchors.at(-1) as number;
+  const selected = itinerary.legs
+    .slice(firstIndex, lastIndex + 1)
+    .map((providerLeg, offset) => ({
+      providerLeg,
+      mode: mapTransitousMode(providerLeg.mode),
+      providerIndex: firstIndex + offset,
+    }))
+    .filter(
+      (
+        candidate,
+      ): candidate is IntercitySurfaceLeg & {
+        readonly mode: "train" | "bus";
+      } => candidate.mode === "train" || candidate.mode === "bus",
+    );
+  // Local walking/metro access and egress are deliberately excluded. If a
+  // transfer happens between two intercity vehicles, the elapsed gap is added
+  // as connection time below, so the displayed total remains first intercity
+  // departure through final intercity arrival.
+  return selected.length > 0 ? selected : null;
+}
+
+function intercityDurationSeconds(
+  legs: readonly IntercitySurfaceLeg[],
+): number {
+  return Math.max(
+    0,
+    (Date.parse(legs.at(-1)?.providerLeg.endTime ?? "") -
+      Date.parse(legs[0]?.providerLeg.startTime ?? "")) /
+      1_000,
+  );
 }
 
 function minutesFromSeconds(seconds: number): number {
@@ -403,20 +451,13 @@ function buildTravelLeg(
   itinerary: TransitousItinerary,
   fromCityId: string,
   toCityId: string,
-  requestedDepartureTime?: string,
+  _requestedDepartureTime?: string,
   cityById?: ReadonlyMap<string, ScheduleCity>,
 ): ParsedTransitousPlan | null {
   resolveScheduleCity(fromCityId, cityById);
   resolveScheduleCity(toCityId, cityById);
-  const mappedModes = itinerary.legs.map((leg) =>
-    mapTransitousMode(leg.mode),
-  );
-  if (
-    mappedModes.some((mode) => mode === null) ||
-    mappedModes.every((mode) => mode === "walk")
-  ) {
-    return null;
-  }
+  const surfaceLegs = selectIntercitySurfaceLegs(itinerary);
+  if (!surfaceLegs) return null;
 
   const provenance = {
     kind: "scheduled" as const,
@@ -425,21 +466,14 @@ function buildTravelLeg(
   };
   const segments = [];
   let previousEndpoint = `${fromCityId}:city-centre`;
-  const requestedStartMs = requestedDepartureTime
-    ? Date.parse(requestedDepartureTime)
-    : Number.NaN;
-  const queryStartMs = Number.isNaN(requestedStartMs)
-    ? Date.parse(itinerary.startTime)
-    : requestedStartMs;
-  let previousEndMs = queryStartMs;
+  let previousEndMs = Date.parse(surfaceLegs[0].providerLeg.startTime);
 
-  for (let index = 0; index < itinerary.legs.length; index += 1) {
-    const providerLeg = itinerary.legs[index];
-    const mode = mappedModes[index] as TransportMode;
-    const isLast = index === itinerary.legs.length - 1;
+  for (let index = 0; index < surfaceLegs.length; index += 1) {
+    const { providerLeg, mode } = surfaceLegs[index];
+    const isLast = index === surfaceLegs.length - 1;
     const nextEndpoint = isLast
       ? `${toCityId}:city-centre`
-      : `transitous:${fromCityId}:${toCityId}:${index}:${providerLeg.toName}`;
+      : `transitous:${fromCityId}:${toCityId}:${surfaceLegs[index].providerIndex}:${providerLeg.toName}`;
     const components: DurationComponentInput[] = [];
     const currentStartMs = Date.parse(providerLeg.startTime);
     const waitSeconds = Math.max(0, (currentStartMs - previousEndMs) / 1_000);
@@ -451,14 +485,14 @@ function buildTravelLeg(
       });
     }
     components.push({
-      kind: durationKindForMode(mode, index, itinerary.legs.length - 1),
+      kind: "in_vehicle",
       label: `${providerLeg.serviceName}: ${providerLeg.fromName} → ${providerLeg.toName}`,
       minutes: minutesFromSeconds(providerLeg.duration),
     });
 
     segments.push(
       createTransportSegment({
-        id: `transitous:${fromCityId}:${toCityId}:${index}`,
+        id: `transitous:${fromCityId}:${toCityId}:${surfaceLegs[index].providerIndex}`,
         mode,
         from: previousEndpoint,
         to: nextEndpoint,
@@ -476,18 +510,20 @@ function buildTravelLeg(
     toCityId,
     segments,
   });
+  const firstDepartureTime = surfaceLegs[0].providerLeg.startTime;
+  const lastArrivalTime = surfaceLegs.at(-1)?.providerLeg.endTime as string;
   return {
     leg,
     schedule: {
       travelLegId: leg.id,
       providerItineraryId: itinerary.id,
-      departureTime: itinerary.startTime,
-      arrivalTime: itinerary.endTime,
+      departureTime: firstDepartureTime,
+      arrivalTime: lastArrivalTime,
       providerDurationSeconds: itinerary.duration,
-      elapsedFromQuerySeconds: Math.max(
-        0,
-        (Date.parse(itinerary.endTime) - queryStartMs) / 1_000,
-      ),
+      intercityDurationSeconds: intercityDurationSeconds(surfaceLegs),
+      // Retained for response compatibility, but intentionally excludes the
+      // artificial wait between the morning query time and first departure.
+      elapsedFromQuerySeconds: intercityDurationSeconds(surfaceLegs),
       transfers: itinerary.transfers,
     },
   };
@@ -504,27 +540,32 @@ export function parseTransitousPlan(
   resolveScheduleCity(toCityId, cityById);
   if (!isRecord(value) || !Array.isArray(value.itineraries)) return null;
 
-  const requestedStartMs = requestedDepartureTime
-    ? Date.parse(requestedDepartureTime)
-    : Number.NaN;
-  const itineraryScore = (itinerary: TransitousItinerary) =>
-    Number.isNaN(requestedStartMs)
-      ? itinerary.duration
-      : Math.max(0, Date.parse(itinerary.endTime) - requestedStartMs);
-
   const itineraries = value.itineraries
     .map(parseTransitousItinerary)
     .filter(
       (itinerary): itinerary is TransitousItinerary => itinerary !== null,
     )
+    .map((itinerary) => ({
+      itinerary,
+      surfaceLegs: selectIntercitySurfaceLegs(itinerary),
+    }))
+    .filter(
+      (candidate): candidate is {
+        itinerary: TransitousItinerary;
+        surfaceLegs: readonly IntercitySurfaceLeg[];
+      } => candidate.surfaceLegs !== null,
+    )
     .sort(
       (left, right) =>
-        itineraryScore(left) - itineraryScore(right) ||
-        left.duration - right.duration ||
-        left.startTime.localeCompare(right.startTime),
+        intercityDurationSeconds(left.surfaceLegs) -
+          intercityDurationSeconds(right.surfaceLegs) ||
+        left.surfaceLegs[0].providerLeg.startTime.localeCompare(
+          right.surfaceLegs[0].providerLeg.startTime,
+        ) ||
+        left.itinerary.id.localeCompare(right.itinerary.id),
     );
 
-  for (const itinerary of itineraries) {
+  for (const { itinerary } of itineraries) {
     const parsed = buildTravelLeg(
       itinerary,
       fromCityId,
@@ -676,13 +717,10 @@ function parseRequestedCities(value: Record<string, unknown>):
     if (!Array.isArray(value.cities)) {
       return { ok: false, message: "cities must be an array." };
     }
-    if (
-      value.cities.length < 2 ||
-      value.cities.length > SCHEDULE_MAX_CITIES
-    ) {
+    if (value.cities.length < 2) {
       return {
         ok: false,
-        message: `cities must contain between 2 and ${SCHEDULE_MAX_CITIES} cities.`,
+        message: "cities must contain at least 2 cities.",
       };
     }
     const parsedCities = value.cities.map(parseScheduleCity);
@@ -726,13 +764,10 @@ function parseRequestedCities(value: Record<string, unknown>):
   if (!Array.isArray(value.cityIds)) {
     return { ok: false, message: "cityIds must be an array." };
   }
-  if (
-    value.cityIds.length < 2 ||
-    value.cityIds.length > SCHEDULE_MAX_CITIES
-  ) {
+  if (value.cityIds.length < 2) {
     return {
       ok: false,
-      message: `cityIds must contain between 2 and ${SCHEDULE_MAX_CITIES} cities.`,
+      message: "cityIds must contain at least 2 cities.",
     };
   }
   const cityIds = value.cityIds.map((cityId) =>
@@ -768,6 +803,35 @@ function parseScheduleRequest(value: unknown):
         `departureDate must be a valid UTC calendar date from ${SCHEDULE_PAST_DATE_HORIZON_DAYS} day before today through ${SCHEDULE_FUTURE_DATE_HORIZON_DAYS} days after today.`,
     };
   }
+  const parseConstraint = (fieldName: "startCityId" | "endCityId") => {
+    const fieldValue = value[fieldName];
+    if (fieldValue === undefined || fieldValue === null || fieldValue === "") {
+      return { ok: true as const, cityId: undefined };
+    }
+    if (typeof fieldValue !== "string" || fieldValue.trim() !== fieldValue) {
+      return {
+        ok: false as const,
+        message: `${fieldName} must be a route city id without surrounding whitespace.`,
+      };
+    }
+    if (!cities.cityIds.includes(fieldValue)) {
+      return {
+        ok: false as const,
+        message: `${fieldName} must identify one of the requested cities.`,
+      };
+    }
+    return { ok: true as const, cityId: fieldValue };
+  };
+  const start = parseConstraint("startCityId");
+  if (!start.ok) return start;
+  const end = parseConstraint("endCityId");
+  if (!end.ok) return end;
+  if (start.cityId && start.cityId === end.cityId) {
+    return {
+      ok: false,
+      message: "startCityId and endCityId must identify different cities.",
+    };
+  }
   return {
     ok: true,
     request: {
@@ -775,19 +839,143 @@ function parseScheduleRequest(value: unknown):
       cityById: cities.cityById,
       dynamicCityCount: cities.dynamicCityCount,
       departureDate,
+      ...(start.cityId ? { startCityId: start.cityId } : {}),
+      ...(end.cityId ? { endCityId: end.cityId } : {}),
     },
   };
 }
 
-function buildOrderedPairs(cityIds: readonly string[]): readonly CityPair[] {
+function scheduleDistanceKm(from: ScheduleCity, to: ScheduleCity): number {
+  const radians = (degrees: number) => (degrees * Math.PI) / 180;
+  const latitudeDelta = radians(
+    to.coordinates.latitude - from.coordinates.latitude,
+  );
+  const longitudeDelta = radians(
+    to.coordinates.longitude - from.coordinates.longitude,
+  );
+  const fromLatitude = radians(from.coordinates.latitude);
+  const toLatitude = radians(to.coordinates.latitude);
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(fromLatitude) *
+      Math.cos(toLatitude) *
+      Math.sin(longitudeDelta / 2) ** 2;
+  return 6_371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function eligiblePairCount(
+  cityIds: readonly string[],
+  startCityId?: string,
+  endCityId?: string,
+): number {
+  const originCount = cityIds.length - (endCityId ? 1 : 0);
+  const pairsIntoStart = startCityId ? originCount - 1 : 0;
+  return originCount * (cityIds.length - 1) - pairsIntoStart;
+}
+
+function selectScheduleOrigins(
+  cityIds: readonly string[],
+  cityById: ReadonlyMap<string, ScheduleCity>,
+  startCityId?: string,
+  endCityId?: string,
+): readonly string[] {
+  const candidates = [...cityIds]
+    .filter((cityId) => cityId !== endCityId)
+    .sort((left, right) => left.localeCompare(right));
+  if (candidates.length <= SCHEDULE_MAX_PROVIDER_PAIRS) return candidates;
+
+  // Farthest-point sampling spreads the bounded provider budget across the
+  // selected geography instead of favouring whichever city ids sort first.
+  // It is deterministic, always includes a fixed start, and costs O(k^2*n)
+  // where k is capped by SCHEDULE_MAX_PROVIDER_PAIRS.
+  const selected = [startCityId ?? candidates[0]];
+  const selectedSet = new Set(selected);
+  while (selected.length < SCHEDULE_MAX_PROVIDER_PAIRS) {
+    let nextCityId: string | undefined;
+    let nextSeparationKm = Number.NEGATIVE_INFINITY;
+    for (const candidateId of candidates) {
+      if (selectedSet.has(candidateId)) continue;
+      const candidate = resolveScheduleCity(candidateId, cityById);
+      const separationKm = Math.min(
+        ...selected.map((selectedId) =>
+          scheduleDistanceKm(
+            candidate,
+            resolveScheduleCity(selectedId, cityById),
+          ),
+        ),
+      );
+      if (
+        separationKm > nextSeparationKm ||
+        (separationKm === nextSeparationKm &&
+          (nextCityId === undefined ||
+            candidateId.localeCompare(nextCityId) < 0))
+      ) {
+        nextCityId = candidateId;
+        nextSeparationKm = separationKm;
+      }
+    }
+    if (!nextCityId) break;
+    selected.push(nextCityId);
+    selectedSet.add(nextCityId);
+  }
+  return selected;
+}
+
+function buildSchedulePairs(
+  cityIds: readonly string[],
+  cityById: ReadonlyMap<string, ScheduleCity>,
+  startCityId?: string,
+  endCityId?: string,
+): readonly CityPair[] {
+  const origins = selectScheduleOrigins(
+    cityIds,
+    cityById,
+    startCityId,
+    endCityId,
+  );
+  const destinationsByOrigin = new Map(
+    origins.map((fromCityId) => {
+      const fromCity = resolveScheduleCity(fromCityId, cityById);
+      const destinations = cityIds
+        .filter(
+          (toCityId) =>
+            toCityId !== fromCityId && toCityId !== startCityId,
+        )
+        .map((toCityId) => ({
+          toCityId,
+          distanceKm: scheduleDistanceKm(
+            fromCity,
+            resolveScheduleCity(toCityId, cityById),
+          ),
+        }))
+        .sort(
+          (left, right) =>
+            left.distanceKm - right.distanceKm ||
+            left.toCityId.localeCompare(right.toCityId),
+        );
+      return [fromCityId, destinations] as const;
+    }),
+  );
+
   const pairs: CityPair[] = [];
-  for (let left = 0; left < cityIds.length; left += 1) {
-    for (let right = 0; right < cityIds.length; right += 1) {
-      if (left === right) continue;
-      pairs.push({
-        fromCityId: cityIds[left],
-        toCityId: cityIds[right],
-      });
+  const maximumRank = Math.max(
+    0,
+    ...[...destinationsByOrigin.values()].map(
+      (destinations) => destinations.length,
+    ),
+  );
+  // Round-robin by neighbour rank gives every city a nearby lookup before a
+  // single origin consumes the provider budget.
+  for (
+    let rank = 0;
+    rank < maximumRank && pairs.length < SCHEDULE_MAX_PROVIDER_PAIRS;
+    rank += 1
+  ) {
+    for (const fromCityId of origins) {
+      const destination = destinationsByOrigin.get(fromCityId)?.[rank];
+      if (!destination) continue;
+      pairs.push({ fromCityId, toCityId: destination.toCityId });
+      if (pairs.length === SCHEDULE_MAX_PROVIDER_PAIRS) break;
     }
   }
   return pairs;
@@ -1297,7 +1485,17 @@ export async function POST(request: Request): Promise<Response> {
   const rateLimit = consumeRateLimit(parseClientIp(request));
   if (!rateLimit.allowed) return tooManyRequests(rateLimit);
 
-  const pairs = buildOrderedPairs(validated.request.cityIds);
+  const candidatePairCount = eligiblePairCount(
+    validated.request.cityIds,
+    validated.request.startCityId,
+    validated.request.endCityId,
+  );
+  const pairs = buildSchedulePairs(
+    validated.request.cityIds,
+    validated.request.cityById,
+    validated.request.startCityId,
+    validated.request.endCityId,
+  );
   const batchScope = createAbortScope(
     request.signal,
     SCHEDULE_BATCH_DEADLINE_MS,
@@ -1331,12 +1529,16 @@ export async function POST(request: Request): Promise<Response> {
       source: "transitous" as const,
       calculatedAt: new Date().toISOString(),
       departureDate: validated.request.departureDate,
+      routeConstraints: {
+        startCityId: validated.request.startCityId ?? null,
+        endCityId: validated.request.endCityId ?? null,
+      },
       legs: successes.map((result) => result.leg),
       schedules: successes.map((result) => ({
         ...result.schedule,
         queryDepartureTime: result.queryDepartureTime,
       })),
-      partial: failures.length > 0,
+      partial: failures.length > 0 || pairs.length < candidatePairCount,
       missingPairs: failures.map((result) => ({
         ...result.pair,
         reason: result.reason,
@@ -1344,6 +1546,8 @@ export async function POST(request: Request): Promise<Response> {
       })),
       requestSummary: {
         requestedPairCount: pairs.length,
+        eligiblePairCount: candidatePairCount,
+        providerPairLimitApplied: pairs.length < candidatePairCount,
         dynamicCityCount: validated.request.dynamicCityCount,
         providerRequestCount: results.filter((result) => !result.cacheHit)
           .length,
@@ -1351,14 +1555,14 @@ export async function POST(request: Request): Promise<Response> {
       },
       requestPolicy: {
         maxCities: SCHEDULE_MAX_CITIES,
-        maxPairs: SCHEDULE_MAX_PAIRS,
+        maxPairs: SCHEDULE_MAX_PROVIDER_PAIRS,
         maxRequestBytes: SCHEDULE_MAX_REQUEST_BYTES,
         maxProviderConcurrency: MAX_PROVIDER_CONCURRENCY,
         providerTimeoutMs: SCHEDULE_PROVIDER_TIMEOUT_MS,
         batchDeadlineMs: SCHEDULE_BATCH_DEADLINE_MS,
         cacheTtlSeconds: SCHEDULE_CACHE_TTL_SECONDS,
         pairDirection:
-          "Every ordered pair is queried independently, including both directions.",
+          "All constraint-valid ordered pairs are queried when they fit the provider budget; larger requests use deterministic nearest-city pairs in both useful directions.",
         rateLimit:
           `Best-effort instance-local limit of ${SCHEDULE_RATE_LIMIT_REQUESTS} valid calculation requests per ${SCHEDULE_RATE_LIMIT_WINDOW_SECONDS} seconds per client IP; it is not a globally coordinated quota.`,
         departureDateHorizon: {

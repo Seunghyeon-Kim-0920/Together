@@ -13,6 +13,7 @@ import {
 import {
   DomainValidationError,
   provenanceLabel,
+  type City,
   type DataProvenance,
   type ParticipantBalance,
   type TravelLeg,
@@ -20,11 +21,15 @@ import {
 import {
   assertDurationInvariant,
   buildEstimatedFallbackOptions,
+  buildEstimatedFallbackOptionsForCities,
   createDurationBreakdown,
   createEstimatedFallbackLeg,
+  createEstimatedFallbackLegForCities,
   createTransportSegment,
   createTravelLeg,
   getEstimatedFallbackModes,
+  getEstimatedFallbackModesForCities,
+  EXACT_OPTIMIZATION_MAX_CITIES,
   optimizeItinerary,
   selectFastestLeg,
 } from "../lib/routing.js";
@@ -36,6 +41,7 @@ import {
   SCHEDULE_FUTURE_DATE_HORIZON_DAYS,
   SCHEDULE_MAX_CITIES,
   SCHEDULE_MAX_PAIRS,
+  SCHEDULE_MAX_PROVIDER_PAIRS,
   SCHEDULE_MAX_REQUEST_BYTES,
   SCHEDULE_PAST_DATE_HORIZON_DAYS,
   SCHEDULE_RATE_LIMIT_REQUESTS,
@@ -431,6 +437,30 @@ test("Held-Karp optimization finds the exact directed visit order", () => {
     result.legs.reduce((sum, leg) => sum + (leg.totalMinutes ?? 0), 0),
     result.totalMinutes,
   );
+
+  const fixedStartOnly = optimizeItinerary(cityIds, legs, {
+    startCityId: "seoul",
+  });
+  assert.equal(fixedStartOnly.cityOrder[0], "seoul");
+  const fixedEndOnly = optimizeItinerary(cityIds, legs, {
+    endCityId: "singapore",
+  });
+  assert.equal(fixedEndOnly.cityOrder.at(-1), "singapore");
+  assert.throws(
+    () =>
+      optimizeItinerary(cityIds, legs, {
+        startCityId: "paris",
+      }),
+    /fixed start city is not in the route/,
+  );
+  assert.throws(
+    () =>
+      optimizeItinerary(cityIds, legs, {
+        startCityId: "seoul",
+        endCityId: "seoul",
+      }),
+    /Start and end cities must differ/,
+  );
 });
 
 test("Held-Karp totals match exhaustive permutation search", () => {
@@ -476,27 +506,42 @@ test("Held-Karp totals match exhaustive permutation search", () => {
   }
 });
 
-test("exact optimization rejects oversized or disconnected inputs", () => {
-  assert.throws(
-    () =>
-      optimizeItinerary(
-        [
-          "seoul",
-          "tokyo",
-          "beijing",
-          "singapore",
-          "sydney",
-          "paris",
-          "london",
-          "berlin",
-          "rome",
-          "madrid",
-          "dubai",
-        ],
-        [],
-      ),
-    /at most 10 cities/,
+test("large-route heuristic has no city cap and preserves deterministic endpoints", () => {
+  assert.equal(EXACT_OPTIMIZATION_MAX_CITIES, 10);
+  const cityIds = CITIES.slice(0, 24).map((city) => city.id);
+  const legs: TravelLeg[] = [];
+  for (let from = 0; from < cityIds.length; from += 1) {
+    for (let to = 0; to < cityIds.length; to += 1) {
+      if (from === to) continue;
+      legs.push(
+        simpleLeg(
+          cityIds[from],
+          cityIds[to],
+          to === from + 1 ? 1 : 100 + Math.abs(to - from),
+          `large:${from}:${to}`,
+        ),
+      );
+    }
+  }
+  const options = {
+    startCityId: cityIds[0],
+    endCityId: cityIds.at(-1),
+  };
+  const first = optimizeItinerary(cityIds, legs, options);
+  const second = optimizeItinerary(cityIds, legs, options);
+  assert.equal(first.cityOrder.length, cityIds.length);
+  assert.equal(new Set(first.cityOrder).size, cityIds.length);
+  assert.equal(first.cityOrder[0], cityIds[0]);
+  assert.equal(first.cityOrder.at(-1), cityIds.at(-1));
+  assert.equal(first.totalMinutes, cityIds.length - 1);
+  assert.deepEqual(second, first);
+  assert.equal(
+    first.legs.reduce((total, leg) => total + (leg.totalMinutes ?? 0), 0),
+    first.totalMinutes,
   );
+});
+
+test("route optimization still rejects disconnected inputs", () => {
   assert.throws(
     () =>
       optimizeItinerary(
@@ -517,7 +562,7 @@ test("fallback routes are always disclosed as estimates", () => {
   assert.ok(options.every((leg) => leg.provenance.kind === "estimated"));
 });
 
-test("surface fallbacks exist only on curated bilateral corridors", () => {
+test("surface fallbacks exist only on verified or explicitly modelled corridors", () => {
   const railAndCoachCorridors = [
     ["seoul", "busan"],
     ["tokyo", "osaka"],
@@ -555,15 +600,15 @@ test("surface fallbacks exist only on curated bilateral corridors", () => {
   ]);
   assert.throws(
     () => createEstimatedFallbackLeg("london", "dublin", "train"),
-    /No curated train fallback corridor/,
+    /No conservative train fallback/,
   );
   assert.throws(
     () => createEstimatedFallbackLeg("seoul", "paris", "bus"),
-    /No curated bus fallback corridor/,
+    /No conservative bus fallback/,
   );
 });
 
-test("corridor rail benchmarks beat flights and disclose border processing", () => {
+test("surface modes expose only intercity running time and beat door-to-door flights", () => {
   const fasterRailPairs = [
     ["seoul", "busan"],
     ["tokyo", "osaka"],
@@ -584,11 +629,110 @@ test("corridor rail benchmarks beat flights and disclose border processing", () 
   const componentKinds = crossChannel.segments.flatMap(
     (segment) => segment.duration?.components.map((component) => component.kind) ?? [],
   );
-  assert.ok(componentKinds.includes("waiting"));
-  assert.ok(componentKinds.includes("check_in_security"));
-  assert.ok(componentKinds.includes("border_control"));
-  assert.ok((crossChannel.totalMinutes ?? 0) >= 230);
-  assert.ok((crossChannel.totalMinutes ?? Infinity) <= 260);
+  assert.deepEqual(componentKinds, ["in_vehicle"]);
+  assert.equal(crossChannel.totalMinutes, 140);
+});
+
+test("Venice to Florence selects a two-hour train model instead of a flight", () => {
+  const localized = (value: string) => ({
+    ko: value,
+    en: value,
+    fr: value,
+    ja: value,
+    zh: value,
+  });
+  const italy = { code: "IT", names: localized("Italy") };
+  const venice: City = {
+    id: "open-meteo:venice-test",
+    names: localized("Venice"),
+    country: italy,
+    coordinates: { latitude: 45.4408, longitude: 12.3155 },
+    timeZone: "Europe/Rome",
+  };
+  const florence: City = {
+    id: "open-meteo:florence-test",
+    names: localized("Florence"),
+    country: italy,
+    coordinates: { latitude: 43.7696, longitude: 11.2558 },
+    timeZone: "Europe/Rome",
+  };
+  assert.deepEqual(getEstimatedFallbackModesForCities(venice, florence), [
+    "flight",
+    "train",
+    "bus",
+  ]);
+  const candidates = buildEstimatedFallbackOptionsForCities([
+    venice,
+    florence,
+  ]);
+  const train = createEstimatedFallbackLegForCities(
+    venice,
+    florence,
+    "train",
+  );
+  const flight = createEstimatedFallbackLegForCities(
+    venice,
+    florence,
+    "flight",
+  );
+  assert.equal(train.totalMinutes, 125);
+  assert.deepEqual(
+    train.segments.flatMap(
+      (segment) =>
+        segment.duration?.components.map((component) => component.kind) ?? [],
+    ),
+    ["in_vehicle"],
+  );
+  assert.ok((flight.totalMinutes ?? 0) > (train.totalMinutes ?? Infinity));
+  assert.equal(
+    selectFastestLeg(candidates, venice.id, florence.id)?.id,
+    train.id,
+  );
+});
+
+test("nearby mainland Italian cities retain rail fallbacks when timetable lookups are partial", () => {
+  const localized = (value: string) => ({
+    ko: value,
+    en: value,
+    fr: value,
+    ja: value,
+    zh: value,
+  });
+  const italy = { code: "IT", names: localized("Italy") };
+  const florence: City = {
+    id: "open-meteo:florence-partial-test",
+    names: localized("Florence"),
+    country: italy,
+    coordinates: { latitude: 43.7696, longitude: 11.2558 },
+    timeZone: "Europe/Rome",
+  };
+  const rome: City = {
+    id: "open-meteo:rome-partial-test",
+    names: localized("Rome"),
+    country: italy,
+    coordinates: { latitude: 41.9028, longitude: 12.4964 },
+    timeZone: "Europe/Rome",
+  };
+  const palermo: City = {
+    id: "open-meteo:palermo-island-test",
+    names: localized("Palermo"),
+    country: italy,
+    coordinates: { latitude: 38.1157, longitude: 13.3615 },
+    timeZone: "Europe/Rome",
+  };
+
+  assert.deepEqual(getEstimatedFallbackModesForCities(florence, rome), [
+    "flight",
+    "train",
+    "bus",
+  ]);
+  const candidates = buildEstimatedFallbackOptionsForCities([florence, rome]);
+  const fastest = selectFastestLeg(candidates, florence.id, rome.id);
+  assert.ok(fastest?.modes.includes("train"));
+  assert.equal(fastest?.totalMinutes, 95);
+  assert.deepEqual(getEstimatedFallbackModesForCities(palermo, florence), [
+    "flight",
+  ]);
 });
 
 test("Transitous parser selects the fastest valid public-transit itinerary", () => {
@@ -600,14 +744,15 @@ test("Transitous parser selects the fastest valid public-transit itinerary", () 
   assert.ok(parsed);
   assert.equal(parsed.leg.fromCityId, "paris");
   assert.equal(parsed.leg.toCityId, "london");
-  assert.deepEqual(parsed.leg.modes, ["walk", "metro", "train", "bus"]);
+  assert.deepEqual(parsed.leg.modes, ["train", "bus"]);
   assert.equal(parsed.leg.provenance.kind, "scheduled");
-  assert.equal(parsed.leg.totalMinutes, 210);
+  assert.equal(parsed.leg.totalMinutes, 155);
   assert.equal(parsed.schedule.providerItineraryId, "provider-itinerary-fast");
   assert.equal(parsed.schedule.providerDurationSeconds, 12_600);
-  assert.equal(parsed.schedule.elapsedFromQuerySeconds, 12_600);
-  assert.equal(parsed.schedule.departureTime, "2098-04-05T08:00:00Z");
-  assert.equal(parsed.schedule.arrivalTime, "2098-04-05T11:30:00Z");
+  assert.equal(parsed.schedule.intercityDurationSeconds, 9_300);
+  assert.equal(parsed.schedule.elapsedFromQuerySeconds, 9_300);
+  assert.equal(parsed.schedule.departureTime, "2098-04-05T08:50:00Z");
+  assert.equal(parsed.schedule.arrivalTime, "2098-04-05T11:25:00Z");
 
   const withPreDepartureWait = parseTransitousPlan(
     transitousPlanFixture(),
@@ -615,8 +760,135 @@ test("Transitous parser selects the fastest valid public-transit itinerary", () 
     "london",
     "2098-04-05T07:50:00Z",
   );
-  assert.equal(withPreDepartureWait?.leg.totalMinutes, 220);
-  assert.equal(withPreDepartureWait?.schedule.elapsedFromQuerySeconds, 13_200);
+  assert.equal(withPreDepartureWait?.leg.totalMinutes, 155);
+  assert.equal(withPreDepartureWait?.schedule.elapsedFromQuerySeconds, 9_300);
+});
+
+test("Transitous ranks by the same trimmed intercity duration shown to users", () => {
+  const plan = {
+    itineraries: [
+      {
+        id: "short-provider-total-slower-train",
+        duration: 8_100,
+        startTime: "2098-04-05T08:00:00Z",
+        endTime: "2098-04-05T10:15:00Z",
+        transfers: 0,
+        legs: [
+          {
+            mode: "WALK",
+            duration: 900,
+            startTime: "2098-04-05T08:00:00Z",
+            endTime: "2098-04-05T08:15:00Z",
+            from: { name: "START" },
+            to: { name: "Station" },
+          },
+          {
+            mode: "RAIL",
+            duration: 7_200,
+            startTime: "2098-04-05T08:15:00Z",
+            endTime: "2098-04-05T10:15:00Z",
+            from: { name: "Station" },
+            to: { name: "Destination" },
+          },
+        ],
+      },
+      {
+        id: "long-provider-total-faster-train",
+        duration: 14_400,
+        startTime: "2098-04-05T06:00:00Z",
+        endTime: "2098-04-05T10:00:00Z",
+        transfers: 0,
+        legs: [
+          {
+            mode: "WALK",
+            duration: 10_800,
+            startTime: "2098-04-05T06:00:00Z",
+            endTime: "2098-04-05T09:00:00Z",
+            from: { name: "START" },
+            to: { name: "Station" },
+          },
+          {
+            mode: "RAIL",
+            duration: 3_600,
+            startTime: "2098-04-05T09:00:00Z",
+            endTime: "2098-04-05T10:00:00Z",
+            from: { name: "Station" },
+            to: { name: "Destination" },
+          },
+        ],
+      },
+    ],
+  };
+  const parsed = parseTransitousPlan(plan, "paris", "london");
+  assert.equal(
+    parsed?.schedule.providerItineraryId,
+    "long-provider-total-faster-train",
+  );
+  assert.equal(parsed?.leg.totalMinutes, 60);
+  assert.equal(parsed?.schedule.intercityDurationSeconds, 3_600);
+});
+
+test("Transitous excludes local access modes but retains intercity connection elapsed time", () => {
+  const parsed = parseTransitousPlan(
+    {
+      itineraries: [
+        {
+          id: "rail-local-transfer-coach",
+          duration: 10_800,
+          startTime: "2098-04-05T08:00:00Z",
+          endTime: "2098-04-05T11:00:00Z",
+          transfers: 2,
+          legs: [
+            {
+              mode: "RAIL",
+              duration: 3_600,
+              startTime: "2098-04-05T08:00:00Z",
+              endTime: "2098-04-05T09:00:00Z",
+              from: { name: "Origin station" },
+              to: { name: "Transfer station" },
+            },
+            {
+              mode: "SUBWAY",
+              duration: 1_200,
+              startTime: "2098-04-05T09:05:00Z",
+              endTime: "2098-04-05T09:25:00Z",
+              from: { name: "Transfer station" },
+              to: { name: "Coach station" },
+            },
+            {
+              mode: "WALK",
+              duration: 600,
+              startTime: "2098-04-05T09:25:00Z",
+              endTime: "2098-04-05T09:35:00Z",
+              from: { name: "Metro" },
+              to: { name: "Coach bay" },
+            },
+            {
+              mode: "COACH",
+              duration: 4_800,
+              startTime: "2098-04-05T09:40:00Z",
+              endTime: "2098-04-05T11:00:00Z",
+              from: { name: "Coach bay" },
+              to: { name: "Destination" },
+            },
+          ],
+        },
+      ],
+    },
+    "paris",
+    "london",
+  );
+  assert.ok(parsed);
+  assert.deepEqual(parsed.leg.modes, ["train", "bus"]);
+  assert.equal(parsed.leg.totalMinutes, 180);
+  assert.equal(parsed.schedule.intercityDurationSeconds, 10_800);
+  assert.deepEqual(
+    parsed.leg.segments.flatMap(
+      (segment) =>
+        segment.duration?.components.map((component) => component.kind) ?? [],
+    ),
+    ["in_vehicle", "waiting", "in_vehicle"],
+  );
 });
 
 test("schedule endpoint queries every ordered pair and keeps failures directional", async () => {
@@ -645,7 +917,8 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
   }) as typeof fetch;
 
   try {
-    assert.equal(SCHEDULE_MAX_CITIES, 4);
+    assert.equal(SCHEDULE_MAX_CITIES, null);
+    assert.equal(SCHEDULE_MAX_PROVIDER_PAIRS, 12);
     assert.equal(SCHEDULE_MAX_PAIRS, 12);
     const response = await schedulePost(
       new Request("https://together.example/api/routes/schedule", {
@@ -721,7 +994,7 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
       calls.every(
         (call) =>
           call.userAgent ===
-          "Together/0.2 (https://together-travel-0920.ocvi-85.chatgpt.site)",
+          "Together/0.3 (https://together-travel-0920.ocvi-85.chatgpt.site)",
       ),
     );
     assert.deepEqual(
@@ -754,20 +1027,117 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
   }
 });
 
-test("schedule endpoint rejects more than four cities before provider access", async () => {
-  const response = await schedulePost(
-    new Request("https://together.example/api/routes/schedule", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        cityIds: ["paris", "london", "brussels", "lyon", "milan"],
-        departureDate: utcDateFromToday(31),
+test("schedule endpoint accepts larger routes and bounds provider work", async () => {
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = (async () => {
+    providerCalls += 1;
+    return Response.json(transitousPlanFixture());
+  }) as typeof fetch;
+  try {
+    const response = await schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.201",
+        },
+        body: JSON.stringify({
+          cityIds: [
+            "paris",
+            "london",
+            "brussels",
+            "lyon",
+            "milan",
+          ],
+          departureDate: utcDateFromToday(31),
+        }),
       }),
-    }),
-  );
-  assert.equal(response.status, 400);
-  const body = (await response.json()) as { error?: { code?: string } };
-  assert.equal(body.error?.code, "invalid_schedule_request");
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      partial: boolean;
+      requestSummary: {
+        requestedPairCount: number;
+        eligiblePairCount: number;
+        providerPairLimitApplied: boolean;
+      };
+    };
+    assert.equal(body.partial, true);
+    assert.equal(body.requestSummary.requestedPairCount, 12);
+    assert.equal(body.requestSummary.eligiblePairCount, 20);
+    assert.equal(body.requestSummary.providerPairLimitApplied, true);
+    assert.equal(providerCalls, 12);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("schedule endpoint validates and applies fixed start/end constraints", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ from: string | null; to: string | null }> = [];
+  globalThis.fetch = (async (input) => {
+    const query = new URL(String(input)).searchParams;
+    calls.push({ from: query.get("fromPlace"), to: query.get("toPlace") });
+    return Response.json(transitousPlanFixture());
+  }) as typeof fetch;
+  try {
+    const response = await schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.202",
+        },
+        body: JSON.stringify({
+          cityIds: ["paris", "london", "brussels", "lyon"],
+          startCityId: "paris",
+          endCityId: "lyon",
+          departureDate: utcDateFromToday(32),
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      routeConstraints: {
+        startCityId: string | null;
+        endCityId: string | null;
+      };
+      requestSummary: { requestedPairCount: number; eligiblePairCount: number };
+    };
+    assert.deepEqual(body.routeConstraints, {
+      startCityId: "paris",
+      endCityId: "lyon",
+    });
+    assert.equal(body.requestSummary.requestedPairCount, 7);
+    assert.equal(body.requestSummary.eligiblePairCount, 7);
+    assert.equal(calls.length, 7);
+    const paris = "48.8566,2.3522";
+    const lyon = "45.764,4.8357";
+    assert.ok(calls.every((call) => call.to !== paris));
+    assert.ok(calls.every((call) => call.from !== lyon));
+
+    for (const invalidConstraints of [
+      { startCityId: "berlin" },
+      { endCityId: "berlin" },
+      { startCityId: "paris", endCityId: "paris" },
+    ]) {
+      const invalid = await schedulePost(
+        new Request("https://together.example/api/routes/schedule", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            cityIds: ["paris", "london"],
+            departureDate: utcDateFromToday(33),
+            ...invalidConstraints,
+          }),
+        }),
+      );
+      assert.equal(invalid.status, 400);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("schedule endpoint routes validated Open-Meteo cities by request coordinates", async () => {
@@ -1040,7 +1410,7 @@ test("request cancellation aborts active pairs and clears queued provider work",
       missingPairs: Array<{ reason: string }>;
     };
     assert.equal(response.status, 200);
-    assert.equal(providerSignals.length, 2);
+    assert.equal(providerSignals.length, 4);
     assert.ok(providerSignals.every((signal) => signal.aborted));
     assert.equal(body.missingPairs.length, 6);
     assert.ok(

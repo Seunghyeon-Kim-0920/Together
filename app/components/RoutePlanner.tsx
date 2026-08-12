@@ -7,18 +7,18 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CITIES } from "../../lib/cities";
+import { DEVICE_TRIPS_KEY, MAX_DEVICE_TRIPS, parseDeviceTrips, readDeviceValue, writeDeviceValue } from "../../lib/device-storage";
 import { provenanceLabel, SUPPORTED_LOCALES, type City, type DurationComponentKind, type OptimizedItinerary, type SupportedLocale, type TransportMode, type TravelLeg } from "../../lib/domain";
 import { buildEstimatedFallbackOptionsForCities, optimizeItinerary } from "../../lib/routing";
 import { formatDateTime, formatDuration, LANGUAGE_TAGS, translate } from "../../lib/i18n";
 import type { RouteSnapshot } from "../../lib/route-snapshot";
+import { RouteMap } from "./RouteMap";
 
 export { parseRouteSnapshot } from "../../lib/route-snapshot";
 export type { RouteSnapshot } from "../../lib/route-snapshot";
 
 type RoutePlannerProps = {
   locale: SupportedLocale;
-  user: { displayName: string; email: string } | null;
-  signInUrl: string;
   initialCityIds?: string[];
   initialDepartureDate?: string;
   initialSnapshot?: RouteSnapshot;
@@ -36,6 +36,7 @@ type ScheduleResult = {
 
 type CitySearchResult = {
   readonly id: string;
+  readonly providerId: number;
   readonly name: string;
   readonly country: string;
   readonly countryCode: string;
@@ -76,7 +77,8 @@ function cityFromSearchResult(result: CitySearchResult, localizedNames?: City["n
     Math.abs(city.coordinates.longitude - result.longitude) < 0.03
   );
   if (staticMatch) return staticMatch;
-  const names = localizedNames ?? Object.freeze({ ko: result.name, en: result.name, fr: result.name, ja: result.name, zh: result.name });
+  const neutralName = `${result.countryCode} ${result.latitude.toFixed(3)}, ${result.longitude.toFixed(3)}`;
+  const names = localizedNames ?? Object.freeze({ ko: neutralName, en: neutralName, fr: neutralName, ja: neutralName, zh: neutralName });
   return Object.freeze({
     id: result.id,
     names,
@@ -169,34 +171,6 @@ function modeLabel(mode: TransportMode, locale: SupportedLocale) {
   return labels[mode][locale];
 }
 
-function RouteMap({ itinerary, locale, cities }: { itinerary: OptimizedItinerary; locale: SupportedLocale; cities: ReadonlyMap<string, City> }) {
-  const points = itinerary.cityOrder.map((cityId, index) => {
-    const city = routeCity(cities, cityId);
-    const x = Math.min(93, Math.max(7, ((city.coordinates.longitude + 180) / 360) * 100));
-    const y = Math.min(82, Math.max(15, ((78 - city.coordinates.latitude) / 145) * 100));
-    return { city, index, x, y };
-  });
-  return (
-    <div className="route-map" role="img" aria-label={itinerary.cityOrder.map((id) => routeCity(cities, id).names[locale]).join(" → ")}>
-      <div className="map-paper" />
-      {points.slice(0, -1).map((point, index) => {
-        const next = points[index + 1];
-        const dx = next.x - point.x;
-        const dy = next.y - point.y;
-        const length = Math.sqrt(dx * dx + dy * dy);
-        const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-        return <span key={`${point.city.id}-${next.city.id}`} className="map-route-line" style={{ left: `${point.x}%`, top: `${point.y}%`, width: `${length}%`, transform: `rotate(${angle}deg)` }} />;
-      })}
-      {points.map(({ city, index, x, y }) => (
-        <div className="map-marker" key={city.id} style={{ left: `${x}%`, top: `${y}%` }}>
-          <span>{index + 1}</span>
-          <strong>{city.names[locale]}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function LegRow({ leg, index, locale, cities, forceExpanded = false }: { leg: OptimizedItinerary["legs"][number]; index: number; locale: SupportedLocale; cities: ReadonlyMap<string, City>; forceExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(index === 0);
   const detailsVisible = expanded || forceExpanded;
@@ -227,10 +201,11 @@ function LegRow({ leg, index, locale, cities, forceExpanded = false }: { leg: Op
   );
 }
 
-export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialDepartureDate, initialSnapshot, initialTimestamp, onNotify, onTripSaved }: RoutePlannerProps) {
+export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, initialSnapshot, initialTimestamp, onNotify, onTripSaved }: RoutePlannerProps) {
   const initialSelectedCityIds = initialSnapshot?.selectedCityIds ?? initialSnapshot?.cityOrder ?? initialCityIds;
   const initialRouteDate = initialSnapshot?.departureDate ?? initialDepartureDate ?? new Date(Date.parse(initialTimestamp) + 1000 * 60 * 60 * 24 * 30).toISOString().slice(0, 10);
-  const initialFixedStart = initialSnapshot?.fixedStart ?? true;
+  const initialStartCityId = initialSnapshot?.cityOrder[0] ?? initialSelectedCityIds?.[0] ?? "paris";
+  const initialEndCityId = initialSnapshot?.cityOrder.at(-1) ?? initialSelectedCityIds?.at(-1) ?? "berlin";
   const initialExtraCities = (initialSnapshot?.cities ?? []).filter((city) => !CITIES.some((catalogueCity) => catalogueCity.id === city.id));
   const [cityIds, setCityIds] = useState<string[]>(initialSelectedCityIds?.length ? [...initialSelectedCityIds] : ["paris", "brussels", "amsterdam", "berlin"]);
   const [extraCities, setExtraCities] = useState<readonly City[]>(initialExtraCities);
@@ -241,27 +216,32 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
   const [addingCityId, setAddingCityId] = useState<string | null>(null);
   const addingCityIds = useRef(new Set<string>());
   const [departureDate, setDepartureDate] = useState(initialRouteDate);
-  const [fixedStart, setFixedStart] = useState(initialFixedStart);
+  const [startCityId, setStartCityId] = useState(initialStartCityId);
+  const [endCityId, setEndCityId] = useState(initialEndCityId);
   const [busy, setBusy] = useState(false);
   const [calculating, setCalculating] = useState(false);
   const [pdfMode, setPdfMode] = useState(false);
   const [error, setError] = useState("");
   const [scheduleResult, setScheduleResult] = useState<ScheduleResult | null>(null);
   const [restoredRoute, setRestoredRoute] = useState(() => initialSnapshot?.itinerary ? {
-    key: `${initialRouteDate}:${initialFixedStart ? "fixed" : "open"}:${(initialSelectedCityIds ?? initialSnapshot.cityOrder).join(",")}`,
+    key: `${initialRouteDate}:${initialStartCityId}:${initialEndCityId}:${(initialSelectedCityIds ?? initialSnapshot.cityOrder).join(",")}`,
     itinerary: initialSnapshot.itinerary,
     calculatedAt: initialSnapshot.createdAt,
   } : null);
 
-  const scheduleKey = `${departureDate}:${cityIds.join(",")}`;
-  const routeStateKey = `${departureDate}:${fixedStart ? "fixed" : "open"}:${cityIds.join(",")}`;
-  const activeSchedule = scheduleResult?.key === scheduleKey ? scheduleResult : null;
   const availableCities = useMemo(() => [...CITIES, ...extraCities], [extraCities]);
   const cityMap = useMemo(() => new Map(availableCities.map((city) => [city.id, city])), [availableCities]);
   const selectedCities = useMemo(
     () => cityIds.map((cityId) => cityMap.get(cityId)).filter((city): city is City => Boolean(city)),
     [cityIds, cityMap],
   );
+  const effectiveStartCityId = cityIds.includes(startCityId) ? startCityId : cityIds[0] ?? "";
+  const effectiveEndCityId = cityIds.includes(endCityId) && endCityId !== effectiveStartCityId
+    ? endCityId
+    : [...cityIds].reverse().find((cityId) => cityId !== effectiveStartCityId) ?? "";
+  const scheduleKey = `${departureDate}:${effectiveStartCityId}:${effectiveEndCityId}:${cityIds.join(",")}`;
+  const routeStateKey = `${departureDate}:${effectiveStartCityId}:${effectiveEndCityId}:${cityIds.join(",")}`;
+  const activeSchedule = scheduleResult?.key === scheduleKey ? scheduleResult : null;
   const departureBounds = useMemo(() => {
     const base = new Date(initialTimestamp);
     const asDate = (offsetDays: number) => new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + offsetDays)).toISOString().slice(0, 10);
@@ -276,10 +256,11 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
     if (restoredRoute?.key === routeStateKey) return restoredRoute.itinerary;
     const candidates = [...buildEstimatedFallbackOptionsForCities(selectedCities), ...(activeSchedule?.legs ?? [])];
     return optimizeItinerary(cityIds, candidates, {
-      ...(fixedStart ? { startCityId: cityIds[0] } : {}),
+      startCityId: effectiveStartCityId,
+      endCityId: effectiveEndCityId,
       cities: selectedCities,
     });
-  }, [activeSchedule, cityIds, fixedStart, restoredRoute, routeStateKey, selectedCities]);
+  }, [activeSchedule, cityIds, effectiveEndCityId, effectiveStartCityId, restoredRoute, routeStateKey, selectedCities]);
 
   useEffect(() => {
     const query = cityQuery.trim();
@@ -334,20 +315,18 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
   };
 
   const addCity = () => {
-    if (cityIds.length >= 10) return setError(translate(locale, "cityLimit"));
     const next = CITIES.find((city) => !cityIds.includes(city.id));
     if (next) setCityIds((items) => [...items, next.id]);
   };
 
   const addSearchResult = async (result: CitySearchResult) => {
-    if (cityIds.length >= 10) return setError(translate(locale, "cityLimit"));
     if (addingCityIds.current.has(result.id)) return;
     addingCityIds.current.add(result.id);
     setAddingCityId(result.id);
     const localizationQuery = cityQuery.trim() || result.name;
     let localizedResult: CitySearchResult | undefined;
     try {
-      const params = new URLSearchParams({ q: localizationQuery, locale, translations: "1" });
+      const params = new URLSearchParams({ q: localizationQuery, locale, translations: "1", providerId: String(result.providerId) });
       const response = await fetch(`/api/cities/search?${params}`);
       if (response.ok) {
         const data = await response.json() as { results?: CitySearchResult[] };
@@ -356,8 +335,9 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
     } catch {
       // The selected provider label remains a safe proper-name fallback.
     }
+    const neutralName = `${result.countryCode} ${result.latitude.toFixed(3)}, ${result.longitude.toFixed(3)}`;
     const localizedNames = localizedResult?.names ?? Object.freeze(Object.fromEntries(
-      SUPPORTED_LOCALES.map((resultLocale) => [resultLocale, result.name]),
+      SUPPORTED_LOCALES.map((resultLocale) => [resultLocale, resultLocale === locale ? result.name : neutralName]),
     )) as City["names"];
     const city = cityFromSearchResult(result, localizedNames);
     if (cityIds.includes(city.id)) {
@@ -368,7 +348,7 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
     if (!CITIES.some((catalogueCity) => catalogueCity.id === city.id)) {
       setExtraCities((items) => items.some((item) => item.id === city.id) ? items : [...items, city]);
     }
-    setCityIds((items) => items.includes(city.id) || items.length >= 10 ? items : [...items, city.id]);
+    setCityIds((items) => items.includes(city.id) ? items : [...items, city.id]);
     setCityQuery("");
     setCitySearchResults([]);
     addingCityIds.current.delete(result.id);
@@ -377,38 +357,36 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
   };
 
   const calculate = async () => {
-    if (cityIds.length < 2 || cityIds.length > 10) return setError(translate(locale, "cityLimit"));
+    if (cityIds.length < 2) return setError(translate(locale, "cityLimit"));
     setError("");
     setBusy(true);
     setCalculating(true);
     setRestoredRoute(null);
     try {
-      if (cityIds.length <= 4) {
-        const response = await fetch("/api/routes/schedule", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            cityIds,
-            cities: selectedCities.map((city) => ({
-              id: city.id,
-              latitude: city.coordinates.latitude,
-              longitude: city.coordinates.longitude,
-              timeZone: city.timeZone,
-            })),
-            departureDate,
-          }),
-        });
-        if (!response.ok) throw new Error("schedule unavailable");
-        const data = await response.json() as { legs?: TravelLeg[]; partial?: boolean; calculatedAt?: string };
-        setScheduleResult({
-          key: scheduleKey,
-          legs: Array.isArray(data.legs) ? data.legs : [],
-          partial: Boolean(data.partial) || !Array.isArray(data.legs) || data.legs.length === 0,
-          calculatedAt: typeof data.calculatedAt === "string" ? data.calculatedAt : new Date().toISOString(),
-        });
-      } else {
-        setScheduleResult({ key: scheduleKey, legs: [], partial: true, calculatedAt: new Date().toISOString() });
-      }
+      const response = await fetch("/api/routes/schedule", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cityIds,
+          startCityId: effectiveStartCityId,
+          endCityId: effectiveEndCityId,
+          cities: selectedCities.map((city) => ({
+            id: city.id,
+            latitude: city.coordinates.latitude,
+            longitude: city.coordinates.longitude,
+            timeZone: city.timeZone,
+          })),
+          departureDate,
+        }),
+      });
+      if (!response.ok) throw new Error("schedule unavailable");
+      const data = await response.json() as { legs?: TravelLeg[]; partial?: boolean; calculatedAt?: string };
+      setScheduleResult({
+        key: scheduleKey,
+        legs: Array.isArray(data.legs) ? data.legs : [],
+        partial: Boolean(data.partial) || !Array.isArray(data.legs) || data.legs.length === 0,
+        calculatedAt: typeof data.calculatedAt === "string" ? data.calculatedAt : new Date().toISOString(),
+      });
     } catch {
       setScheduleResult({ key: scheduleKey, legs: [], partial: true, calculatedAt: new Date().toISOString() });
     } finally {
@@ -419,7 +397,7 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
   };
 
   const snapshot = (): RouteSnapshot | null => itinerary ? {
-    version: 2,
+    version: 3,
     name: `${routeCity(cityMap, itinerary.cityOrder[0]).names[locale]} → ${routeCity(cityMap, itinerary.cityOrder.at(-1) ?? itinerary.cityOrder[0]).names[locale]}`,
     departureDate,
     cityOrder: [...itinerary.cityOrder],
@@ -427,7 +405,9 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
     createdAt: new Date().toISOString(),
     provenance: itinerary.provenance.kind === "observed" ? "observed" : itinerary.provenance.kind === "scheduled" ? "scheduled" : "estimated",
     selectedCityIds: [...cityIds],
-    fixedStart,
+    startCityId: effectiveStartCityId,
+    endCityId: effectiveEndCityId,
+    optimizationMethod: cityIds.length <= 10 ? "exact" : "heuristic",
     itinerary,
     cities: itinerary.cityOrder.map((cityId) => routeCity(cityMap, cityId)),
   } : null;
@@ -486,24 +466,23 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
   };
 
   const saveTrip = async () => {
-    if (!user) {
-      onNotify(translate(locale, "signInToSave"), "info");
-      window.setTimeout(() => { window.location.href = signInUrl; }, 500);
-      return;
-    }
     const data = snapshot();
     if (!data) return;
     setBusy(true);
-    try {
-      const response = await fetch("/api/trips", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: data.name, payload: data }) });
-      if (!response.ok) throw new Error("save failed");
+    const existing = readDeviceValue(DEVICE_TRIPS_KEY, parseDeviceTrips, []);
+    if (existing.length >= MAX_DEVICE_TRIPS) {
+      onNotify(translate(locale, "storageLimit"), "error");
+      setBusy(false);
+      return;
+    }
+    const next = [{ id: crypto.randomUUID(), name: data.name, payload: data, updatedAt: new Date().toISOString() }, ...existing];
+    if (writeDeviceValue(DEVICE_TRIPS_KEY, next)) {
       onNotify(translate(locale, "saved"), "success");
       onTripSaved();
-    } catch {
-      onNotify(translate(locale, "retry"), "error");
-    } finally {
-      setBusy(false);
+    } else {
+      onNotify(translate(locale, "deviceSaveError"), "error");
     }
+    setBusy(false);
   };
 
   return (
@@ -529,7 +508,7 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
 
       <div className="planner-layout">
         <aside className="planner-controls" aria-label={translate(locale, "cities")}>
-          <div className="section-heading"><h2>{translate(locale, "cities")}</h2><span>{cityIds.length}/10</span></div>
+          <div className="section-heading"><h2>{translate(locale, "cities")}</h2><span>{cityIds.length}</span></div>
           <div className="city-list">
             {cityIds.map((cityId, index) => (
               <div className="city-control" key={`${cityId}-${index}`}>
@@ -549,7 +528,7 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
               </div>
             ))}
           </div>
-          <button className="add-city" type="button" onClick={addCity} disabled={cityIds.length >= 10}><Plus size={18} />{translate(locale, "addCity")}</button>
+          <button className="add-city" type="button" onClick={addCity}><Plus size={18} />{translate(locale, "addCity")}</button>
           <div className="world-city-search">
             <label>
               <span className="sr-only">{translate(locale, "searchWorldCities")}</span>
@@ -582,16 +561,19 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
             <small className="city-search-credit">{translate(locale, "citySearchHint")} <a href="https://open-meteo.com/en/docs/geocoding-api" target="_blank" rel="noreferrer">{translate(locale, "geocodingCredit")}</a></small>
           </div>
           <label className="field-row date-field"><span><CalendarDays size={18} />{translate(locale, "departure")}</span><input type="date" min={departureBounds.minimum} max={departureBounds.maximum} value={departureDate} onChange={(event) => setDepartureDate(event.target.value)} /></label>
-          <label className="checkbox-row"><input type="checkbox" checked={fixedStart} onChange={(event) => setFixedStart(event.target.checked)} /><span>{translate(locale, "fixedStart")}</span></label>
+          <div className="endpoint-fields">
+            <label><span>{translate(locale, "startCity")}</span><select value={effectiveStartCityId} onChange={(event) => { const next = event.target.value; setStartCityId(next); if (next === effectiveEndCityId) setEndCityId(cityIds.find((cityId) => cityId !== next) ?? ""); }}>{selectedCities.map((city) => <option key={city.id} value={city.id}>{city.names[locale]}</option>)}</select></label>
+            <label><span>{translate(locale, "endCity")}</span><select value={effectiveEndCityId} onChange={(event) => { const next = event.target.value; setEndCityId(next); if (next === effectiveStartCityId) setStartCityId(cityIds.find((cityId) => cityId !== next) ?? ""); }}>{selectedCities.map((city) => <option key={city.id} value={city.id}>{city.names[locale]}</option>)}</select></label>
+          </div>
           {error ? <p className="form-error" role="alert">{error}</p> : null}
           <button className="primary-action find-route" type="button" onClick={calculate} disabled={busy}>{calculating ? <RotateCcw className="spin" size={19} /> : <MapPin size={19} />}{translate(locale, calculating ? "scheduleLoading" : "findRoute")}</button>
-          {activeSchedule ? <p className={selectedHasScheduled ? "schedule-feedback success" : "schedule-feedback"}>{translate(locale, cityIds.length > 4 ? "scheduleLimit" : selectedHasScheduled && selectedHasEstimated ? "schedulePartial" : selectedHasScheduled ? "scheduleFound" : activeSchedule.legs.length ? "scheduleChecked" : "scheduleUnavailable")}</p> : null}
+          {activeSchedule ? <p className={selectedHasScheduled ? "schedule-feedback success" : "schedule-feedback"}>{translate(locale, selectedHasScheduled && selectedHasEstimated ? "schedulePartial" : selectedHasScheduled ? "scheduleFound" : activeSchedule.legs.length ? "scheduleChecked" : "scheduleUnavailable")}</p> : null}
         </aside>
 
         {itinerary ? (
           <section className="route-results" id="route-results" aria-live="polite">
             <div className="result-heading">
-              <div><h2>{translate(locale, "optimizedOrder")}</h2><p>{translate(locale, "exactOptimization")}</p></div>
+              <div><h2>{translate(locale, "optimizedOrder")}</h2><p>{translate(locale, cityIds.length <= 10 ? "exactOptimization" : "fastApproximation")}</p></div>
               <span className="provenance-state"><Database size={15} />{translate(locale, selectedProvenanceKey)}</span>
             </div>
             <div className="order-rail" aria-label={translate(locale, "optimizedOrder")}>
@@ -599,7 +581,7 @@ export function RoutePlanner({ locale, user, signInUrl, initialCityIds, initialD
                 <div className="order-city" key={cityId}><span>{index + 1}</span><strong>{routeCity(cityMap, cityId).names[locale]}</strong>{index < itinerary.cityOrder.length - 1 ? <i aria-hidden="true">→</i> : null}</div>
               ))}
             </div>
-            <RouteMap itinerary={itinerary} locale={locale} cities={cityMap} />
+            <RouteMap key={itinerary.cityOrder.join("|")} itinerary={itinerary} locale={locale} cities={cityMap} />
             <div className="route-summary">
               <div><Clock3 size={22} /><span>{translate(locale, "totalTravel")}<strong>{formatDuration(itinerary.totalMinutes, locale)}</strong></span></div>
               <div><MapPin size={22} /><span>{itinerary.legs.length}<strong>{translate(locale, "legs")}</strong></span></div>

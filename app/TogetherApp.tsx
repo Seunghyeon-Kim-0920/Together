@@ -65,10 +65,7 @@ async function decodeSnapshot(encoded: string): Promise<RouteSnapshot | null> {
   }
 }
 
-export function TogetherApp({ user, signInUrl, signOutUrl, initialTimestamp, initialLocale }: {
-  user: { displayName: string; email: string } | null;
-  signInUrl: string;
-  signOutUrl: string;
+export function TogetherApp({ initialTimestamp, initialLocale }: {
   initialTimestamp: string;
   initialLocale: SupportedLocale;
 }) {
@@ -132,11 +129,11 @@ export function TogetherApp({ user, signInUrl, signOutUrl, initialTimestamp, ini
 
   return (
     <div className="app-shell">
-      <Header locale={locale} onLocaleChange={changeLocale} activeView={activeView} onViewChange={setActiveView} user={user} signInUrl={signInUrl} signOutUrl={signOutUrl} />
-      {activeView === "route" ? <RoutePlanner key={routeKey} locale={locale} user={user} signInUrl={signInUrl} initialCityIds={routeSeed} initialDepartureDate={routeDepartureDate} initialSnapshot={routeSnapshot ?? undefined} initialTimestamp={initialTimestamp} onNotify={notify} onTripSaved={() => setTripRefreshKey((value) => value + 1)} /> : null}
-      {activeView === "trips" ? <TripsPanel locale={locale} user={user} signInUrl={signInUrl} refreshKey={tripRefreshKey} onOpen={openTrip} onNotify={notify} /> : null}
-      {activeView === "expenses" ? <ExpensesPanel locale={locale} user={user} signInUrl={signInUrl} onNotify={notify} /> : null}
-      {activeView === "profile" ? <ProfilePanel locale={locale} user={user} signInUrl={signInUrl} onNotify={notify} /> : null}
+      <Header locale={locale} onLocaleChange={changeLocale} activeView={activeView} onViewChange={setActiveView} />
+      {activeView === "route" ? <RoutePlanner key={routeKey} locale={locale} initialCityIds={routeSeed} initialDepartureDate={routeDepartureDate} initialSnapshot={routeSnapshot ?? undefined} initialTimestamp={initialTimestamp} onNotify={notify} onTripSaved={() => setTripRefreshKey((value) => value + 1)} /> : null}
+      {activeView === "trips" ? <TripsPanel locale={locale} refreshKey={tripRefreshKey} onOpen={openTrip} onNotify={notify} /> : null}
+      {activeView === "expenses" ? <ExpensesPanel locale={locale} onNotify={notify} /> : null}
+      {activeView === "profile" ? <ProfilePanel locale={locale} onNotify={notify} /> : null}
       <BottomNav locale={locale} activeView={activeView} onViewChange={setActiveView} />
       {toast ? (
         <div className={`toast ${toast.tone}`} role="status" aria-live="polite">

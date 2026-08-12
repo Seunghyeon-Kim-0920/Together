@@ -1,17 +1,12 @@
 "use client";
 
-import { Cigarette, GlassWater, LockKeyhole, Save, ShieldCheck, UserRound } from "lucide-react";
+import { Cigarette, GlassWater, HardDrive, Save, ShieldCheck, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
+import { DEVICE_PROFILE_KEY, parseDeviceProfile, readDeviceValue, writeDeviceValue, type DeviceProfile } from "../../lib/device-storage";
 import type { SupportedLocale } from "../../lib/domain";
 import { translate } from "../../lib/i18n";
 
-type ProfileState = {
-  displayName: string;
-  ageBand: string;
-  smoking: string;
-  drinking: string;
-  mbti: string;
-};
+type ProfileState = DeviceProfile;
 
 const mbtiTypes = ["unspecified", "INTJ", "INTP", "ENTJ", "ENTP", "INFJ", "INFP", "ENFJ", "ENFP", "ISTJ", "ISFJ", "ESTJ", "ESFJ", "ISTP", "ISFP", "ESTP", "ESFP"];
 const ageBands = ["unspecified", "teens", "20s", "30s", "40s", "50s", "60s", "70plus"];
@@ -25,44 +20,30 @@ function ageLabel(value: string, locale: SupportedLocale) {
   return value === "teens" ? "Teens" : value === "70plus" ? "70+" : `${value.replace("s", "")}s`;
 }
 
-export function ProfilePanel({ locale, user, signInUrl, onNotify }: {
+export function ProfilePanel({ locale, onNotify }: {
   locale: SupportedLocale;
-  user: { displayName: string; email: string } | null;
-  signInUrl: string;
   onNotify: (message: string, tone?: "success" | "error" | "info") => void;
 }) {
-  const [profile, setProfile] = useState<ProfileState>({ displayName: user?.displayName ?? "", ageBand: "unspecified", smoking: "unspecified", drinking: "unspecified", mbti: "unspecified" });
+  const [profile, setProfile] = useState<ProfileState>({ displayName: "", ageBand: "unspecified", smoking: "unspecified", drinking: "unspecified", mbti: "unspecified" });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!user) return;
-    let active = true;
-    fetch("/api/profile")
-      .then(async (response) => {
-        if (!response.ok) throw new Error("request failed");
-        return await response.json() as { profile: ProfileState };
-      })
-      .then((data) => { if (active) setProfile(data.profile); })
-      .catch(() => undefined);
-    return () => { active = false; };
-  }, [user]);
+    const load = () => setProfile(readDeviceValue(DEVICE_PROFILE_KEY, parseDeviceProfile, profile));
+    load();
+    window.addEventListener("storage", load);
+    return () => window.removeEventListener("storage", load);
+    // The initial empty profile is intentionally stable and never contains demo data.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const saveProfile = async () => {
-    if (!user) {
-      onNotify(translate(locale, "noAccountData"), "info");
-      window.location.href = signInUrl;
-      return;
-    }
+  const saveProfile = () => {
     setSaving(true);
-    try {
-      const response = await fetch("/api/profile", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(profile) });
-      if (!response.ok) throw new Error("save failed");
+    if (writeDeviceValue(DEVICE_PROFILE_KEY, profile)) {
       onNotify(translate(locale, "profileSaved"), "success");
-    } catch {
-      onNotify(translate(locale, "retry"), "error");
-    } finally {
-      setSaving(false);
+    } else {
+      onNotify(translate(locale, "deviceSaveError"), "error");
     }
+    setSaving(false);
   };
 
   const preferenceOptions = ["unspecified", "yes", "no"];
@@ -70,13 +51,13 @@ export function ProfilePanel({ locale, user, signInUrl, onNotify }: {
     <main className="content-page profile-page">
       <section className="page-title-row">
         <div><h1>{translate(locale, "profileTitle")}</h1><p>{translate(locale, "profileDescription")}</p></div>
-        <span className="privacy-indicator"><LockKeyhole size={17} />{translate(locale, "private")}</span>
+        <span className="privacy-indicator"><HardDrive size={17} />{translate(locale, "deviceOnly")}</span>
       </section>
       <div className="profile-layout">
         <section className="profile-preview">
           <div className="profile-avatar"><UserRound size={46} /></div>
           <h2>{profile.displayName || translate(locale, "guest")}</h2>
-          <p>{user?.email ?? translate(locale, "noAccountData")}</p>
+          <p>{translate(locale, "deviceStorageHelp")}</p>
           <div className="profile-facts">
             <span>{ageLabel(profile.ageBand, locale)}</span>
             <span><Cigarette size={16} />{profile.smoking === "unspecified" ? translate(locale, "unspecified") : translate(locale, profile.smoking as "yes" | "no")}</span>
@@ -93,7 +74,6 @@ export function ProfilePanel({ locale, user, signInUrl, onNotify }: {
             <label><span>{translate(locale, "drinking")}</span><select value={profile.drinking} onChange={(event) => setProfile((value) => ({ ...value, drinking: event.target.value }))}>{preferenceOptions.map((item) => <option key={item} value={item}>{translate(locale, item as "unspecified" | "yes" | "no")}</option>)}</select></label>
           </div>
           <label><span>{translate(locale, "mbti")}</span><select value={profile.mbti} onChange={(event) => setProfile((value) => ({ ...value, mbti: event.target.value }))}>{mbtiTypes.map((item) => <option key={item} value={item}>{item === "unspecified" ? translate(locale, "unspecified") : item}</option>)}</select></label>
-          {!user ? <a className="sign-in-notice" href={signInUrl}><LockKeyhole size={17} />{translate(locale, "signInToSave")}</a> : null}
           <button className="primary-action full" type="button" onClick={saveProfile} disabled={saving || !profile.displayName.trim()}><Save size={18} />{translate(locale, "profileSave")}</button>
         </section>
       </div>

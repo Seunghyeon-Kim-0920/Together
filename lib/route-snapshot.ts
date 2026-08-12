@@ -26,6 +26,10 @@ const ALLOWED_ESTIMATE_METHODS = new Set([
   "flight fallback derived from great-circle distance; replace with provider data",
   "bus fallback derived from great-circle distance; replace with provider data",
   "Curated corridor-specific door-to-door rail benchmark; replace with provider data",
+  "Curated corridor city-to-city train running-time benchmark; replace with provider schedule data",
+  "Estimated city-to-city train running time from geographic distance and conservative rail speeds; service existence must be verified with provider data",
+  "Estimated city-to-city coach running time from geographic distance and conservative road speeds; service existence must be verified with provider data",
+  "Estimated flight door-to-door time from great-circle distance, airport access, processing, baggage and operational allowances; replace with provider data",
   "The journey contains one or more estimated segments",
   IMPORTED_UNVERIFIED_TIMETABLE_METHOD,
 ]);
@@ -54,6 +58,15 @@ export type RouteSnapshot =
       readonly version: 2;
       readonly selectedCityIds: readonly string[];
       readonly fixedStart: boolean;
+      readonly itinerary: OptimizedItinerary;
+      readonly cities?: readonly City[];
+    })
+  | (RouteSnapshotBase & {
+      readonly version: 3;
+      readonly selectedCityIds: readonly string[];
+      readonly startCityId: string;
+      readonly endCityId: string;
+      readonly optimizationMethod: "exact" | "heuristic";
       readonly itinerary: OptimizedItinerary;
       readonly cities?: readonly City[];
     });
@@ -87,7 +100,7 @@ function validCityIds(
   value: unknown,
   knownIds: ReadonlySet<string> | null = new Set(CITIES.map((city) => city.id)),
 ): readonly string[] | null {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 10) return null;
+  if (!Array.isArray(value) || value.length < 2) return null;
   const ids = value.map((candidate) => typeof candidate === "string" ? candidate : "");
   if ((knownIds && ids.some((id) => !knownIds.has(id))) || new Set(ids).size !== ids.length) {
     return null;
@@ -320,12 +333,12 @@ function downgradeImportedTimetableClaims(
 }
 
 export function parseRouteSnapshot(value: unknown): RouteSnapshot | null {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) return null;
-  const cityOrder = validCityIds(value.cityOrder, value.version === 2 ? null : undefined);
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3)) return null;
+  const cityOrder = validCityIds(value.cityOrder, value.version === 1 ? undefined : null);
   const name = boundedText(value.name, 100);
   const departureDate = validDate(value.departureDate);
   const createdAt = validTimestamp(value.createdAt);
-  if (!cityOrder || !name || !departureDate || !createdAt || !Number.isInteger(value.totalMinutes) || (value.totalMinutes as number) <= 0 || (value.totalMinutes as number) > MAX_COMPONENT_MINUTES * 10) return null;
+  if (!cityOrder || !name || !departureDate || !createdAt || !Number.isSafeInteger(value.totalMinutes) || (value.totalMinutes as number) <= 0 || (value.totalMinutes as number) > MAX_COMPONENT_MINUTES * cityOrder.length) return null;
 
   if (value.version === 1) {
     // Legacy snapshots do not carry enough evidence to restore published or
@@ -346,8 +359,14 @@ export function parseRouteSnapshot(value: unknown): RouteSnapshot | null {
   if (!cities) return null;
   const knownIds = new Set(cities.map((city) => city.id));
   const selectedCityIds = validCityIds(value.selectedCityIds, knownIds);
-  if (!selectedCityIds || !sameSet(selectedCityIds, cityOrder) || typeof value.fixedStart !== "boolean") return null;
-  if (value.fixedStart && selectedCityIds[0] !== cityOrder[0]) return null;
+  if (!selectedCityIds || !sameSet(selectedCityIds, cityOrder)) return null;
+  if (value.version === 2 && typeof value.fixedStart !== "boolean") return null;
+  if (value.version === 2 && value.fixedStart && selectedCityIds[0] !== cityOrder[0]) return null;
+  const startCityId = value.version === 3 ? boundedText(value.startCityId, 100) : cityOrder[0];
+  const endCityId = value.version === 3 ? boundedText(value.endCityId, 100) : cityOrder.at(-1) ?? null;
+  if (!startCityId || !endCityId || startCityId === endCityId || !selectedCityIds.includes(startCityId) || !selectedCityIds.includes(endCityId) || cityOrder[0] !== startCityId || cityOrder.at(-1) !== endCityId) return null;
+  const optimizationMethod = value.version === 3 && (value.optimizationMethod === "exact" || value.optimizationMethod === "heuristic") ? value.optimizationMethod : null;
+  if (value.version === 3 && (!optimizationMethod || (cityOrder.length <= 10 ? optimizationMethod !== "exact" : optimizationMethod !== "heuristic"))) return null;
   const parsedItinerary = parseItinerary(value.itinerary, cityOrder, cities);
   if (!parsedItinerary || value.totalMinutes !== parsedItinerary.totalMinutes || value.provenance !== parsedItinerary.provenance.kind) return null;
   // Shared URLs and persisted client payloads are unsigned user input. Preserve
@@ -355,6 +374,21 @@ export function parseRouteSnapshot(value: unknown): RouteSnapshot | null {
   // as a provider-published timetable. Fresh API results remain scheduled in
   // the live planner; imported copies are deliberately labelled as estimates.
   const itinerary = downgradeImportedTimetableClaims(parsedItinerary, cityOrder, cities);
+  if (value.version === 3) return {
+    version: 3,
+    name,
+    departureDate,
+    cityOrder,
+    totalMinutes: itinerary.totalMinutes,
+    createdAt,
+    provenance: itinerary.provenance.kind as "estimated" | "scheduled" | "observed",
+    selectedCityIds,
+    startCityId,
+    endCityId,
+    optimizationMethod: optimizationMethod as "exact" | "heuristic",
+    itinerary,
+    cities,
+  };
   return {
     version: 2,
     name,
@@ -364,7 +398,7 @@ export function parseRouteSnapshot(value: unknown): RouteSnapshot | null {
     createdAt,
     provenance: itinerary.provenance.kind as "estimated" | "scheduled" | "observed",
     selectedCityIds,
-    fixedStart: value.fixedStart,
+    fixedStart: value.fixedStart as boolean,
     itinerary,
     cities,
   };

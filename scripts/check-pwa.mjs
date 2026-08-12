@@ -88,12 +88,7 @@ async function checkLocal() {
     readFile(path.join(root, "app", "manifest.webmanifest", "route.ts"), "utf8"),
   ]);
 
-  for (const excludedPath of [
-    "/api/",
-    "/signin-with-chatgpt",
-    "/signout-with-chatgpt",
-    "/callback",
-  ]) {
+  for (const excludedPath of ["/api/"]) {
     invariant(serviceWorker.includes(excludedPath), `service worker must bypass ${excludedPath}`);
   }
   invariant(

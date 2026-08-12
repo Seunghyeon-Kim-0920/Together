@@ -12,9 +12,6 @@ type HeaderProps = {
   onLocaleChange: (locale: SupportedLocale) => void;
   activeView: ViewName;
   onViewChange: (view: ViewName) => void;
-  user: { displayName: string; email: string } | null;
-  signInUrl: string;
-  signOutUrl: string;
 };
 
 const navigation: ReadonlyArray<{ id: ViewName; label: MessageKey; icon: typeof Route }> = [
@@ -24,7 +21,7 @@ const navigation: ReadonlyArray<{ id: ViewName; label: MessageKey; icon: typeof 
   { id: "profile", label: "profile", icon: UserRound },
 ];
 
-export function Header({ locale, onLocaleChange, activeView, onViewChange, user, signInUrl, signOutUrl }: HeaderProps) {
+export function Header({ locale, onLocaleChange, activeView, onViewChange }: HeaderProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const selectView = (view: ViewName) => {
@@ -53,14 +50,6 @@ export function Header({ locale, onLocaleChange, activeView, onViewChange, user,
           </select>
           <ChevronDown size={15} aria-hidden="true" />
         </label>
-        {user ? (
-          <a className="account-chip" href={signOutUrl} title={user.email}>
-            <span className="avatar" aria-hidden="true">{user.displayName.slice(0, 1).toUpperCase()}</span>
-            <span className="account-name">{user.displayName}</span>
-          </a>
-        ) : (
-          <a className="sign-in-link" href={signInUrl}>{translate(locale, "signIn")}</a>
-        )}
         <button className="mobile-menu-button" type="button" onClick={() => setMobileOpen((value) => !value)} aria-expanded={mobileOpen} aria-label={translate(locale, "menu")}>
           {mobileOpen ? <X size={23} /> : <Menu size={23} />}
         </button>

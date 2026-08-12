@@ -1,6 +1,6 @@
 /* global self, caches, fetch, URL */
 
-const CACHE_VERSION = "together-static-v2";
+const CACHE_VERSION = "together-static-v3";
 const PRECACHE_URLS = [
   "/offline.html",
   "/favicon.svg",
@@ -8,6 +8,7 @@ const PRECACHE_URLS = [
   "/icon-512.png",
   "/maskable-512.png",
   "/apple-touch-icon.png",
+  "/assets/natural-earth-land-50m.svg",
 ];
 const STATIC_DESTINATIONS = new Set(["font", "image", "script", "style"]);
 
@@ -50,10 +51,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (
-    url.pathname.startsWith("/api/") ||
-    url.pathname.startsWith("/signin-with-chatgpt") ||
-    url.pathname.startsWith("/signout-with-chatgpt") ||
-    url.pathname.startsWith("/callback")
+    url.pathname.startsWith("/api/")
   ) {
     return;
   }

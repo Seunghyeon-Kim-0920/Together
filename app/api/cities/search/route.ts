@@ -1,5 +1,7 @@
 const OPEN_METEO_GEOCODING_URL =
   "https://geocoding-api.open-meteo.com/v1/search";
+const OPEN_METEO_CITY_URL =
+  "https://geocoding-api.open-meteo.com/v1/get";
 const OPEN_METEO_ATTRIBUTION_URL =
   "https://open-meteo.com/en/docs/geocoding-api";
 const GEONAMES_ATTRIBUTION_URL = "https://www.geonames.org/";
@@ -36,6 +38,7 @@ export type ParsedCitySearchQuery =
       readonly query: string;
       readonly locale: CitySearchLocale;
       readonly includeTranslations: boolean;
+      readonly providerId?: number;
     }
   | {
       readonly ok: false;
@@ -45,6 +48,11 @@ export type ParsedCitySearchQuery =
 interface CacheEntry {
   readonly expiresAt: number;
   readonly promise: Promise<readonly CitySearchResult[]>;
+}
+
+interface CityCacheEntry {
+  readonly expiresAt: number;
+  readonly promise: Promise<CitySearchResult>;
 }
 
 interface RateLimitEntry {
@@ -60,6 +68,7 @@ interface RateLimitResult {
 }
 
 const searchCache = new Map<string, CacheEntry>();
+const cityCache = new Map<string, CityCacheEntry>();
 const rateLimits = new Map<string, RateLimitEntry>();
 
 const LOCALE_ALIASES: Readonly<Record<string, CitySearchLocale>> = {
@@ -113,11 +122,66 @@ export function parseCitySearchQuery(
       message: "locale must be ko, en, fr, ja, or zh.",
     };
   }
+  const includeTranslations = searchParams.get("translations") === "1";
+  const providerIdText = searchParams.get("providerId")?.trim();
+  let providerId: number | undefined;
+  if (providerIdText !== undefined) {
+    providerId = Number(providerIdText);
+    if (!/^\d+$/.test(providerIdText) || !Number.isSafeInteger(providerId) || providerId <= 0) {
+      return { ok: false, message: "providerId must be a positive integer." };
+    }
+  }
+  if (includeTranslations && providerId === undefined) {
+    return { ok: false, message: "providerId is required when translations=1." };
+  }
   return {
     ok: true,
     query,
     locale,
-    includeTranslations: searchParams.get("translations") === "1",
+    includeTranslations,
+    ...(providerId === undefined ? {} : { providerId }),
+  };
+}
+
+const LATIN_SCRIPT = /\p{Script=Latin}/u;
+const HANGUL_SCRIPT = /\p{Script=Hangul}/u;
+const JAPANESE_SCRIPT = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+const HAN_SCRIPT = /\p{Script=Han}/u;
+
+function usesLocaleScript(value: string, locale: CitySearchLocale): boolean {
+  if (locale === "ko") return HANGUL_SCRIPT.test(value);
+  if (locale === "ja") return JAPANESE_SCRIPT.test(value);
+  if (locale === "zh") return HAN_SCRIPT.test(value);
+  return LATIN_SCRIPT.test(value);
+}
+
+export function neutralCityLabel(city: Pick<CitySearchResult, "countryCode" | "latitude" | "longitude">): string {
+  return `${city.countryCode} ${city.latitude.toFixed(3)}, ${city.longitude.toFixed(3)}`;
+}
+
+export function safeLocalizedCityName(
+  name: string,
+  locale: CitySearchLocale,
+  city: Pick<CitySearchResult, "countryCode" | "latitude" | "longitude">,
+): string {
+  return usesLocaleScript(name, locale) ? name : neutralCityLabel(city);
+}
+
+function localizedCountryName(countryCode: string, locale: CitySearchLocale): string {
+  try {
+    return new Intl.DisplayNames([locale], { type: "region" }).of(countryCode) ?? countryCode;
+  } catch {
+    return countryCode;
+  }
+}
+
+function sanitizeCityForLocale(city: CitySearchResult, locale: CitySearchLocale): CitySearchResult {
+  const admin1 = city.admin1 && usesLocaleScript(city.admin1, locale) ? city.admin1 : undefined;
+  return {
+    ...city,
+    name: safeLocalizedCityName(city.name, locale, city),
+    country: localizedCountryName(city.countryCode, locale),
+    ...(admin1 ? { admin1 } : { admin1: undefined }),
   };
 }
 
@@ -198,6 +262,10 @@ export function parseOpenMeteoGeocodingResponse(
     if (results.length === CITY_SEARCH_MAX_RESULTS) break;
   }
   return results;
+}
+
+export function parseOpenMeteoCityResponse(value: unknown): CitySearchResult | null {
+  return parseProviderCity(value);
 }
 
 function isValidIpv4(value: string): boolean {
@@ -323,6 +391,14 @@ function pruneCache(now: number): void {
     if (!oldestKey) break;
     searchCache.delete(oldestKey);
   }
+  for (const [key, entry] of cityCache) {
+    if (entry.expiresAt <= now) cityCache.delete(key);
+  }
+  while (cityCache.size >= MAX_CACHE_ENTRIES * CITY_SEARCH_LOCALES.length) {
+    const oldestKey = cityCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    cityCache.delete(oldestKey);
+  }
 }
 
 async function requestProvider(
@@ -342,7 +418,44 @@ async function requestProvider(
   if (!response.ok) throw new Error("provider_unavailable");
   const parsed = parseOpenMeteoGeocodingResponse(await response.json());
   if (!parsed) throw new Error("invalid_provider_response");
-  return parsed;
+  return parsed.map((city) => sanitizeCityForLocale(city, locale));
+}
+
+async function requestProviderCity(
+  providerId: number,
+  locale: CitySearchLocale,
+): Promise<CitySearchResult> {
+  const search = new URLSearchParams({ id: String(providerId), language: locale });
+  const response = await fetch(`${OPEN_METEO_CITY_URL}?${search}`, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(CITY_SEARCH_PROVIDER_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error("provider_unavailable");
+  const parsed = parseOpenMeteoCityResponse(await response.json());
+  if (!parsed || parsed.providerId !== providerId) throw new Error("invalid_provider_response");
+  return sanitizeCityForLocale(parsed, locale);
+}
+
+async function lookupCity(
+  providerId: number,
+  locale: CitySearchLocale,
+): Promise<CitySearchResult> {
+  const now = Date.now();
+  const cacheKey = `${providerId}|${locale}`;
+  const cached = cityCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.promise;
+  pruneCache(now);
+  const promise = requestProviderCity(providerId, locale);
+  cityCache.set(cacheKey, {
+    expiresAt: now + CITY_SEARCH_CACHE_TTL_SECONDS * 1_000,
+    promise,
+  });
+  try {
+    return await promise;
+  } catch (error) {
+    cityCache.delete(cacheKey);
+    throw error;
+  }
 }
 
 async function lookupCities(
@@ -432,24 +545,22 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
-    const lookup = await lookupCities(validated.query, validated.locale);
+    const lookup = validated.includeTranslations ? null : await lookupCities(validated.query, validated.locale);
     const localizedLookups = validated.includeTranslations
-      ? await Promise.all(CITY_SEARCH_LOCALES.map(async (locale) => ({
-          locale,
-          results: locale === validated.locale
-            ? lookup.results
-            : (await lookupCities(validated.query, locale)).results,
-        })))
+      ? await Promise.allSettled(CITY_SEARCH_LOCALES.map((locale) => lookupCity(validated.providerId!, locale)))
       : [];
-    const results = validated.includeTranslations
-      ? lookup.results.map((result) => ({
-          ...result,
-          names: Object.fromEntries(localizedLookups.map(({ locale, results: localizedResults }) => [
-            locale,
-            localizedResults.find((candidate) => candidate.id === result.id)?.name ?? result.name,
-          ])) as Readonly<Record<CitySearchLocale, string>>,
-        }))
-      : lookup.results;
+    const fulfilled = localizedLookups.flatMap((result, index) => result.status === "fulfilled"
+      ? [{ locale: CITY_SEARCH_LOCALES[index], city: result.value }]
+      : []);
+    if (validated.includeTranslations && fulfilled.length === 0) throw new Error("provider_unavailable");
+    const source = fulfilled.find(({ locale }) => locale === validated.locale)?.city ?? fulfilled[0]?.city;
+    const names = source ? Object.fromEntries(CITY_SEARCH_LOCALES.map((locale) => {
+      const localized = fulfilled.find((entry) => entry.locale === locale)?.city;
+      return [locale, localized?.name ?? neutralCityLabel(source)];
+    })) as Readonly<Record<CitySearchLocale, string>> : undefined;
+    const results = source && names
+      ? [{ ...source, name: names[validated.locale], country: localizedCountryName(source.countryCode, validated.locale), admin1: undefined, names }]
+      : lookup?.results ?? [];
     return Response.json(
       {
         results,
@@ -457,7 +568,7 @@ export async function GET(request: Request): Promise<Response> {
           query: validated.query,
           locale: validated.locale,
           resultCount: results.length,
-          cacheHit: lookup.cacheHit,
+          cacheHit: lookup?.cacheHit ?? false,
           translationsIncluded: validated.includeTranslations,
           requestCost,
           provider: "open-meteo-geocoding",
