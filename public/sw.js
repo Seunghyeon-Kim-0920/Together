@@ -1,8 +1,8 @@
 /* global self, caches, fetch, URL */
 
-const CACHE_VERSION = "together-static-v4";
+const CACHE_VERSION = "together-static-v5";
 const PRECACHE_URLS = [
-  "/offline.html",
+  "/offline",
   "/favicon.svg",
   "/icon-192.png",
   "/icon-512.png",
@@ -60,7 +60,7 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request).catch(async () => {
-        const fallback = await caches.match("/offline.html");
+        const fallback = await caches.match("/offline");
         return fallback ?? Response.error();
       }),
     );

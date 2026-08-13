@@ -283,6 +283,8 @@ test("route map bundles an attribution-noticed Natural Earth layer in the marker
   assert.match(notice, /public domain/i);
   assert.match(notice, /terms-of-use/);
   assert.match(notice, /Admin-0 Boundary Lines.+version 5\.1\.2/);
-  assert.match(serviceWorker, /together-static-v4/);
+  assert.match(serviceWorker, /together-static-v5/);
+  assert.match(serviceWorker, /PRECACHE_URLS = \[\s*"\/offline"/);
+  assert.doesNotMatch(serviceWorker, /caches\.match\("\/offline\.html"\)/);
   assert.match(serviceWorker, /\/assets\/natural-earth-admin0-boundaries-50m\.svg/);
 });

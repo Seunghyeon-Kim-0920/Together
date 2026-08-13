@@ -92,7 +92,7 @@ async function checkLocal() {
     invariant(serviceWorker.includes(excludedPath), `service worker must bypass ${excludedPath}`);
   }
   invariant(
-    serviceWorker.includes("/offline.html"),
+    serviceWorker.includes('"/offline"'),
     "service worker must provide the offline navigation fallback",
   );
   invariant(
@@ -140,6 +140,11 @@ async function checkLive(input) {
   const manifest = await manifestResponse.json();
   validateManifest(manifest, `${origin}/manifest.webmanifest`);
   await fetchOk(`${origin}/sw.js`);
+  const offlineResponse = await fetchOk(`${origin}/offline`, "text/html");
+  invariant(
+    !offlineResponse.redirected && new URL(offlineResponse.url).pathname === "/offline",
+    `${origin}/offline must be a direct cache-safe response`,
+  );
 
   for (const [src, width, height] of [
     ["/icon-192.png", 192, 192],
