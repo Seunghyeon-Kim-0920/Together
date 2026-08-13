@@ -229,6 +229,13 @@ export function calculateBalances(
     currency ?? expenses[0].amount.currency,
   );
   const balances = new Map<string, number>();
+  const safeAdd = (left: number, right: number): number => {
+    const result = left + right;
+    if (!Number.isSafeInteger(result)) {
+      throw new DomainValidationError("Expense balance is outside the safe integer range");
+    }
+    return result;
+  };
 
   for (const expense of expenses) {
     assertExpenseInvariant(expense);
@@ -239,20 +246,23 @@ export function calculateBalances(
     }
     balances.set(
       expense.paidBy,
-      (balances.get(expense.paidBy) ?? 0) + expense.amount.minorUnits,
+      safeAdd(
+        balances.get(expense.paidBy) ?? 0,
+        expense.amount.minorUnits,
+      ),
     );
     for (const share of expense.shares) {
       balances.set(
         share.participantId,
-        (balances.get(share.participantId) ?? 0) - share.minorUnits,
+        safeAdd(
+          balances.get(share.participantId) ?? 0,
+          -share.minorUnits,
+        ),
       );
     }
   }
 
-  const total = Array.from(balances.values()).reduce(
-    (sum, balance) => sum + balance,
-    0,
-  );
+  const total = Array.from(balances.values()).reduce(safeAdd, 0);
   if (total !== 0) {
     throw new DomainValidationError("Participant balances must sum to zero");
   }
@@ -281,24 +291,13 @@ function canonicalizeTransfers(
   });
 }
 
-function planKey(transfers: readonly SettlementTransfer[]): string {
-  return canonicalizeTransfers(transfers)
-    .map(
-      (transfer) =>
-        `${transfer.fromParticipantId}>${transfer.toParticipantId}:${transfer.amount.minorUnits}`,
-    )
-    .join("|");
-}
-
-function chooseBetterPlan(
-  candidate: readonly SettlementTransfer[],
-  current: readonly SettlementTransfer[] | undefined,
-): readonly SettlementTransfer[] {
-  if (!current || candidate.length < current.length) return candidate;
-  if (candidate.length > current.length) return current;
-  return planKey(candidate) < planKey(current) ? candidate : current;
-}
-
+/**
+ * Produces a deterministic greedy settlement in O(n log n) time.
+ *
+ * The historical export name is retained for compatibility. The result is
+ * bounded to at most debtors + creditors - 1 transfers, but is not guaranteed
+ * to use the mathematically minimum possible number of transfers.
+ */
 export function minimumSettlementTransfers(
   balancesInput: readonly ParticipantBalance[],
 ): readonly SettlementTransfer[] {
@@ -318,73 +317,59 @@ export function minimumSettlementTransfers(
     }
     assertMinorUnits(balance.amount.minorUnits, true);
   }
-  const total = balancesInput.reduce(
-    (sum, balance) => sum + balance.amount.minorUnits,
-    0,
-  );
+  const total = balancesInput.reduce((sum, balance) => {
+    const next = sum + balance.amount.minorUnits;
+    if (!Number.isSafeInteger(next)) {
+      throw new DomainValidationError("Settlement total is outside the safe integer range");
+    }
+    return next;
+  }, 0);
   if (total !== 0) {
     throw new DomainValidationError("Settlement balances must sum to zero");
   }
 
-  const entries = balancesInput
-    .filter((balance) => balance.amount.minorUnits !== 0)
+  const debtors = balancesInput
+    .filter((balance) => balance.amount.minorUnits < 0)
     .map((balance) => ({
-      participantId: balance.participantId,
-      minorUnits: balance.amount.minorUnits,
+      participantId: requireNonEmpty(balance.participantId, "Participant id"),
+      remainingMinorUnits: -balance.amount.minorUnits,
     }))
     .sort((left, right) => compareText(left.participantId, right.participantId));
-  const memo = new Map<string, readonly SettlementTransfer[]>();
+  const creditors = balancesInput
+    .filter((balance) => balance.amount.minorUnits > 0)
+    .map((balance) => ({
+      participantId: requireNonEmpty(balance.participantId, "Participant id"),
+      remainingMinorUnits: balance.amount.minorUnits,
+    }))
+    .sort((left, right) => compareText(left.participantId, right.participantId));
 
-  const solve = (values: readonly number[]): readonly SettlementTransfer[] => {
-    const first = values.findIndex((value) => value !== 0);
-    if (first < 0) return [];
-    const key = values.join(",");
-    const cached = memo.get(key);
-    if (cached) return cached;
+  const transfers: SettlementTransfer[] = [];
+  let debtorIndex = 0;
+  let creditorIndex = 0;
+  while (debtorIndex < debtors.length && creditorIndex < creditors.length) {
+    const debtor = debtors[debtorIndex];
+    const creditor = creditors[creditorIndex];
+    const amount = Math.min(
+      debtor.remainingMinorUnits,
+      creditor.remainingMinorUnits,
+    );
+    transfers.push(
+      Object.freeze({
+        fromParticipantId: debtor.participantId,
+        toParticipantId: creditor.participantId,
+        amount: createMoney(currency, amount),
+      }),
+    );
+    debtor.remainingMinorUnits -= amount;
+    creditor.remainingMinorUnits -= amount;
+    if (debtor.remainingMinorUnits === 0) debtorIndex += 1;
+    if (creditor.remainingMinorUnits === 0) creditorIndex += 1;
+  }
 
-    let best: readonly SettlementTransfer[] | undefined;
-    const seenCounterpartBalances = new Set<number>();
-    for (let counterpart = first + 1; counterpart < values.length; counterpart += 1) {
-      if (values[first] * values[counterpart] >= 0) continue;
-      if (seenCounterpartBalances.has(values[counterpart])) continue;
-      seenCounterpartBalances.add(values[counterpart]);
-
-      const amount = Math.min(
-        Math.abs(values[first]),
-        Math.abs(values[counterpart]),
-      );
-      const next = [...values];
-      let transfer: SettlementTransfer;
-      if (values[first] < 0) {
-        next[first] += amount;
-        next[counterpart] -= amount;
-        transfer = Object.freeze({
-          fromParticipantId: entries[first].participantId,
-          toParticipantId: entries[counterpart].participantId,
-          amount: createMoney(currency, amount),
-        });
-      } else {
-        next[first] -= amount;
-        next[counterpart] += amount;
-        transfer = Object.freeze({
-          fromParticipantId: entries[counterpart].participantId,
-          toParticipantId: entries[first].participantId,
-          amount: createMoney(currency, amount),
-        });
-      }
-      const candidate = [transfer, ...solve(next)];
-      best = chooseBetterPlan(candidate, best);
-    }
-
-    if (!best) {
-      throw new DomainValidationError("Balances cannot be settled");
-    }
-    const canonical = Object.freeze(canonicalizeTransfers(best));
-    memo.set(key, canonical);
-    return canonical;
-  };
-
-  return Object.freeze([...solve(entries.map((entry) => entry.minorUnits))]);
+  if (debtorIndex !== debtors.length || creditorIndex !== creditors.length) {
+    throw new DomainValidationError("Balances cannot be settled");
+  }
+  return Object.freeze(canonicalizeTransfers(transfers));
 }
 
 export function settleExpensesByCurrency(

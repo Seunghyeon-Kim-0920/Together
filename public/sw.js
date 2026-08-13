@@ -1,6 +1,6 @@
 /* global self, caches, fetch, URL */
 
-const CACHE_VERSION = "together-static-v3";
+const CACHE_VERSION = "together-static-v4";
 const PRECACHE_URLS = [
   "/offline.html",
   "/favicon.svg",
@@ -9,6 +9,7 @@ const PRECACHE_URLS = [
   "/maskable-512.png",
   "/apple-touch-icon.png",
   "/assets/natural-earth-land-50m.svg",
+  "/assets/natural-earth-admin0-boundaries-50m.svg",
 ];
 const STATIC_DESTINATIONS = new Set(["font", "image", "script", "style"]);
 

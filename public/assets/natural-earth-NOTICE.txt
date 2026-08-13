@@ -18,3 +18,17 @@ Transformation performed for Together:
 - Coordinates projected with an equirectangular WGS84 mapping into the
   1000 × 500 SVG viewBox used by Together's city markers.
 - Coordinate precision rounded to three SVG user-space decimals.
+
+Asset: natural-earth-admin0-boundaries-50m.svg
+Derived from: Natural Earth 1:50m Admin-0 Boundary Lines – Land, version 5.1.2
+Official catalog: https://www.naturalearthdata.com/downloads/50m-cultural-vectors/50m-admin-0-boundary-lines-2/
+Official repository source: https://github.com/nvkelso/natural-earth-vector/tree/v5.1.2
+Downloaded: 2026-08-12
+
+Transformation performed for Together:
+- GeoJSON LineString and MultiLineString country boundaries converted to one
+  compact SVG path without country labels or unrelated map features.
+- Coordinates projected with the same equirectangular WGS84 mapping into the
+  1000 × 500 SVG viewBox used by the land layer and city markers.
+- Dateline discontinuities split instead of drawing across the whole map.
+- Coordinate precision rounded to three SVG user-space decimals.

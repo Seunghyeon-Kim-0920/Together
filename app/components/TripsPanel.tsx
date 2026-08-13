@@ -67,7 +67,8 @@ export function TripsPanel({ locale, refreshKey, onOpen, onNotify }: {
                   {snapshot ? <p>{snapshot.cityOrder.map((id) => savedRouteCity(snapshot, id).names[locale]).join(" → ")}</p> : null}
                   <div className="saved-trip-meta">
                     {snapshot ? <span><CalendarDays size={14} />{new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : locale).format(parseLocalDate(snapshot.departureDate))}</span> : null}
-                    {snapshot ? <span><Clock3 size={14} />{formatDuration(snapshot.totalMinutes, locale)}</span> : null}
+                    {snapshot && snapshot.provenance !== "estimated" ? <span><Clock3 size={14} />{formatDuration(snapshot.totalMinutes, locale)}</span> : null}
+                    {snapshot?.provenance === "estimated" ? <span><Clock3 size={14} />{translate(locale, "recheckTimetable")}</span> : null}
                     {snapshot ? <span><MapPin size={14} />{snapshot.cityOrder.length}</span> : null}
                   </div>
                 </div>

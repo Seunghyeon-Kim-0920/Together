@@ -229,6 +229,11 @@ export function RouteMap({ itinerary, locale, cities }: {
         <image className="route-map-land" href="/assets/natural-earth-land-50m.svg" x={-MAP_SIZE} y="0" width={MAP_SIZE} height={MAP_HEIGHT} preserveAspectRatio="none" />
         <image className="route-map-land" href="/assets/natural-earth-land-50m.svg" x="0" y="0" width={MAP_SIZE} height={MAP_HEIGHT} preserveAspectRatio="none" />
         <image className="route-map-land" href="/assets/natural-earth-land-50m.svg" x={MAP_SIZE} y="0" width={MAP_SIZE} height={MAP_HEIGHT} preserveAspectRatio="none" />
+        <g className="route-map-boundaries">
+          <use href="/assets/natural-earth-admin0-boundaries-50m.svg#admin0-boundaries" x={-MAP_SIZE} />
+          <use href="/assets/natural-earth-admin0-boundaries-50m.svg#admin0-boundaries" />
+          <use href="/assets/natural-earth-admin0-boundaries-50m.svg#admin0-boundaries" x={MAP_SIZE} />
+        </g>
         <rect x={view.x} y={view.y} width={view.width} height={view.height} fill="url(#route-map-grid)" opacity=".18" />
         <polyline className="route-map-path-halo" points={routeCoordinates} vectorEffect="non-scaling-stroke" />
         <polyline className="route-map-path" points={routeCoordinates} vectorEffect="non-scaling-stroke" />

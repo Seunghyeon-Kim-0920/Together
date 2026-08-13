@@ -31,6 +31,8 @@ import {
   getEstimatedFallbackModesForCities,
   EXACT_OPTIMIZATION_MAX_CITIES,
   optimizeItinerary,
+  optimizeVerifiedItinerary,
+  isVerifiedTransportLeg,
   selectFastestLeg,
 } from "../lib/routing.js";
 import {
@@ -44,7 +46,9 @@ import {
   SCHEDULE_MAX_PROVIDER_PAIRS,
   SCHEDULE_MAX_REQUEST_BYTES,
   SCHEDULE_PAST_DATE_HORIZON_DAYS,
+  SCHEDULE_PROVIDER_TIMEOUT_MS,
   SCHEDULE_RATE_LIMIT_REQUESTS,
+  SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
   validateDepartureDate,
 } from "../app/api/routes/schedule/route.js";
 
@@ -89,7 +93,49 @@ function simpleLeg(
   });
 }
 
-function transitousPlanFixture() {
+function scheduledLeg(fromCityId: string, toCityId: string, minutes: number): TravelLeg {
+  const departureTime = "2098-04-05T08:00:00Z";
+  const arrivalTime = new Date(Date.parse(departureTime) + minutes * 60_000).toISOString();
+  const provenance = { kind: "scheduled" as const, source: "Test public timetable", scheduleVersion: "2098-04-05" };
+  return createTravelLeg({
+    id: `scheduled:${fromCityId}:${toCityId}`,
+    fromCityId,
+    toCityId,
+    segments: [createTransportSegment({
+      id: `scheduled:${fromCityId}:${toCityId}:segment`, mode: "train",
+      from: `${fromCityId}:station`, to: `${toCityId}:station`, provenance,
+      components: [{ kind: "in_vehicle", label: "Published running time", minutes }],
+      scheduledService: { serviceName: "IC 1", departurePlace: `${fromCityId} station`, arrivalPlace: `${toCityId} station`, departureTime, arrivalTime },
+    })],
+  });
+}
+
+test("product optimizer excludes every estimated leg and supports verified routes above ten cities", () => {
+  const cityIds = CITIES.slice(0, 11).map((city) => city.id);
+  const scheduled = cityIds.flatMap((fromCityId, fromIndex) => cityIds
+    .filter((toCityId) => toCityId !== fromCityId)
+    .map((toCityId) => scheduledLeg(fromCityId, toCityId, 30 + fromIndex)));
+  const route = optimizeVerifiedItinerary(cityIds, [
+    ...scheduled,
+    ...buildEstimatedFallbackOptions(cityIds),
+  ], { startCityId: cityIds[0], endCityId: cityIds.at(-1) });
+  assert.equal(route.cityOrder.length, 11);
+  assert.equal(new Set(route.cityOrder).size, 11);
+  assert.equal(route.cityOrder[0], cityIds[0]);
+  assert.equal(route.cityOrder.at(-1), cityIds.at(-1));
+  assert.ok(route.legs.every(isVerifiedTransportLeg));
+  assert.ok(route.legs.every((leg) => leg.provenance.kind !== "estimated"));
+});
+
+interface FixtureCoordinates {
+  readonly lat: number;
+  readonly lon: number;
+}
+
+function transitousPlanFixture(
+  fromCoordinates: FixtureCoordinates = { lat: 48.8566, lon: 2.3522 },
+  toCoordinates: FixtureCoordinates = { lat: 51.5072, lon: -0.1276 },
+) {
   return {
     itineraries: [
       {
@@ -112,7 +158,11 @@ function transitousPlanFixture() {
             duration: 1_200,
             startTime: "2098-04-05T08:25:00Z",
             endTime: "2098-04-05T08:45:00Z",
-            from: { name: "Central station" },
+            from: {
+              name: "Central station",
+              stopId: "test:paris-central",
+              ...fromCoordinates,
+            },
             to: { name: "Rail terminal" },
             routeShortName: "M1",
           },
@@ -121,7 +171,11 @@ function transitousPlanFixture() {
             duration: 7_200,
             startTime: "2098-04-05T08:50:00Z",
             endTime: "2098-04-05T10:50:00Z",
-            from: { name: "Rail terminal" },
+            from: {
+              name: "Rail terminal",
+              stopId: "test:origin-intercity",
+              ...fromCoordinates,
+            },
             to: { name: "Arrival terminal" },
             displayName: "International Express",
           },
@@ -131,7 +185,11 @@ function transitousPlanFixture() {
             startTime: "2098-04-05T10:55:00Z",
             endTime: "2098-04-05T11:25:00Z",
             from: { name: "Arrival terminal" },
-            to: { name: "City stop" },
+            to: {
+              name: "City stop",
+              stopId: "test:london-city",
+              ...toCoordinates,
+            },
             routeShortName: "C2",
           },
           {
@@ -156,13 +214,28 @@ function transitousPlanFixture() {
             duration: 18_000,
             startTime: "2098-04-05T07:00:00Z",
             endTime: "2098-04-05T12:00:00Z",
-            from: { name: "Paris" },
-            to: { name: "London" },
+            from: { name: "Paris", ...fromCoordinates },
+            to: { name: "London", ...toCoordinates },
           },
         ],
       },
     ],
   };
+}
+
+function transitousPlanFixtureForRequest(input: RequestInfo | URL) {
+  const query = new URL(String(input)).searchParams;
+  const parsePlace = (value: string | null): FixtureCoordinates => {
+    const [lat, lon] = (value ?? "").split(",").map(Number);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      throw new Error("Fixture request is missing provider coordinates");
+    }
+    return { lat, lon };
+  };
+  return transitousPlanFixture(
+    parsePlace(query.get("fromPlace")),
+    parsePlace(query.get("toPlace")),
+  );
 }
 
 test("city catalogue has unique global city ids and valid location metadata", () => {
@@ -753,6 +826,25 @@ test("Transitous parser selects the fastest valid public-transit itinerary", () 
   assert.equal(parsed.schedule.elapsedFromQuerySeconds, 9_300);
   assert.equal(parsed.schedule.departureTime, "2098-04-05T08:50:00Z");
   assert.equal(parsed.schedule.arrivalTime, "2098-04-05T11:25:00Z");
+  assert.equal(
+    parsed.schedule.stopSnapping.radiusMeters,
+    SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+  );
+  assert.deepEqual(parsed.schedule.stopSnapping.origin, {
+    cityCenter: { latitude: 48.8566, longitude: 2.3522 },
+    providerStop: {
+      name: "Rail terminal",
+      stopId: "test:origin-intercity",
+      coordinates: { latitude: 48.8566, longitude: 2.3522 },
+    },
+    distanceMeters: 0,
+  });
+  assert.equal(
+    parsed.schedule.stopSnapping.destination.providerStop.stopId,
+    "test:london-city",
+  );
+  assert.equal(parsed.leg.segments[0].scheduledService?.departurePlace, "Rail terminal");
+  assert.equal(parsed.leg.segments.at(-1)?.scheduledService?.arrivalPlace, "City stop");
 
   const withPreDepartureWait = parseTransitousPlan(
     transitousPlanFixture(),
@@ -762,6 +854,35 @@ test("Transitous parser selects the fastest valid public-transit itinerary", () 
   );
   assert.equal(withPreDepartureWait?.leg.totalMinutes, 155);
   assert.equal(withPreDepartureWait?.schedule.elapsedFromQuerySeconds, 9_300);
+});
+
+test("Transitous parser rejects oversized provider structures and uses timestamps for segment time", () => {
+  const fixture = transitousPlanFixture();
+  assert.equal(parseTransitousPlan({ itineraries: Array.from({ length: 21 }, () => fixture.itineraries[0]) }, "paris", "london"), null);
+  const tooManyLegs = structuredClone(fixture);
+  tooManyLegs.itineraries = [tooManyLegs.itineraries[0]];
+  tooManyLegs.itineraries[0].legs = Array.from({ length: 31 }, () => fixture.itineraries[0].legs[1]);
+  assert.equal(parseTransitousPlan(tooManyLegs, "paris", "london"), null);
+  const hugeStation = structuredClone(fixture);
+  hugeStation.itineraries = [hugeStation.itineraries[0]];
+  hugeStation.itineraries[0].legs[2].from.name = "x".repeat(301);
+  assert.equal(parseTransitousPlan(hugeStation, "paris", "london"), null);
+  const inconsistentDuration = structuredClone(fixture);
+  inconsistentDuration.itineraries = [inconsistentDuration.itineraries[0]];
+  inconsistentDuration.itineraries[0].legs[2].duration = 1;
+  const parsed = parseTransitousPlan(inconsistentDuration, "paris", "london");
+  assert.equal(parsed?.leg.segments[0].duration?.totalMinutes, 120, "timestamps, not the malformed duration field, drive displayed minutes");
+  const farAwayEndpoint = structuredClone(fixture);
+  farAwayEndpoint.itineraries = [farAwayEndpoint.itineraries[0]];
+  Object.assign(farAwayEndpoint.itineraries[0].legs[2].from, {
+    lat: 45,
+    lon: 12,
+  });
+  assert.equal(
+    parseTransitousPlan(farAwayEndpoint, "paris", "london"),
+    null,
+    "provider stops outside the bounded city radius are rejected",
+  );
 });
 
 test("Transitous ranks by the same trimmed intercity duration shown to users", () => {
@@ -787,8 +908,8 @@ test("Transitous ranks by the same trimmed intercity duration shown to users", (
             duration: 7_200,
             startTime: "2098-04-05T08:15:00Z",
             endTime: "2098-04-05T10:15:00Z",
-            from: { name: "Station" },
-            to: { name: "Destination" },
+            from: { name: "Station", lat: 48.8566, lon: 2.3522 },
+            to: { name: "Destination", lat: 51.5072, lon: -0.1276 },
           },
         ],
       },
@@ -812,8 +933,8 @@ test("Transitous ranks by the same trimmed intercity duration shown to users", (
             duration: 3_600,
             startTime: "2098-04-05T09:00:00Z",
             endTime: "2098-04-05T10:00:00Z",
-            from: { name: "Station" },
-            to: { name: "Destination" },
+            from: { name: "Station", lat: 48.8566, lon: 2.3522 },
+            to: { name: "Destination", lat: 51.5072, lon: -0.1276 },
           },
         ],
       },
@@ -844,7 +965,11 @@ test("Transitous excludes local access modes but retains intercity connection el
               duration: 3_600,
               startTime: "2098-04-05T08:00:00Z",
               endTime: "2098-04-05T09:00:00Z",
-              from: { name: "Origin station" },
+              from: {
+                name: "Origin station",
+                lat: 48.8566,
+                lon: 2.3522,
+              },
               to: { name: "Transfer station" },
             },
             {
@@ -869,7 +994,11 @@ test("Transitous excludes local access modes but retains intercity connection el
               startTime: "2098-04-05T09:40:00Z",
               endTime: "2098-04-05T11:00:00Z",
               from: { name: "Coach bay" },
-              to: { name: "Destination" },
+              to: {
+                name: "Destination",
+                lat: 51.5072,
+                lon: -0.1276,
+              },
             },
           ],
         },
@@ -913,7 +1042,7 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
     ) {
       return Response.json({ itineraries: [] });
     }
-    return Response.json(transitousPlanFixture());
+    return Response.json(transitousPlanFixtureForRequest(url));
   }) as typeof fetch;
 
   try {
@@ -948,10 +1077,17 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
       requestSummary: {
         requestedPairCount: number;
         providerRequestCount: number;
+        actualCoverage: boolean;
+        optimalityGuaranteed: boolean;
       };
       requestPolicy: {
         batchDeadlineMs: number;
         rateLimit: string;
+        transitStopSearch: {
+          strategy: string;
+          radiusMeters: number;
+          endpointCoordinateGate: boolean;
+        };
         departureDateHorizon: {
           basis: string;
           pastDays: number;
@@ -980,7 +1116,14 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
     );
     assert.equal(body.requestSummary.requestedPairCount, 6);
     assert.equal(body.requestSummary.providerRequestCount, 6);
+    assert.equal(body.requestSummary.actualCoverage, true, "confirmed no-itinerary edges count as resolved coverage");
+    assert.equal(body.requestSummary.optimalityGuaranteed, true);
     assert.equal(body.requestPolicy.batchDeadlineMs, SCHEDULE_BATCH_DEADLINE_MS);
+    assert.deepEqual(body.requestPolicy.transitStopSearch, {
+      strategy: "provider_radius",
+      radiusMeters: SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+      endpointCoordinateGate: true,
+    });
     assert.match(body.requestPolicy.rateLimit, /instance-local/i);
     assert.deepEqual(body.requestPolicy.departureDateHorizon, {
       basis: "UTC calendar date, inclusive",
@@ -994,7 +1137,7 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
       calls.every(
         (call) =>
           call.userAgent ===
-          "Together/0.3 (https://together-travel-0920.ocvi-85.chatgpt.site)",
+          "Together/0.4 (https://together-travel-0920.ocvi-85.chatgpt.site)",
       ),
     );
     assert.deepEqual(
@@ -1021,6 +1164,10 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
       assert.equal(query.get("minTransferTime"), "5");
       assert.equal(query.get("additionalTransferTime"), "5");
       assert.equal(query.get("useRoutedTransfers"), "true");
+      assert.equal(
+        query.get("radius"),
+        String(SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS),
+      );
     }
   } finally {
     globalThis.fetch = originalFetch;
@@ -1030,9 +1177,9 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
 test("schedule endpoint accepts larger routes and bounds provider work", async () => {
   const originalFetch = globalThis.fetch;
   let providerCalls = 0;
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (input) => {
     providerCalls += 1;
-    return Response.json(transitousPlanFixture());
+    return Response.json(transitousPlanFixtureForRequest(input));
   }) as typeof fetch;
   try {
     const response = await schedulePost(
@@ -1060,14 +1207,120 @@ test("schedule endpoint accepts larger routes and bounds provider work", async (
       requestSummary: {
         requestedPairCount: number;
         eligiblePairCount: number;
+        candidatePairCount: number;
+        candidateStrategy: string;
         providerPairLimitApplied: boolean;
       };
     };
     assert.equal(body.partial, true);
-    assert.equal(body.requestSummary.requestedPairCount, 12);
+    assert.equal(
+      body.requestSummary.requestedPairCount,
+      body.requestSummary.candidatePairCount,
+    );
+    assert.ok(body.requestSummary.candidatePairCount >= 4);
+    assert.ok(
+      body.requestSummary.candidatePairCount <= SCHEDULE_MAX_PROVIDER_PAIRS,
+    );
     assert.equal(body.requestSummary.eligiblePairCount, 20);
+    assert.equal(
+      body.requestSummary.candidateStrategy,
+      "geographic_path_candidates",
+    );
     assert.equal(body.requestSummary.providerPairLimitApplied, true);
-    assert.equal(providerCalls, 12);
+    assert.equal(providerCalls, body.requestSummary.candidatePairCount);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("sparse candidate construction stops promptly at the public-provider budget", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => Response.json({ itineraries: [] })) as typeof fetch;
+  const cities = Array.from({ length: 140 }, (_, index) => ({
+    id: `open-meteo:${8_000_000 + index}`,
+    latitude: -60 + (index % 100) * 1.1,
+    longitude: -170 + (index * 37) % 340,
+    timeZone: "UTC",
+  }));
+  const startedAt = performance.now();
+  try {
+    const response = await schedulePost(new Request("https://together.example/api/routes/schedule", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "203.0.113.206",
+      },
+      body: JSON.stringify({
+        cityIds: cities.map((city) => city.id),
+        cities,
+        startCityId: cities[0].id,
+        endCityId: cities.at(-1)?.id,
+        departureDate: utcDateFromToday(35),
+      }),
+    }));
+    const elapsedMilliseconds = performance.now() - startedAt;
+    assert.equal(response.status, 200);
+    const body = await response.json() as { requestSummary: { candidatePairCount: number } };
+    assert.equal(body.requestSummary.candidatePairCount, SCHEDULE_MAX_PROVIDER_PAIRS);
+    assert.ok(elapsedMilliseconds < 2_000, `candidate generation took ${elapsedMilliseconds}ms`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("five fixed-endpoint cities use only scheduled sparse candidates and disclose approximate optimality", async () => {
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = (async (input) => {
+    providerCalls += 1;
+    return Response.json(transitousPlanFixtureForRequest(input));
+  }) as typeof fetch;
+  const cityIds = ["paris", "london", "brussels", "lyon", "milan"];
+  try {
+    const response = await schedulePost(
+      new Request("https://together.example/api/routes/schedule", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "CF-Connecting-IP": "203.0.113.205",
+        },
+        body: JSON.stringify({
+          cityIds,
+          startCityId: "paris",
+          endCityId: "milan",
+          departureDate: utcDateFromToday(34),
+        }),
+      }),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      legs: TravelLeg[];
+      requestSummary: {
+        eligiblePairCount: number;
+        candidatePairCount: number;
+        candidateStrategy: string;
+        verifiedCandidateSetComplete: boolean;
+        actualCoverage: boolean;
+        optimalityGuaranteed: boolean;
+      };
+    };
+    assert.equal(body.requestSummary.eligiblePairCount, 13);
+    assert.ok(body.requestSummary.candidatePairCount <= 12);
+    assert.equal(providerCalls, body.requestSummary.candidatePairCount);
+    assert.equal(body.requestSummary.candidateStrategy, "geographic_path_candidates");
+    assert.equal(body.requestSummary.verifiedCandidateSetComplete, true);
+    assert.equal(body.requestSummary.actualCoverage, false);
+    assert.equal(body.requestSummary.optimalityGuaranteed, false);
+    const itinerary = optimizeVerifiedItinerary(cityIds, body.legs, {
+      startCityId: "paris",
+      endCityId: "milan",
+      cities: cityIds.map(getCity),
+    });
+    assert.equal(itinerary.cityOrder.length, cityIds.length);
+    assert.equal(new Set(itinerary.cityOrder).size, cityIds.length);
+    assert.equal(itinerary.cityOrder[0], "paris");
+    assert.equal(itinerary.cityOrder.at(-1), "milan");
+    assert.ok(itinerary.legs.every(isVerifiedTransportLeg));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1079,7 +1332,7 @@ test("schedule endpoint validates and applies fixed start/end constraints", asyn
   globalThis.fetch = (async (input) => {
     const query = new URL(String(input)).searchParams;
     calls.push({ from: query.get("fromPlace"), to: query.get("toPlace") });
-    return Response.json(transitousPlanFixture());
+    return Response.json(transitousPlanFixtureForRequest(input));
   }) as typeof fetch;
   try {
     const response = await schedulePost(
@@ -1145,7 +1398,7 @@ test("schedule endpoint routes validated Open-Meteo cities by request coordinate
   const calls: string[] = [];
   globalThis.fetch = (async (input) => {
     calls.push(String(input));
-    return Response.json(transitousPlanFixture());
+    return Response.json(transitousPlanFixtureForRequest(input));
   }) as typeof fetch;
 
   try {
@@ -1315,10 +1568,10 @@ test("dynamic schedule cache keys include coordinates and time zones", async () 
 test("concurrent identical schedule requests share provider work", async () => {
   const originalFetch = globalThis.fetch;
   let providerCalls = 0;
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (input) => {
     providerCalls += 1;
     await new Promise((resolve) => setTimeout(resolve, 15));
-    return Response.json(transitousPlanFixture());
+    return Response.json(transitousPlanFixtureForRequest(input));
   }) as typeof fetch;
   const body = JSON.stringify({
     cities: [
@@ -1375,6 +1628,10 @@ test("schedule departure dates use an inclusive UTC -1/+365 day horizon", () => 
 test("schedule batch deadline is at most fifteen seconds", () => {
   assert.ok(SCHEDULE_BATCH_DEADLINE_MS > 0);
   assert.ok(SCHEDULE_BATCH_DEADLINE_MS <= 15_000);
+  assert.ok(
+    SCHEDULE_PROVIDER_TIMEOUT_MS > 7_000,
+    "the client must not abort before MOTIS' requested seven-second timeout",
+  );
 });
 
 test("request cancellation aborts active pairs and clears queued provider work", async () => {
@@ -1419,9 +1676,9 @@ test("request cancellation aborts active pairs and clears queued provider work",
     assert.ok(Date.now() - startedAt < 1_000);
 
     let followUpCalls = 0;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (input) => {
       followUpCalls += 1;
-      return Response.json(transitousPlanFixture());
+      return Response.json(transitousPlanFixtureForRequest(input));
     }) as typeof fetch;
     const followUp = await schedulePost(
       new Request("https://together.example/api/routes/schedule", {
@@ -1479,9 +1736,9 @@ test("client IP parsing uses only the first safe proxy address", () => {
 test("schedule endpoint rate-limits calculations per client IP", async () => {
   const originalFetch = globalThis.fetch;
   let providerCalls = 0;
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (input) => {
     providerCalls += 1;
-    return Response.json(transitousPlanFixture());
+    return Response.json(transitousPlanFixtureForRequest(input));
   }) as typeof fetch;
 
   const makeRequest = () =>
@@ -1571,7 +1828,7 @@ test("expense balances settle exactly with deterministic transfers", () => {
   ]);
 });
 
-test("minimum settlement preserves independent zero-sum groups", () => {
+test("greedy settlement is deterministic for independent zero-sum groups", () => {
   const balances: ParticipantBalance[] = [
     { participantId: "a", amount: createMoney("USD", 500) },
     { participantId: "b", amount: createMoney("USD", -500) },
@@ -1594,56 +1851,54 @@ test("minimum settlement preserves independent zero-sum groups", () => {
   ]);
 });
 
-test("minimum settlement count matches exhaustive zero-sum partitioning", () => {
-  let seed = 0x5eed1234;
-  const random = () => {
-    seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
-    return seed;
-  };
-  const exhaustiveMinimum = (valuesInput: readonly number[]) => {
-    const values = valuesInput.filter((value) => value !== 0);
-    const size = 1 << values.length;
-    const sums = Array<number>(size).fill(0);
-    const groups = Array<number>(size).fill(Number.NEGATIVE_INFINITY);
-    groups[0] = 0;
-    for (let mask = 1; mask < size; mask += 1) {
-      const bit = mask & -mask;
-      const index = 31 - Math.clz32(bit);
-      sums[mask] = sums[mask ^ bit] + values[index];
-      if (sums[mask] !== 0) continue;
-      groups[mask] = 1;
-      for (
-        let subset = (mask - 1) & mask;
-        subset > 0;
-        subset = (subset - 1) & mask
-      ) {
-        const remainder = mask ^ subset;
-        if (groups[subset] >= 0 && groups[remainder] >= 0) {
-          groups[mask] = Math.max(
-            groups[mask],
-            groups[subset] + groups[remainder],
-          );
-        }
-      }
-    }
-    return values.length - groups[size - 1];
-  };
+test("greedy settlement handles 100 participants within bounded time and preserves every balance", () => {
+  const balances: ParticipantBalance[] = [
+    ...Array.from({ length: 50 }, (_, index) => ({
+      participantId: `debtor-${String(index).padStart(2, "0")}`,
+      amount: createMoney("EUR", -(index + 1)),
+    })),
+    ...Array.from({ length: 50 }, (_, index) => ({
+      participantId: `creditor-${String(index).padStart(2, "0")}`,
+      amount: createMoney("EUR", index + 1),
+    })),
+  ];
 
-  for (let iteration = 0; iteration < 80; iteration += 1) {
-    const values = Array.from(
-      { length: 6 },
-      () => (random() % 17) - 8,
+  const startedAt = performance.now();
+  const transfers = minimumSettlementTransfers(balances);
+  const elapsedMilliseconds = performance.now() - startedAt;
+  const repeated = minimumSettlementTransfers([...balances].reverse());
+
+  assert.ok(elapsedMilliseconds < 5_000);
+  assert.deepEqual(repeated, transfers);
+  assert.ok(transfers.length <= 99);
+  assert.ok(
+    transfers.every(
+      (transfer) =>
+        transfer.amount.currency === "EUR" &&
+        transfer.amount.minorUnits > 0 &&
+        transfer.fromParticipantId !== transfer.toParticipantId,
+    ),
+  );
+
+  const residuals = new Map(
+    balances.map((balance) => [
+      balance.participantId,
+      balance.amount.minorUnits,
+    ]),
+  );
+  for (const transfer of transfers) {
+    residuals.set(
+      transfer.fromParticipantId,
+      (residuals.get(transfer.fromParticipantId) ?? 0) +
+        transfer.amount.minorUnits,
     );
-    values.push(-values.reduce((sum, value) => sum + value, 0));
-    const balances = values.map((minorUnits, index) => ({
-      participantId: `p${index}`,
-      amount: createMoney("EUR", minorUnits),
-    }));
-    assert.equal(
-      minimumSettlementTransfers(balances).length,
-      exhaustiveMinimum(values),
+    residuals.set(
+      transfer.toParticipantId,
+      (residuals.get(transfer.toParticipantId) ?? 0) -
+        transfer.amount.minorUnits,
     );
   }
+  assert.ok([...residuals.values()].every((balance) => balance === 0));
 });
 
 test("multi-currency expenses produce separate settlement ledgers", () => {

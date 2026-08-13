@@ -1,5 +1,5 @@
 import type { Expense } from "./domain.js";
-import { parseExpenseLedger } from "./expenses.js";
+import { parseExpenseLedger, settleExpensesByCurrency } from "./expenses.js";
 import { parseRouteSnapshot, type RouteSnapshot } from "./route-snapshot.js";
 
 export const DEVICE_TRIPS_KEY = "together-device-trips-v1";
@@ -27,6 +27,33 @@ export type DeviceExpenseLedger = {
   readonly selfParticipantId: string | null;
   readonly expenses: readonly Expense[];
 };
+
+/** Share-safe ledger: intentionally excludes profile and selfParticipantId. */
+export type SharedExpenseLedger = {
+  readonly version: 1;
+  readonly participants: readonly DeviceParticipant[];
+  readonly expenses: readonly Expense[];
+};
+
+export const MAX_SHARED_LEDGER_ENCODED_LENGTH = 24_000;
+export const MAX_SHARED_LEDGER_DECODED_BYTES = 500_000;
+
+export function parseSharedExpenseLedger(value: unknown): SharedExpenseLedger | null {
+  if (!isRecord(value) || value.version !== 1 || "selfParticipantId" in value || "profile" in value) return null;
+  const parsed = parseDeviceExpenseLedger({
+    version: 1,
+    participants: value.participants,
+    selfParticipantId: null,
+    expenses: value.expenses,
+  });
+  if (!Array.isArray(value.participants) || !Array.isArray(value.expenses)) return null;
+  if (parsed.participants.length !== value.participants.length || parsed.expenses.length !== value.expenses.length) return null;
+  return Object.freeze({
+    version: 1,
+    participants: parsed.participants,
+    expenses: parsed.expenses,
+  });
+}
 
 export type DeviceProfile = {
   readonly displayName: string;
@@ -93,7 +120,13 @@ export function parseDeviceExpenseLedger(value: unknown): DeviceExpenseLedger {
   }
   const ledger = parseExpenseLedger({ version: 1, expenses: value.expenses });
   if (!ledger) return empty;
+  if (ledger.expenses.some((expense) => expense.amount.currency !== "EUR")) return empty;
   if (ledger.expenses.some((expense) => !participantIds.has(expense.paidBy) || expense.shares.some((share) => !participantIds.has(share.participantId)))) return empty;
+  try {
+    settleExpensesByCurrency(ledger.expenses);
+  } catch {
+    return empty;
+  }
   const selfParticipantId = value.selfParticipantId === null
     ? null
     : typeof value.selfParticipantId === "string" && participantIds.has(value.selfParticipantId)

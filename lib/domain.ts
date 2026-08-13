@@ -58,11 +58,11 @@ export const PROVENANCE_LABELS: Readonly<
   Record<DataProvenanceKind, LocalizedText>
 > = {
   observed: {
-    ko: "관측 평균",
-    en: "Measured average",
-    fr: "Moyenne mesurée",
-    ja: "観測平均",
-    zh: "观测平均",
+    ko: "검증된 이동 데이터",
+    en: "Verified transport data",
+    fr: "Données de transport vérifiées",
+    ja: "確認済み移動データ",
+    zh: "已核验交通数据",
   },
   scheduled: {
     ko: "공개 운행표",
@@ -126,6 +126,15 @@ export interface DurationBreakdown {
   readonly totalMinutes: number;
 }
 
+/** Provider-published details for one scheduled intercity service. */
+export interface ScheduledServiceDetails {
+  readonly serviceName: string;
+  readonly departurePlace: string;
+  readonly arrivalPlace: string;
+  readonly departureTime: string;
+  readonly arrivalTime: string;
+}
+
 export interface TransportSegment {
   readonly id: string;
   readonly mode: TransportMode;
@@ -133,6 +142,7 @@ export interface TransportSegment {
   readonly to: string;
   readonly provenance: DataProvenance;
   readonly duration: DurationBreakdown | null;
+  readonly scheduledService?: ScheduledServiceDetails;
 }
 
 export interface TravelLeg {

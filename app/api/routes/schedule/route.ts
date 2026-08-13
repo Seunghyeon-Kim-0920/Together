@@ -11,25 +11,33 @@ import {
 
 const TRANSITOUS_PLAN_URL = "https://api.transitous.org/api/v6/plan";
 const TRANSITOUS_USER_AGENT =
-  "Together/0.3 (https://together-travel-0920.ocvi-85.chatgpt.site)";
+  "Together/0.4 (https://together-travel-0920.ocvi-85.chatgpt.site)";
 const TRANSITOUS_SOURCE = "Transitous / MOTIS public timetable";
 const TRANSITOUS_ATTRIBUTION = "https://transitous.org/sources/";
 const TRANSITOUS_TRANSIT_MODES = "RAIL,BUS,COACH";
 
-// There is no city-count product limit. Large requests use a bounded,
-// deterministic set of geographically relevant timetable lookups while the
-// optimizer retains estimated alternatives for every pair.
+// There is no city-count product limit. Provider work is paged so the client
+// can assemble a verified matrix without ever filling missing pairs with
+// modelled durations.
 export const SCHEDULE_MAX_CITIES: null = null;
 export const SCHEDULE_MAX_PROVIDER_PAIRS = 12;
 export const SCHEDULE_MAX_PAIRS = SCHEDULE_MAX_PROVIDER_PAIRS;
+// Transitous asks clients to coordinate expensive routing workloads. Together
+// therefore performs one bounded page only; larger matrices stay unavailable.
+export const SCHEDULE_MAX_CLIENT_BATCHES = 1;
 export const SCHEDULE_CACHE_TTL_SECONDS = 15 * 60;
-export const SCHEDULE_PROVIDER_TIMEOUT_MS = 3_500;
+export const SCHEDULE_PROVIDER_TIMEOUT_MS = 7_500;
 export const SCHEDULE_BATCH_DEADLINE_MS = 12_000;
 export const SCHEDULE_PAST_DATE_HORIZON_DAYS = 1;
 export const SCHEDULE_FUTURE_DATE_HORIZON_DAYS = 365;
 export const SCHEDULE_RATE_LIMIT_REQUESTS = 4;
 export const SCHEDULE_RATE_LIMIT_WINDOW_SECONDS = 60;
 export const SCHEDULE_MAX_REQUEST_BYTES = 65_536;
+export const SCHEDULE_MAX_PROVIDER_RESPONSE_BYTES = 1_000_000;
+// MOTIS' provider-side radius search snaps each city coordinate only to stops
+// inside this bounded circle. It avoids brittle city-centre street matching
+// without ever substituting a station in a different city.
+export const SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS = 2_500;
 
 const MAX_CACHE_ENTRIES = 256;
 const MAX_PROVIDER_CONCURRENCY = 4;
@@ -59,6 +67,11 @@ interface ScheduleCity {
   readonly timeZone: string;
 }
 
+export interface ScheduleCoordinates {
+  readonly latitude: number;
+  readonly longitude: number;
+}
+
 interface ValidScheduleRequest {
   readonly cityIds: readonly string[];
   readonly cityById: ReadonlyMap<string, ScheduleCity>;
@@ -66,6 +79,7 @@ interface ValidScheduleRequest {
   readonly departureDate: string;
   readonly startCityId?: string;
   readonly endCityId?: string;
+  readonly pairOffset: number;
 }
 
 interface TransitousLeg {
@@ -75,6 +89,10 @@ interface TransitousLeg {
   readonly endTime: string;
   readonly fromName: string;
   readonly toName: string;
+  readonly fromCoordinates: ScheduleCoordinates | null;
+  readonly toCoordinates: ScheduleCoordinates | null;
+  readonly fromStopId: string | null;
+  readonly toStopId: string | null;
   readonly serviceName: string;
 }
 
@@ -96,6 +114,21 @@ export interface TransitousScheduleMetadata {
   readonly intercityDurationSeconds: number;
   readonly elapsedFromQuerySeconds: number;
   readonly transfers: number;
+  readonly stopSnapping: {
+    readonly radiusMeters: number;
+    readonly origin: TransitStopSnapEndpoint;
+    readonly destination: TransitStopSnapEndpoint;
+  };
+}
+
+export interface TransitStopSnapEndpoint {
+  readonly cityCenter: ScheduleCoordinates;
+  readonly providerStop: {
+    readonly name: string;
+    readonly stopId: string | null;
+    readonly coordinates: ScheduleCoordinates;
+  };
+  readonly distanceMeters: number;
 }
 
 export interface ParsedTransitousPlan {
@@ -283,7 +316,7 @@ function consumeRateLimit(clientIp: string, now = Date.now()): RateLimitResult {
 }
 
 function validIsoTimestamp(value: unknown): string | null {
-  if (typeof value !== "string" || !value.trim()) return null;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
   return Number.isNaN(Date.parse(value)) ? null : value;
 }
 
@@ -310,27 +343,67 @@ function nestedText(
   return typeof value === "string" ? value.trim() : "";
 }
 
+function nestedCoordinates(
+  record: Record<string, unknown>,
+  key: string,
+): ScheduleCoordinates | null {
+  const nested = record[key];
+  if (!isRecord(nested)) return null;
+  const latitude = nested.lat;
+  const longitude = nested.lon;
+  if (
+    typeof latitude !== "number" ||
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    typeof longitude !== "number" ||
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return null;
+  }
+  return { latitude, longitude };
+}
+
 function firstText(
   record: Record<string, unknown>,
   keys: readonly string[],
 ): string {
   for (const key of keys) {
     const value = record[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "string" && value.trim() && value.trim().length <= 300) return value.trim();
   }
   return "";
 }
 
 function parseTransitousLeg(value: unknown): TransitousLeg | null {
-  if (!isRecord(value) || value.cancelled === true) return null;
+  if (!isRecord(value)) return null;
   const mode = firstText(value, ["mode"]);
+  // Radius searches can mark synthetic access/egress WALK vertices as
+  // cancelled even when the intercity service itself is operating. Those
+  // access legs are omitted from product timings; cancelled transit services
+  // remain strictly rejected.
+  if (value.cancelled === true && mode !== "WALK") return null;
   const duration = nonNegativeNumber(value.duration);
   const startTime = validIsoTimestamp(value.startTime);
   const endTime = validIsoTimestamp(value.endTime);
-  if (!mode || duration === null || !startTime || !endTime) return null;
+  if (!mode || mode.length > 80 || duration === null || duration > 14 * 24 * 60 * 60 || !startTime || !endTime) return null;
+  const timestampDuration = (Date.parse(endTime) - Date.parse(startTime)) / 1_000;
+  if (!Number.isFinite(timestampDuration) || timestampDuration <= 0) return null;
 
   const fromName = nestedText(value, "from", "name") || "Origin";
   const toName = nestedText(value, "to", "name") || "Destination";
+  const fromStopId = nestedText(value, "from", "stopId") || null;
+  const toStopId = nestedText(value, "to", "stopId") || null;
+  if (
+    fromName.length > 300 ||
+    toName.length > 300 ||
+    (fromStopId?.length ?? 0) > 300 ||
+    (toStopId?.length ?? 0) > 300
+  ) {
+    return null;
+  }
   const category = isRecord(value.category)
     ? firstText(value.category, ["shortName", "name"])
     : "";
@@ -341,17 +414,23 @@ function parseTransitousLeg(value: unknown): TransitousLeg | null {
 
   return {
     mode,
-    duration,
+    // Published timestamps are authoritative. Provider duration is parsed only
+    // to reject malformed extremes and never drives the displayed total.
+    duration: timestampDuration,
     startTime,
     endTime,
     fromName,
     toName,
+    fromCoordinates: nestedCoordinates(value, "from"),
+    toCoordinates: nestedCoordinates(value, "to"),
+    fromStopId,
+    toStopId,
     serviceName,
   };
 }
 
 function parseTransitousItinerary(value: unknown): TransitousItinerary | null {
-  if (!isRecord(value) || !Array.isArray(value.legs) || value.legs.length === 0) {
+  if (!isRecord(value) || !Array.isArray(value.legs) || value.legs.length === 0 || value.legs.length > 30) {
     return null;
   }
   const duration = nonNegativeNumber(value.duration);
@@ -387,6 +466,53 @@ function mapTransitousMode(mode: string): TransportMode | null {
   if (mode === "BUS" || mode === "COACH") return "bus";
   if (TRAIN_MODES.has(mode)) return "train";
   return null;
+}
+
+function transitStopSnapEndpoint(
+  city: ScheduleCity,
+  providerLeg: TransitousLeg,
+  endpoint: "from" | "to",
+): TransitStopSnapEndpoint | null {
+  const coordinates =
+    endpoint === "from"
+      ? providerLeg.fromCoordinates
+      : providerLeg.toCoordinates;
+  if (!coordinates) return null;
+  const distanceMeters = scheduleCoordinateDistanceMeters(
+    city.coordinates,
+    coordinates,
+  );
+  if (distanceMeters > SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS) {
+    return null;
+  }
+  return {
+    cityCenter: { ...city.coordinates },
+    providerStop: {
+      name: endpoint === "from" ? providerLeg.fromName : providerLeg.toName,
+      stopId:
+        endpoint === "from" ? providerLeg.fromStopId : providerLeg.toStopId,
+      coordinates,
+    },
+    distanceMeters: Math.round(distanceMeters),
+  };
+}
+
+function stopSnappingMetadata(
+  surfaceLegs: readonly IntercitySurfaceLeg[],
+  fromCity: ScheduleCity,
+  toCity: ScheduleCity,
+): TransitousScheduleMetadata["stopSnapping"] | null {
+  const firstIntercityLeg = surfaceLegs[0]?.providerLeg;
+  const lastIntercityLeg = surfaceLegs.at(-1)?.providerLeg;
+  if (!firstIntercityLeg || !lastIntercityLeg) return null;
+  const origin = transitStopSnapEndpoint(fromCity, firstIntercityLeg, "from");
+  const destination = transitStopSnapEndpoint(toCity, lastIntercityLeg, "to");
+  if (!origin || !destination) return null;
+  return {
+    radiusMeters: SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+    origin,
+    destination,
+  };
 }
 
 interface IntercitySurfaceLeg {
@@ -443,10 +569,6 @@ function intercityDurationSeconds(
   );
 }
 
-function minutesFromSeconds(seconds: number): number {
-  return Math.max(1, Math.round(seconds / 60));
-}
-
 function buildTravelLeg(
   itinerary: TransitousItinerary,
   fromCityId: string,
@@ -454,10 +576,12 @@ function buildTravelLeg(
   _requestedDepartureTime?: string,
   cityById?: ReadonlyMap<string, ScheduleCity>,
 ): ParsedTransitousPlan | null {
-  resolveScheduleCity(fromCityId, cityById);
-  resolveScheduleCity(toCityId, cityById);
+  const fromCity = resolveScheduleCity(fromCityId, cityById);
+  const toCity = resolveScheduleCity(toCityId, cityById);
   const surfaceLegs = selectIntercitySurfaceLegs(itinerary);
   if (!surfaceLegs) return null;
+  const stopSnapping = stopSnappingMetadata(surfaceLegs, fromCity, toCity);
+  if (!stopSnapping) return null;
 
   const provenance = {
     kind: "scheduled" as const,
@@ -467,6 +591,15 @@ function buildTravelLeg(
   const segments = [];
   let previousEndpoint = `${fromCityId}:city-centre`;
   let previousEndMs = Date.parse(surfaceLegs[0].providerLeg.startTime);
+  let elapsedSeconds = 0;
+  let allocatedMinutes = 0;
+  const allocateIntervalMinutes = (seconds: number): number => {
+    elapsedSeconds += seconds;
+    const nextTotal = Math.round(elapsedSeconds / 60);
+    const minutes = nextTotal - allocatedMinutes;
+    allocatedMinutes = nextTotal;
+    return minutes;
+  };
 
   for (let index = 0; index < surfaceLegs.length; index += 1) {
     const { providerLeg, mode } = surfaceLegs[index];
@@ -476,18 +609,25 @@ function buildTravelLeg(
       : `transitous:${fromCityId}:${toCityId}:${surfaceLegs[index].providerIndex}:${providerLeg.toName}`;
     const components: DurationComponentInput[] = [];
     const currentStartMs = Date.parse(providerLeg.startTime);
-    const waitSeconds = Math.max(0, (currentStartMs - previousEndMs) / 1_000);
+    if (currentStartMs < previousEndMs) return null;
+    const waitSeconds = (currentStartMs - previousEndMs) / 1_000;
     if (waitSeconds > 0) {
       components.push({
         kind: "waiting",
         label: `Scheduled wait before ${providerLeg.serviceName}`,
-        minutes: minutesFromSeconds(waitSeconds),
+        minutes: allocateIntervalMinutes(waitSeconds),
       });
     }
+    const inVehicleMinutes = allocateIntervalMinutes(providerLeg.duration);
+    if (
+      inVehicleMinutes +
+        components.reduce((sum, component) => sum + component.minutes, 0) <=
+      0
+    ) return null;
     components.push({
       kind: "in_vehicle",
       label: `${providerLeg.serviceName}: ${providerLeg.fromName} → ${providerLeg.toName}`,
-      minutes: minutesFromSeconds(providerLeg.duration),
+      minutes: inVehicleMinutes,
     });
 
     segments.push(
@@ -498,6 +638,13 @@ function buildTravelLeg(
         to: nextEndpoint,
         provenance,
         components,
+        scheduledService: {
+          serviceName: providerLeg.serviceName,
+          departurePlace: providerLeg.fromName,
+          arrivalPlace: providerLeg.toName,
+          departureTime: providerLeg.startTime,
+          arrivalTime: providerLeg.endTime,
+        },
       }),
     );
     previousEndpoint = nextEndpoint;
@@ -512,6 +659,10 @@ function buildTravelLeg(
   });
   const firstDepartureTime = surfaceLegs[0].providerLeg.startTime;
   const lastArrivalTime = surfaceLegs.at(-1)?.providerLeg.endTime as string;
+  if (
+    leg.totalMinutes !==
+    Math.max(1, Math.round(intercityDurationSeconds(surfaceLegs) / 60))
+  ) return null;
   return {
     leg,
     schedule: {
@@ -525,6 +676,7 @@ function buildTravelLeg(
       // artificial wait between the morning query time and first departure.
       elapsedFromQuerySeconds: intercityDurationSeconds(surfaceLegs),
       transfers: itinerary.transfers,
+      stopSnapping,
     },
   };
 }
@@ -538,7 +690,7 @@ export function parseTransitousPlan(
 ): ParsedTransitousPlan | null {
   resolveScheduleCity(fromCityId, cityById);
   resolveScheduleCity(toCityId, cityById);
-  if (!isRecord(value) || !Array.isArray(value.itineraries)) return null;
+  if (!isRecord(value) || !Array.isArray(value.itineraries) || value.itineraries.length > 20) return null;
 
   const itineraries = value.itineraries
     .map(parseTransitousItinerary)
@@ -832,6 +984,13 @@ function parseScheduleRequest(value: unknown):
       message: "startCityId and endCityId must identify different cities.",
     };
   }
+  const pairOffset = value.pairOffset === undefined ? 0 : value.pairOffset;
+  if (!Number.isSafeInteger(pairOffset) || (pairOffset as number) < 0) {
+    return {
+      ok: false,
+      message: "pairOffset must be a non-negative safe integer.",
+    };
+  }
   return {
     ok: true,
     request: {
@@ -839,28 +998,36 @@ function parseScheduleRequest(value: unknown):
       cityById: cities.cityById,
       dynamicCityCount: cities.dynamicCityCount,
       departureDate,
+      pairOffset: pairOffset as number,
       ...(start.cityId ? { startCityId: start.cityId } : {}),
       ...(end.cityId ? { endCityId: end.cityId } : {}),
     },
   };
 }
 
-function scheduleDistanceKm(from: ScheduleCity, to: ScheduleCity): number {
+function scheduleCoordinateDistanceMeters(
+  from: ScheduleCoordinates,
+  to: ScheduleCoordinates,
+): number {
   const radians = (degrees: number) => (degrees * Math.PI) / 180;
   const latitudeDelta = radians(
-    to.coordinates.latitude - from.coordinates.latitude,
+    to.latitude - from.latitude,
   );
   const longitudeDelta = radians(
-    to.coordinates.longitude - from.coordinates.longitude,
+    to.longitude - from.longitude,
   );
-  const fromLatitude = radians(from.coordinates.latitude);
-  const toLatitude = radians(to.coordinates.latitude);
+  const fromLatitude = radians(from.latitude);
+  const toLatitude = radians(to.latitude);
   const a =
     Math.sin(latitudeDelta / 2) ** 2 +
     Math.cos(fromLatitude) *
       Math.cos(toLatitude) *
       Math.sin(longitudeDelta / 2) ** 2;
-  return 6_371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function scheduleDistanceKm(from: ScheduleCity, to: ScheduleCity): number {
+  return scheduleCoordinateDistanceMeters(from.coordinates, to.coordinates) / 1_000;
 }
 
 function eligiblePairCount(
@@ -882,46 +1049,13 @@ function selectScheduleOrigins(
   const candidates = [...cityIds]
     .filter((cityId) => cityId !== endCityId)
     .sort((left, right) => left.localeCompare(right));
-  if (candidates.length <= SCHEDULE_MAX_PROVIDER_PAIRS) return candidates;
-
-  // Farthest-point sampling spreads the bounded provider budget across the
-  // selected geography instead of favouring whichever city ids sort first.
-  // It is deterministic, always includes a fixed start, and costs O(k^2*n)
-  // where k is capped by SCHEDULE_MAX_PROVIDER_PAIRS.
-  const selected = [startCityId ?? candidates[0]];
-  const selectedSet = new Set(selected);
-  while (selected.length < SCHEDULE_MAX_PROVIDER_PAIRS) {
-    let nextCityId: string | undefined;
-    let nextSeparationKm = Number.NEGATIVE_INFINITY;
-    for (const candidateId of candidates) {
-      if (selectedSet.has(candidateId)) continue;
-      const candidate = resolveScheduleCity(candidateId, cityById);
-      const separationKm = Math.min(
-        ...selected.map((selectedId) =>
-          scheduleDistanceKm(
-            candidate,
-            resolveScheduleCity(selectedId, cityById),
-          ),
-        ),
-      );
-      if (
-        separationKm > nextSeparationKm ||
-        (separationKm === nextSeparationKm &&
-          (nextCityId === undefined ||
-            candidateId.localeCompare(nextCityId) < 0))
-      ) {
-        nextCityId = candidateId;
-        nextSeparationKm = separationKm;
-      }
-    }
-    if (!nextCityId) break;
-    selected.push(nextCityId);
-    selectedSet.add(nextCityId);
-  }
-  return selected;
+  // A fixed start is queried first; all remaining origins stay deterministic.
+  return startCityId
+    ? [startCityId, ...candidates.filter((cityId) => cityId !== startCityId)]
+    : candidates;
 }
 
-function buildSchedulePairs(
+function buildFullMatrixPairs(
   cityIds: readonly string[],
   cityById: ReadonlyMap<string, ScheduleCity>,
   startCityId?: string,
@@ -957,7 +1091,7 @@ function buildSchedulePairs(
     }),
   );
 
-  const pairs: CityPair[] = [];
+  const allPairs: CityPair[] = [];
   const maximumRank = Math.max(
     0,
     ...[...destinationsByOrigin.values()].map(
@@ -968,17 +1102,139 @@ function buildSchedulePairs(
   // single origin consumes the provider budget.
   for (
     let rank = 0;
-    rank < maximumRank && pairs.length < SCHEDULE_MAX_PROVIDER_PAIRS;
+    rank < maximumRank;
     rank += 1
   ) {
     for (const fromCityId of origins) {
       const destination = destinationsByOrigin.get(fromCityId)?.[rank];
       if (!destination) continue;
-      pairs.push({ fromCityId, toCityId: destination.toCityId });
-      if (pairs.length === SCHEDULE_MAX_PROVIDER_PAIRS) break;
+      allPairs.push({ fromCityId, toCityId: destination.toCityId });
     }
   }
+  return allPairs;
+}
+
+function greedyGeographicOrder(
+  cityIds: readonly string[],
+  cityById: ReadonlyMap<string, ScheduleCity>,
+  startCityId?: string,
+  endCityId?: string,
+  firstInteriorCityId?: string,
+): readonly string[] {
+  const available = new Set(
+    cityIds.filter(
+      (cityId) => cityId !== startCityId && cityId !== endCityId,
+    ),
+  );
+  const first = startCityId ?? firstInteriorCityId ?? [...available].sort()[0];
+  if (!first) return endCityId ? [endCityId] : [];
+  available.delete(first);
+  const order = [first];
+  if (firstInteriorCityId && available.delete(firstInteriorCityId)) {
+    order.push(firstInteriorCityId);
+  }
+  while (available.size > 0) {
+    const current = resolveScheduleCity(order.at(-1) as string, cityById);
+    let next: string | null = null;
+    let nextDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of available) {
+      const distance = scheduleDistanceKm(
+        current,
+        resolveScheduleCity(candidate, cityById),
+      );
+      if (
+        distance < nextDistance ||
+        (distance === nextDistance &&
+          (next === null || candidate.localeCompare(next) < 0))
+      ) {
+        next = candidate;
+        nextDistance = distance;
+      }
+    }
+    if (!next) break;
+    order.push(next);
+    available.delete(next);
+  }
+  if (endCityId && order.at(-1) !== endCityId) order.push(endCityId);
+  return order;
+}
+
+function buildSparseCandidatePairs(
+  cityIds: readonly string[],
+  cityById: ReadonlyMap<string, ScheduleCity>,
+  startCityId?: string,
+  endCityId?: string,
+): readonly CityPair[] {
+  const seedCandidates = cityIds
+    .filter((cityId) => cityId !== startCityId && cityId !== endCityId)
+    .sort((left, right) => {
+      if (!startCityId) return left.localeCompare(right);
+      const start = resolveScheduleCity(startCityId, cityById);
+      return (
+        scheduleDistanceKm(start, resolveScheduleCity(left, cityById)) -
+          scheduleDistanceKm(start, resolveScheduleCity(right, cityById)) ||
+        left.localeCompare(right)
+      );
+    });
+  const pairs: CityPair[] = [];
+  const seen = new Set<string>();
+  const addOrder = (order: readonly string[]): boolean => {
+    for (let index = 0; index < order.length - 1; index += 1) {
+      const pair = {
+        fromCityId: order[index],
+        toCityId: order[index + 1],
+      };
+      const key = `${pair.fromCityId}\u0000${pair.toCityId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push(pair);
+      if (pairs.length === SCHEDULE_MAX_PROVIDER_PAIRS) return true;
+    }
+    return false;
+  };
+
+  if (
+    addOrder(
+      greedyGeographicOrder(cityIds, cityById, startCityId, endCityId),
+    )
+  ) return pairs;
+  // Generate alternative seeds lazily. The former eager map built every
+  // complete order even though the provider budget only accepts 12 edges.
+  for (const seed of seedCandidates) {
+    if (
+      addOrder(
+        greedyGeographicOrder(
+          cityIds,
+          cityById,
+          startCityId,
+          endCityId,
+          seed,
+        ),
+      )
+    ) break;
+  }
   return pairs;
+}
+
+function buildScheduleCandidates(
+  cityIds: readonly string[],
+  cityById: ReadonlyMap<string, ScheduleCity>,
+  startCityId?: string,
+  endCityId?: string,
+): readonly CityPair[] {
+  const fullMatrixPairCount = eligiblePairCount(
+    cityIds,
+    startCityId,
+    endCityId,
+  );
+  return fullMatrixPairCount <= SCHEDULE_MAX_PROVIDER_PAIRS
+    ? buildFullMatrixPairs(cityIds, cityById, startCityId, endCityId)
+    : buildSparseCandidatePairs(
+        cityIds,
+        cityById,
+        startCityId,
+        endCityId,
+      );
 }
 
 function timeZoneOffsetMs(instant: Date, timeZone: string): number {
@@ -1038,6 +1294,7 @@ function transitousUrl(
   const query = new URLSearchParams({
     fromPlace: `${from.coordinates.latitude},${from.coordinates.longitude}`,
     toPlace: `${to.coordinates.latitude},${to.coordinates.longitude}`,
+    radius: String(SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS),
     time: queryDepartureTime,
     transitModes: TRANSITOUS_TRANSIT_MODES,
     directModes: "",
@@ -1226,10 +1483,7 @@ async function requestPair(
             cacheHit: false,
           };
         }
-        const body: unknown = await awaitWithSignal(
-          response.json() as Promise<unknown>,
-          providerScope.signal,
-        );
+        const body: unknown = await readProviderJson(response, providerScope.signal);
         const parsed = parseTransitousPlan(
           body,
           pair.fromCityId,
@@ -1271,6 +1525,35 @@ async function requestPair(
       queryDepartureTime,
       cacheHit: false,
     };
+  }
+}
+
+async function readProviderJson(response: Response, signal: AbortSignal): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > SCHEDULE_MAX_PROVIDER_RESPONSE_BYTES) {
+    throw new Error("provider_response_too_large");
+  }
+  if (!response.body) throw new Error("provider_response_missing");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  try {
+    while (true) {
+      if (signal.aborted) throw signal.reason;
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > SCHEDULE_MAX_PROVIDER_RESPONSE_BYTES) {
+        await reader.cancel("provider_response_too_large");
+        throw new Error("provider_response_too_large");
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return JSON.parse(text) as unknown;
+  } finally {
+    reader.releaseLock();
   }
 }
 
@@ -1485,16 +1768,21 @@ export async function POST(request: Request): Promise<Response> {
   const rateLimit = consumeRateLimit(parseClientIp(request));
   if (!rateLimit.allowed) return tooManyRequests(rateLimit);
 
-  const candidatePairCount = eligiblePairCount(
+  const totalEligiblePairCount = eligiblePairCount(
     validated.request.cityIds,
     validated.request.startCityId,
     validated.request.endCityId,
   );
-  const pairs = buildSchedulePairs(
+  const candidatePairs = buildScheduleCandidates(
     validated.request.cityIds,
     validated.request.cityById,
     validated.request.startCityId,
     validated.request.endCityId,
+  );
+  const candidatePairCount = candidatePairs.length;
+  const pairs = candidatePairs.slice(
+    validated.request.pairOffset,
+    validated.request.pairOffset + SCHEDULE_MAX_PROVIDER_PAIRS,
   );
   const batchScope = createAbortScope(
     request.signal,
@@ -1533,12 +1821,16 @@ export async function POST(request: Request): Promise<Response> {
         startCityId: validated.request.startCityId ?? null,
         endCityId: validated.request.endCityId ?? null,
       },
+      pairOffset: validated.request.pairOffset,
       legs: successes.map((result) => result.leg),
       schedules: successes.map((result) => ({
         ...result.schedule,
         queryDepartureTime: result.queryDepartureTime,
       })),
-      partial: failures.length > 0 || pairs.length < candidatePairCount,
+      partial:
+        failures.length > 0 ||
+        candidatePairCount < totalEligiblePairCount ||
+        pairs.length < candidatePairCount,
       missingPairs: failures.map((result) => ({
         ...result.pair,
         reason: result.reason,
@@ -1546,8 +1838,32 @@ export async function POST(request: Request): Promise<Response> {
       })),
       requestSummary: {
         requestedPairCount: pairs.length,
-        eligiblePairCount: candidatePairCount,
-        providerPairLimitApplied: pairs.length < candidatePairCount,
+        eligiblePairCount: totalEligiblePairCount,
+        candidatePairCount,
+        candidateStrategy:
+          candidatePairCount === totalEligiblePairCount
+            ? "full_matrix"
+            : "geographic_path_candidates",
+        providerPairLimitApplied: candidatePairCount < totalEligiblePairCount,
+        nextPairOffset:
+          validated.request.pairOffset + pairs.length < candidatePairCount
+            ? validated.request.pairOffset + pairs.length
+            : null,
+        verifiedCandidateSetComplete:
+          validated.request.pairOffset === 0 &&
+          pairs.length === candidatePairCount &&
+          failures.every((failure) => failure.reason === "no_itinerary"),
+        actualCoverage:
+          validated.request.pairOffset === 0 &&
+          pairs.length === candidatePairCount &&
+          candidatePairCount === totalEligiblePairCount &&
+          failures.every((failure) => failure.reason === "no_itinerary"),
+        optimalityGuaranteed:
+          validated.request.pairOffset === 0 &&
+          pairs.length === candidatePairCount &&
+          candidatePairCount === totalEligiblePairCount &&
+          failures.every((failure) => failure.reason === "no_itinerary") &&
+          validated.request.cityIds.length <= 10,
         dynamicCityCount: validated.request.dynamicCityCount,
         providerRequestCount: results.filter((result) => !result.cacheHit)
           .length,
@@ -1559,10 +1875,15 @@ export async function POST(request: Request): Promise<Response> {
         maxRequestBytes: SCHEDULE_MAX_REQUEST_BYTES,
         maxProviderConcurrency: MAX_PROVIDER_CONCURRENCY,
         providerTimeoutMs: SCHEDULE_PROVIDER_TIMEOUT_MS,
+        transitStopSearch: {
+          strategy: "provider_radius",
+          radiusMeters: SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+          endpointCoordinateGate: true,
+        },
         batchDeadlineMs: SCHEDULE_BATCH_DEADLINE_MS,
         cacheTtlSeconds: SCHEDULE_CACHE_TTL_SECONDS,
         pairDirection:
-          "All constraint-valid ordered pairs are queried when they fit the provider budget; larger requests use deterministic nearest-city pairs in both useful directions.",
+          "A full directed matrix is checked when it fits the provider budget. Otherwise deterministic geographic path candidates are checked; every displayed leg still requires a provider schedule and the order is disclosed as approximate.",
         rateLimit:
           `Best-effort instance-local limit of ${SCHEDULE_RATE_LIMIT_REQUESTS} valid calculation requests per ${SCHEDULE_RATE_LIMIT_WINDOW_SECONDS} seconds per client IP; it is not a globally coordinated quota.`,
         departureDateHorizon: {

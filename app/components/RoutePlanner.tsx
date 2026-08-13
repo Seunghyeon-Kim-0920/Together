@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CITIES } from "../../lib/cities";
 import { DEVICE_TRIPS_KEY, MAX_DEVICE_TRIPS, parseDeviceTrips, readDeviceValue, writeDeviceValue } from "../../lib/device-storage";
 import { provenanceLabel, SUPPORTED_LOCALES, type City, type DurationComponentKind, type OptimizedItinerary, type SupportedLocale, type TransportMode, type TravelLeg } from "../../lib/domain";
-import { buildEstimatedFallbackOptionsForCities, optimizeItinerary } from "../../lib/routing";
+import { isVerifiedTransportLeg, optimizeVerifiedItinerary } from "../../lib/routing";
 import { formatDateTime, formatDuration, LANGUAGE_TAGS, translate } from "../../lib/i18n";
 import type { RouteSnapshot } from "../../lib/route-snapshot";
 import { RouteMap } from "./RouteMap";
@@ -32,9 +32,12 @@ type ScheduleResult = {
   legs: readonly TravelLeg[];
   partial: boolean;
   calculatedAt: string;
+  actualCoverage: boolean;
+  verifiedCandidateCoverage: boolean;
+  optimalityGuaranteed: boolean;
 };
 
-type CitySearchResult = {
+export type CitySearchResult = {
   readonly id: string;
   readonly providerId: number;
   readonly name: string;
@@ -70,7 +73,7 @@ function localizedCountryNames(countryCode: string, fallback: string): City["cou
   });
 }
 
-function cityFromSearchResult(result: CitySearchResult, localizedNames?: City["names"]): City {
+export function cityFromSearchResult(result: CitySearchResult, localizedNames?: City["names"]): City {
   const staticMatch = CITIES.find((city) =>
     city.country.code === result.countryCode &&
     Math.abs(city.coordinates.latitude - result.latitude) < 0.03 &&
@@ -188,6 +191,25 @@ function LegRow({ leg, index, locale, cities, forceExpanded = false }: { leg: Op
       </button>
       {detailsVisible ? (
         <div className="leg-breakdown">
+          {leg.segments.map((segment) => {
+            const service = segment.scheduledService;
+            if (!service) return null;
+            const timeFormatter = new Intl.DateTimeFormat(LANGUAGE_TAGS[locale], {
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            return (
+              <div className="scheduled-segment" key={segment.id}>
+                <span className="scheduled-segment-mode"><ModeGlyph mode={segment.mode} />{modeLabel(segment.mode, locale)}</span>
+                <strong>{service.serviceName}</strong>
+                <span>{service.departurePlace} · {timeFormatter.format(new Date(service.departureTime))}</span>
+                <i aria-hidden="true">→</i>
+                <span>{service.arrivalPlace} · {timeFormatter.format(new Date(service.arrivalTime))}</span>
+              </div>
+            );
+          })}
           {components.map((component, componentIndex) => (
             <div className="breakdown-item" key={`${component.kind}-${componentIndex}`}>
               <CircleDot size={14} aria-hidden="true" />
@@ -229,6 +251,8 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
     itinerary: initialSnapshot.itinerary,
     calculatedAt: initialSnapshot.createdAt,
   } : null);
+  const shouldRevalidateInitialSnapshot = Boolean(initialSnapshot?.itinerary);
+  const initialRevalidationStarted = useRef(false);
 
   const availableCities = useMemo(() => [...CITIES, ...extraCities], [extraCities]);
   const cityMap = useMemo(() => new Map(availableCities.map((city) => [city.id, city])), [availableCities]);
@@ -255,18 +279,26 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
 
   const itinerary = useMemo(() => {
     if (cityIds.length < 2 || selectedCities.length !== cityIds.length || new Set(cityIds).size !== cityIds.length) return null;
-    if (restoredRoute?.key === routeStateKey) return restoredRoute.itinerary;
-    const candidates = [...buildEstimatedFallbackOptionsForCities(selectedCities), ...(activeSchedule?.legs ?? [])];
-    return optimizeItinerary(cityIds, candidates, {
-      startCityId: effectiveStartCityId,
-      endCityId: effectiveEndCityId,
-      cities: selectedCities,
-    });
+    if (
+      restoredRoute?.key === routeStateKey &&
+      restoredRoute.itinerary.legs.every(isVerifiedTransportLeg) &&
+      cityIds.length <= 10
+    ) return restoredRoute.itinerary;
+    if (!activeSchedule?.verifiedCandidateCoverage) return null;
+    try {
+      return optimizeVerifiedItinerary(cityIds, activeSchedule.legs, {
+        startCityId: effectiveStartCityId,
+        endCityId: effectiveEndCityId,
+        cities: selectedCities,
+      });
+    } catch {
+      return null;
+    }
   }, [activeSchedule, cityIds, effectiveEndCityId, effectiveStartCityId, restoredRoute, routeStateKey, selectedCities]);
 
   useEffect(() => {
     const query = cityQuery.trim();
-    if (query.length < 2) {
+    if (!query) {
       return;
     }
     const controller = new AbortController();
@@ -296,8 +328,7 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
   }, [cityQuery, locale]);
 
   const selectedHasScheduled = Boolean(itinerary?.legs.some((leg) => leg.provenance.kind === "scheduled"));
-  const selectedHasEstimated = Boolean(itinerary?.legs.some((leg) => leg.provenance.kind === "estimated"));
-  const selectedProvenanceKey = selectedHasScheduled && selectedHasEstimated ? "mixedData" : selectedHasScheduled ? "scheduled" : itinerary?.provenance.kind === "observed" ? "observed" : "estimated";
+  const selectedProvenanceKey = selectedHasScheduled ? "scheduled" : "observed";
 
   const updateCity = (index: number, cityId: string) => {
     setError("");
@@ -360,7 +391,7 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
       // The selected provider label remains a safe proper-name fallback.
     }
     const neutralName = `${result.countryCode} ${result.latitude.toFixed(3)}, ${result.longitude.toFixed(3)}`;
-    const localizedNames = localizedResult?.names ?? Object.freeze(Object.fromEntries(
+    const localizedNames = localizedResult?.names ?? result.names ?? Object.freeze(Object.fromEntries(
       SUPPORTED_LOCALES.map((resultLocale) => [resultLocale, resultLocale === locale ? result.name : neutralName]),
     )) as City["names"];
     const city = cityFromSearchResult(result, localizedNames);
@@ -388,38 +419,102 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
     setCalculating(true);
     setRestoredRoute(null);
     try {
-      const response = await fetch("/api/routes/schedule", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          cityIds,
-          startCityId: effectiveStartCityId,
-          endCityId: effectiveEndCityId,
-          cities: selectedCities.map((city) => ({
-            id: city.id,
-            latitude: city.coordinates.latitude,
-            longitude: city.coordinates.longitude,
-            timeZone: city.timeZone,
-          })),
-          departureDate,
-        }),
-      });
-      if (!response.ok) throw new Error("schedule unavailable");
-      const data = await response.json() as { legs?: TravelLeg[]; partial?: boolean; calculatedAt?: string };
+      const commonBody = {
+        cityIds,
+        startCityId: effectiveStartCityId,
+        endCityId: effectiveEndCityId,
+        cities: selectedCities.map((city) => ({
+          id: city.id,
+          latitude: city.coordinates.latitude,
+          longitude: city.coordinates.longitude,
+          timeZone: city.timeZone,
+        })),
+        departureDate,
+      };
+      const collectedLegs = new Map<string, TravelLeg>();
+      let pairOffset = 0;
+      let eligiblePairCount = Number.POSITIVE_INFINITY;
+      let candidatePairCount = Number.POSITIVE_INFINITY;
+      let queriedPairCount = 0;
+      let unknownProviderFailures = false;
+      let calculatedAt = new Date().toISOString();
+      for (let batch = 0; batch < 1 && pairOffset < eligiblePairCount; batch += 1) {
+        const response = await fetch("/api/routes/schedule", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...commonBody, pairOffset }),
+        });
+        if (!response.ok) throw new Error("schedule unavailable");
+        const data = await response.json() as {
+          legs?: TravelLeg[];
+          missingPairs?: { reason?: string }[];
+          calculatedAt?: string;
+          requestSummary?: {
+            requestedPairCount?: number;
+            eligiblePairCount?: number;
+            candidatePairCount?: number;
+            nextPairOffset?: number | null;
+          };
+        };
+        for (const leg of Array.isArray(data.legs) ? data.legs : []) {
+          collectedLegs.set(`${leg.fromCityId}\u0000${leg.toCityId}`, leg);
+        }
+        const summary = data.requestSummary;
+        const requested = summary?.requestedPairCount;
+        const eligible = summary?.eligiblePairCount;
+        const candidates = summary?.candidatePairCount;
+        if (
+          !Number.isSafeInteger(requested) ||
+          !Number.isSafeInteger(eligible) ||
+          !Number.isSafeInteger(candidates)
+        ) {
+          throw new Error("invalid schedule coverage");
+        }
+        queriedPairCount += requested as number;
+        eligiblePairCount = eligible as number;
+        candidatePairCount = candidates as number;
+        unknownProviderFailures ||= Array.isArray(data.missingPairs) && data.missingPairs.some((missing) => missing.reason !== "no_itinerary");
+        calculatedAt = typeof data.calculatedAt === "string" ? data.calculatedAt : calculatedAt;
+        const next = summary?.nextPairOffset;
+        if (next === null) {
+          pairOffset = candidatePairCount;
+          break;
+        }
+        if (!Number.isSafeInteger(next) || (next as number) <= pairOffset) break;
+        pairOffset = next as number;
+      }
+      const verifiedCandidateCoverage =
+        pairOffset >= candidatePairCount &&
+        queriedPairCount === candidatePairCount &&
+        !unknownProviderFailures;
+      const actualCoverage =
+        verifiedCandidateCoverage && candidatePairCount === eligiblePairCount;
+      const optimalityGuaranteed = actualCoverage && cityIds.length <= 10;
       setScheduleResult({
         key: scheduleKey,
-        legs: Array.isArray(data.legs) ? data.legs : [],
-        partial: Boolean(data.partial) || !Array.isArray(data.legs) || data.legs.length === 0,
-        calculatedAt: typeof data.calculatedAt === "string" ? data.calculatedAt : new Date().toISOString(),
+        legs: [...collectedLegs.values()],
+        partial: !actualCoverage,
+        actualCoverage,
+        verifiedCandidateCoverage,
+        optimalityGuaranteed,
+        calculatedAt,
       });
     } catch {
-      setScheduleResult({ key: scheduleKey, legs: [], partial: true, calculatedAt: new Date().toISOString() });
+      setScheduleResult({ key: scheduleKey, legs: [], partial: true, actualCoverage: false, verifiedCandidateCoverage: false, optimalityGuaranteed: false, calculatedAt: new Date().toISOString() });
     } finally {
       setBusy(false);
       setCalculating(false);
       window.requestAnimationFrame(() => document.getElementById("route-results")?.scrollIntoView({ behavior: "smooth", block: "start" }));
     }
   };
+
+  useEffect(() => {
+    if (!shouldRevalidateInitialSnapshot || initialRevalidationStarted.current) return;
+    initialRevalidationStarted.current = true;
+    void calculate();
+    // calculate intentionally uses the immutable initial planner state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const snapshot = (): RouteSnapshot | null => itinerary ? {
     version: 3,
@@ -432,7 +527,7 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
     selectedCityIds: [...cityIds],
     startCityId: effectiveStartCityId,
     endCityId: effectiveEndCityId,
-    optimizationMethod: cityIds.length <= 10 ? "exact" : "heuristic",
+    optimizationMethod: activeSchedule?.optimalityGuaranteed ? "exact" : "heuristic",
     itinerary,
     cities: itinerary.cityOrder.map((cityId) => routeCity(cityMap, cityId)),
   } : null;
@@ -522,11 +617,6 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
             <span className="travel-kicker">Together</span>
             <h1>{translate(locale, "routeTitle")}</h1>
             <p>{translate(locale, "routeDescription")}</p>
-            <p className="regional-focus"><MapPin size={17} aria-hidden="true" />{translate(locale, "regionalFocus")}</p>
-          </div>
-          <div className="data-truth-note">
-            <AlertTriangle size={20} aria-hidden="true" />
-            <div><strong>{translate(locale, "estimatedLabel")}</strong><span>{translate(locale, "scheduleHelp")}</span></div>
           </div>
         </div>
       </section>
@@ -561,12 +651,12 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
               <input type="search" value={cityQuery} onChange={(event) => {
                 const nextQuery = event.target.value;
                 setCityQuery(nextQuery);
-                if (nextQuery.trim().length < 2) {
-                  setCitySearchResults([]);
-                  setCitySearchResultLocale(null);
-                  setCitySearchLoading(false);
-                  setCitySearchError(false);
-                }
+                // Never leave a result from the previous query clickable while
+                // the debounced request for the new text is starting.
+                setCitySearchResults([]);
+                setCitySearchResultLocale(null);
+                setCitySearchLoading(Boolean(nextQuery.trim()));
+                setCitySearchError(false);
               }} placeholder={translate(locale, "citySearchPlaceholder")} autoComplete="off" />
               {citySearchLoading ? <RotateCcw className="spin" size={16} aria-label={translate(locale, "loading")} /> : null}
             </label>
@@ -574,17 +664,17 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
               <ul className="city-search-results">
                 {visibleCitySearchResults.map((result) => (
                   <li key={result.id}>
-                    <button type="button" onClick={() => addSearchResult(result)} disabled={addingCityId !== null} aria-busy={addingCityId === result.id}>
+                    <button type="button" data-provider-id={result.providerId} onClick={() => addSearchResult(result)} disabled={addingCityId !== null} aria-busy={addingCityId === result.id}>
                       <strong>{result.name}</strong>
                       <span>{[result.admin1, result.country].filter(Boolean).join(" · ")}</span>
                     </button>
                   </li>
                 ))}
               </ul>
-            ) : cityQuery.trim().length >= 2 && !citySearchLoading ? (
+            ) : cityQuery.trim().length >= 1 && !citySearchLoading ? (
               <p className={citySearchError ? "city-search-status error" : "city-search-status"}>{translate(locale, citySearchError ? "citySearchError" : "noCityResults")}</p>
             ) : null}
-            <small className="city-search-credit">{translate(locale, "citySearchHint")} <a href="https://open-meteo.com/en/docs/geocoding-api" target="_blank" rel="noreferrer">{translate(locale, "geocodingCredit")}</a></small>
+            <small className="city-search-credit">{translate(locale, "citySearchHint")} <a href="https://open-meteo.com/en/docs/geocoding-api" target="_blank" rel="noreferrer">{translate(locale, "geocodingCredit")}</a> · <a href="https://www.wikidata.org/" target="_blank" rel="noreferrer">{translate(locale, "wikidataCredit")}</a></small>
           </div>
           <label className="field-row date-field"><span><CalendarDays size={18} />{translate(locale, "departure")}</span><input type="date" min={departureBounds.minimum} max={departureBounds.maximum} value={departureDate} onChange={(event) => setDepartureDate(event.target.value)} /></label>
           <div className="endpoint-fields">
@@ -593,13 +683,13 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
           </div>
           {error ? <p className="form-error" role="alert">{error}</p> : null}
           <button className="primary-action find-route" type="button" onClick={calculate} disabled={busy}>{calculating ? <RotateCcw className="spin" size={19} /> : <MapPin size={19} />}{translate(locale, calculating ? "scheduleLoading" : "findRoute")}</button>
-          {activeSchedule ? <p className={selectedHasScheduled ? "schedule-feedback success" : "schedule-feedback"}>{translate(locale, selectedHasScheduled && selectedHasEstimated ? "schedulePartial" : selectedHasScheduled ? "scheduleFound" : activeSchedule.legs.length ? "scheduleChecked" : "scheduleUnavailable")}</p> : null}
+          {activeSchedule ? <p className={itinerary ? "schedule-feedback success" : "schedule-feedback"}>{translate(locale, itinerary ? "scheduleFound" : "verifiedRouteUnavailable")}</p> : null}
         </aside>
 
         {itinerary ? (
           <section className="route-results" id="route-results" aria-live="polite">
             <div className="result-heading">
-              <div><h2>{translate(locale, "optimizedOrder")}</h2><p>{translate(locale, cityIds.length <= 10 ? "exactOptimization" : "fastApproximation")}</p></div>
+              <div><h2>{translate(locale, "optimizedOrder")}</h2><p>{translate(locale, activeSchedule?.optimalityGuaranteed ? "exactOptimization" : "fastApproximation")}</p></div>
               <span className="provenance-state"><Database size={15} />{translate(locale, selectedProvenanceKey)}</span>
             </div>
             <div className="order-rail" aria-label={translate(locale, "optimizedOrder")}>
@@ -607,11 +697,11 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
                 <div className="order-city" key={cityId}><span>{index + 1}</span><strong>{routeCity(cityMap, cityId).names[locale]}</strong>{index < itinerary.cityOrder.length - 1 ? <i aria-hidden="true">→</i> : null}</div>
               ))}
             </div>
-            <RouteMap key={itinerary.cityOrder.join("|")} itinerary={itinerary} locale={locale} cities={cityMap} />
+            <RouteMap key={`${itinerary.cityOrder.join("|")}|${itinerary.legs.map((leg) => leg.id).join("|")}`} itinerary={itinerary} locale={locale} cities={cityMap} />
             <div className="route-summary">
               <div><Clock3 size={22} /><span>{translate(locale, "totalTravel")}<strong>{formatDuration(itinerary.totalMinutes, locale)}</strong></span></div>
               <div><MapPin size={22} /><span>{itinerary.legs.length}<strong>{translate(locale, "legs")}</strong></span></div>
-              <div className="summary-source"><Database size={22} /><span>{translate(locale, "dataSource")}<strong>{translate(locale, selectedProvenanceKey === "estimated" ? "estimatedLabel" : selectedProvenanceKey)}</strong></span></div>
+              <div className="summary-source"><Database size={22} /><span>{translate(locale, "dataSource")}<strong>{translate(locale, selectedProvenanceKey)}</strong></span></div>
             </div>
             <div className="legs-list">
               {itinerary.legs.map((leg, index) => <LegRow key={leg.id} leg={leg} index={index} locale={locale} cities={cityMap} forceExpanded={pdfMode} />)}
@@ -622,6 +712,12 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
               <button type="button" onClick={downloadPdf} disabled={busy}><FileDown size={18} />{translate(locale, "pdf")}</button>
               <button className="save-route" type="button" onClick={saveTrip} disabled={busy}><Bookmark size={18} />{translate(locale, "save")}</button>
             </div>
+          </section>
+        ) : activeSchedule ? (
+          <section className="route-results route-unavailable" id="route-results" aria-live="polite">
+            <AlertTriangle size={28} aria-hidden="true" />
+            <h2>{translate(locale, "verifiedRouteUnavailable")}</h2>
+            <p>{translate(locale, "verifiedRouteUnavailableHelp")}</p>
           </section>
         ) : null}
       </div>

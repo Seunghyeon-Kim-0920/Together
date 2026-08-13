@@ -2,15 +2,61 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CITY_SEARCH_MAX_PROVIDER_RESPONSE_BYTES,
   CITY_SEARCH_MAX_RESULTS,
   GET,
   japaneseCityFallbackQueries,
+  knownCityProviderIds,
   parseCitySearchClientIp,
   parseCitySearchQuery,
   parseOpenMeteoCityResponse,
   parseOpenMeteoGeocodingResponse,
   safeLocalizedCityName,
+  wikidataSearchLocales,
 } from "../app/api/cities/search/route.js";
+
+test("city providers are rejected before or during oversized JSON reads", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => new Response("{}", {
+      headers: {
+        "content-type": "application/json",
+        "content-length": String(CITY_SEARCH_MAX_PROVIDER_RESPONSE_BYTES + 1),
+      },
+    })) as typeof fetch;
+    const declared = await GET(new Request(
+      "https://example.test/api/cities/search?q=OversizedDeclaredCity&locale=en",
+      { headers: { "cf-connecting-ip": "203.0.113.220" } },
+    ));
+    assert.equal(declared.status, 502);
+    assert.equal(
+      (await declared.json() as { error: { code: string } }).error.code,
+      "invalid_geocoding_provider_response",
+    );
+
+    globalThis.fetch = (async () => {
+      const chunk = new Uint8Array(300_000).fill(0x20);
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(chunk);
+          controller.enqueue(chunk);
+          controller.close();
+        },
+      }), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const streamed = await GET(new Request(
+      "https://example.test/api/cities/search?q=OversizedStreamedCity&locale=en",
+      { headers: { "cf-connecting-ip": "203.0.113.221" } },
+    ));
+    assert.equal(streamed.status, 502);
+    assert.equal(
+      (await streamed.json() as { error: { code: string } }).error.code,
+      "invalid_geocoding_provider_response",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("city search query validates length and maps the five supported locales", () => {
   assert.deepEqual(
@@ -37,10 +83,11 @@ test("city search query validates length and maps the five supported locales", (
     parseCitySearchQuery(new URLSearchParams({ q: "Reykjavik", locale: "en", translations: "1", providerId: "3413829" })),
     { ok: true, query: "Reykjavik", locale: "en", includeTranslations: true, providerId: 3413829 },
   );
-  assert.equal(
-    parseCitySearchQuery(new URLSearchParams({ q: "P" })).ok,
-    false,
+  assert.deepEqual(
+    parseCitySearchQuery(new URLSearchParams({ q: "빈", locale: "ko" })),
+    { ok: true, query: "빈", locale: "ko", includeTranslations: false },
   );
+  assert.equal(parseCitySearchQuery(new URLSearchParams({ q: "" })).ok, false);
   assert.equal(
     parseCitySearchQuery(new URLSearchParams({ q: "Paris", translations: "1" })).ok,
     false,
@@ -49,6 +96,205 @@ test("city search query validates length and maps the five supported locales", (
     parseCitySearchQuery(new URLSearchParams({ q: "Paris", locale: "de" })).ok,
     false,
   );
+});
+
+test("multilingual Porto and Vienna aliases resolve to one populated-place id", () => {
+  for (const alias of ["Porto", "porto", "포르투", "ポルト", "波尔图", "波爾圖"]) {
+    assert.deepEqual(knownCityProviderIds(alias), [2735943], alias);
+  }
+  for (const alias of ["빈", "Vienna", "Wien", "Vienne", "ウィーン", "维也纳", "維也納"]) {
+    assert.deepEqual(knownCityProviderIds(alias), [2761369], alias);
+  }
+  assert.deepEqual(knownCityProviderIds("P"), [], "one-character Latin searches must not be biased to a curated prefix");
+});
+
+test("Wikidata alias search language follows input script, not interface language", () => {
+  assert.deepEqual(wikidataSearchLocales("피렌체", "en"), ["ko"]);
+  assert.deepEqual(wikidataSearchLocales("ウィーン", "fr"), ["ja"]);
+  assert.deepEqual(wikidataSearchLocales("京都", "en"), ["ja", "zh"]);
+  assert.deepEqual(wikidataSearchLocales("維也納", "ko"), ["ja", "zh"]);
+  assert.deepEqual(wikidataSearchLocales("Firenze", "ko"), ["en", "fr"]);
+});
+
+test("one-character and translated aliases return locale labels without broad search", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: URL[] = [];
+  const records = {
+    2735943: { latitude: 41.1485, longitude: -8.61097, country_code: "PT", timezone: "Europe/Lisbon" },
+    2761369: { latitude: 48.20849, longitude: 16.37208, country_code: "AT", timezone: "Europe/Vienna" },
+  } as const;
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    calls.push(url);
+    const id = Number(url.searchParams.get("id")) as keyof typeof records;
+    const record = records[id];
+    return Response.json({
+      id,
+      name: id === 2735943 ? "Porto" : "Vienna",
+      ...record,
+      feature_code: id === 2735943 ? "PPLA" : "PPLC",
+      country: id === 2735943 ? "Portugal" : "Austria",
+    });
+  };
+  try {
+    const cases = [
+      { query: "Porto", locale: "en", id: 2735943, name: "Porto" },
+      { query: "포르투", locale: "ko", id: 2735943, name: "포르투" },
+      { query: "ポルト", locale: "ja", id: 2735943, name: "ポルト" },
+      { query: "波尔图", locale: "zh", id: 2735943, name: "波尔图" },
+      { query: "빈", locale: "ko", id: 2761369, name: "빈" },
+    ] as const;
+    for (const [index, item] of cases.entries()) {
+      const response = await GET(new Request(`https://example.test/api/cities/search?q=${encodeURIComponent(item.query)}&locale=${item.locale}`, {
+        headers: { "cf-connecting-ip": `203.0.113.${80 + index}` },
+      }));
+      assert.equal(response.status, 200);
+      const payload = await response.json() as { results: Array<{ id: string; providerId: number; name: string; latitude: number; longitude: number }> };
+      assert.equal(payload.results[0].id, `open-meteo:${item.id}`);
+      assert.equal(payload.results[0].providerId, item.id);
+      assert.equal(payload.results[0].name, item.name);
+    }
+    assert.ok(calls.some((url) => url.pathname === "/v1/get"));
+    assert.equal(calls.filter((url) => url.pathname === "/v1/search" && url.searchParams.get("name") === "빈").length, 0, "one-character curated aliases must skip broad search");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("canonical aliases rank first without hiding provider homonyms", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    if (url.pathname === "/v1/get") {
+      return url.searchParams.get("id") === "2735943"
+        ? Response.json({ id: 2735943, name: "Porto", latitude: 41.1485, longitude: -8.61097, feature_code: "PPLA", country_code: "PT", timezone: "Europe/Lisbon", country: "Portugal" })
+        : Response.json({ id: 2761369, name: "Vienne", latitude: 48.20849, longitude: 16.37208, feature_code: "PPLC", country_code: "AT", timezone: "Europe/Vienna", country: "Autriche" });
+    }
+    return url.searchParams.get("name") === "Porto"
+      ? Response.json({ results: [
+          { id: 2735943, name: "Porto", latitude: 41.1485, longitude: -8.61097, feature_code: "PPLA", country_code: "PT", timezone: "Europe/Lisbon", country: "Portugal", population: 252687 },
+          { id: 3113104, name: "Porto", latitude: 42.16737, longitude: -6.89934, feature_code: "PPLA3", country_code: "ES", timezone: "Europe/Madrid", country: "Espagne" },
+        ] })
+      : Response.json({ results: [
+          { id: 2761369, name: "Vienne", latitude: 48.20849, longitude: 16.37208, feature_code: "PPLC", country_code: "AT", timezone: "Europe/Vienna", country: "Autriche", population: 1691468 },
+          { id: 2969284, name: "Vienne", latitude: 45.52473, longitude: 4.87869, feature_code: "PPLA3", country_code: "FR", timezone: "Europe/Paris", country: "France", population: 32293 },
+        ] });
+  };
+  try {
+    const response = await GET(new Request("https://example.test/api/cities/search?q=Vienne&locale=fr", {
+      headers: { "cf-connecting-ip": "203.0.113.110" },
+    }));
+    const payload = await response.json() as { results: Array<{ providerId: number; countryCode: string }> };
+    assert.deepEqual(payload.results.slice(0, 2).map((city) => city.providerId), [2761369, 2969284]);
+    assert.deepEqual(payload.results.slice(0, 2).map((city) => city.countryCode), ["AT", "FR"]);
+
+    const portoResponse = await GET(new Request("https://example.test/api/cities/search?q=Porto&locale=fr", {
+      headers: { "cf-connecting-ip": "203.0.113.111" },
+    }));
+    const porto = await portoResponse.json() as { results: Array<{ providerId: number; countryCode: string }> };
+    assert.deepEqual(porto.results.slice(0, 2).map((city) => city.providerId), [2735943, 3113104]);
+    assert.deepEqual(porto.results.slice(0, 2).map((city) => city.countryCode), ["PT", "ES"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an empty provider search uses one bounded Wikidata city fallback", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: URL[] = [];
+  const userAgents: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    calls.push(url);
+    if (url.hostname === "www.wikidata.org") {
+      userAgents.push(new Headers(init?.headers).get("Api-User-Agent") ?? "");
+      if (url.searchParams.get("action") === "wbsearchentities") {
+        return Response.json({ search: [{ id: "Q1764" }] });
+      }
+      return Response.json({ entities: { Q1764: {
+        labels: {
+          ko: { value: "레이캬비크" }, en: { value: "Reykjavik" }, fr: { value: "Reykjavík" },
+          ja: { value: "レイキャヴィーク" }, zh: { value: "雷克雅未克" },
+        },
+        claims: { P1566: [{ mainsnak: { datavalue: { value: "3413829" } } }] },
+      } } });
+    }
+    if (url.pathname === "/v1/search") return Response.json({ results: [{
+      id: 999001, name: "Unrelated provider prefix", latitude: 63, longitude: -20,
+      feature_code: "PPL", country_code: "IS", timezone: "Atlantic/Reykjavik", country: "Iceland",
+    }] });
+    return Response.json({
+      id: 3413829, name: "레이캬비크", latitude: 64.13548, longitude: -21.89541,
+      feature_code: "PPLC", country_code: "IS", timezone: "Atlantic/Reykjavik", country: "아이슬란드",
+    });
+  };
+  try {
+    const response = await GET(new Request("https://example.test/api/cities/search?q=%EB%A0%88%EC%9D%B4%EC%BA%AC%EB%B9%84%ED%81%AC&locale=en", {
+      headers: { "cf-connecting-ip": "203.0.113.101" },
+    }));
+    const payload = await response.json() as { results: Array<{ providerId: number; name: string }>; meta: { requestCost: number; wikidataFallbackUsed: boolean } };
+    assert.equal(payload.results[0].providerId, 3413829);
+    assert.equal(payload.results[0].name, "Reykjavik");
+    assert.equal(payload.meta.wikidataFallbackUsed, true);
+    assert.equal(payload.meta.requestCost, 13);
+    assert.equal(calls.filter((url) => url.hostname === "www.wikidata.org").length, 2);
+    assert.equal(calls.find((url) => url.searchParams.get("action") === "wbsearchentities")?.searchParams.get("language"), "ko");
+    assert.ok(calls.some((url) => url.pathname === "/v1/search"), "a misleading provider hit must still allow the script-aware fallback");
+    assert.ok(userAgents.every((value) => value.includes("github.com/Seunghyeon-Kim-0920/Together")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Wikidata ADM GeoNames claims rematch to the nearby populated place", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: URL[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    calls.push(url);
+    if (url.hostname === "www.wikidata.org") {
+      if (url.searchParams.get("action") === "wbsearchentities") return Response.json({ search: [{ id: "Q36433" }] });
+      return Response.json({ entities: { Q36433: {
+        labels: {
+          ko: { value: "포르투" }, en: { value: "Porto" }, fr: { value: "Porto" },
+          ja: { value: "ポルト" }, zh: { value: "波尔图" },
+        },
+        claims: {
+          P1566: [{ mainsnak: { datavalue: { value: "6458924" } } }],
+          P625: [{ mainsnak: { datavalue: { value: { latitude: 41.15, longitude: -8.610833333 } } } }],
+        },
+      } } });
+    }
+    if (url.pathname === "/v1/search") {
+      if (url.searchParams.get("name") !== "Porto") return Response.json({});
+      return Response.json({ results: [{
+        id: 2735943, name: "Porto", latitude: 41.1485, longitude: -8.61097,
+        feature_code: "PPLA", country_code: "PT", timezone: "Europe/Lisbon", country: "Portugal",
+      }] });
+    }
+    if (url.searchParams.get("id") === "6458924") {
+      return Response.json({
+        id: 6458924, name: "Porto", latitude: 41.22852, longitude: -8.32691,
+        feature_code: "ADM2", country_code: "PT", timezone: "Europe/Lisbon", country: "Portugal",
+      });
+    }
+    return Response.json({
+      id: 2735943, name: "Porto", latitude: 41.1485, longitude: -8.61097,
+      feature_code: "PPLA", country_code: "PT", timezone: "Europe/Lisbon", country: "Portugal",
+    });
+  };
+  try {
+    const response = await GET(new Request("https://example.test/api/cities/search?q=%ED%8F%AC%EB%A5%B4%ED%88%AC%EB%8F%84%EC%8B%9C%EA%B2%80%EC%83%89&locale=ko", {
+      headers: { "cf-connecting-ip": "203.0.113.102" },
+    }));
+    const payload = await response.json() as { results: Array<{ providerId: number; name: string; latitude: number; longitude: number }> };
+    assert.equal(payload.results[0].providerId, 2735943);
+    assert.equal(payload.results[0].name, "포르투");
+    assert.ok(Math.abs(payload.results[0].latitude - 41.1485) < 1e-9);
+    assert.ok(calls.some((url) => url.pathname === "/v1/search" && url.searchParams.get("name") === "Porto"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("provider-id city hydration parses direct responses and blocks foreign-script fallbacks", () => {
@@ -150,10 +396,11 @@ test("Japanese fallback performs no retry after a hit and never runs for other l
     const otherLocaleResponse = await GET(new Request("https://example.test/api/cities/search?q=%E6%9D%B1%E4%BA%AC&locale=zh", {
       headers: { "cf-connecting-ip": "203.0.113.34" },
     }));
-    const otherLocale = await otherLocaleResponse.json() as { meta: { requestCost: number; fallbackQueriesTried: string[] } };
-    assert.equal(otherLocale.meta.requestCost, 1);
+    const otherLocale = await otherLocaleResponse.json() as { meta: { requestCost: number; fallbackQueriesTried: string[]; wikidataFallbackUsed: boolean } };
+    assert.equal(otherLocale.meta.requestCost, 13);
     assert.deepEqual(otherLocale.meta.fallbackQueriesTried, []);
-    assert.deepEqual(calls, ["東京"]);
+    assert.equal(otherLocale.meta.wikidataFallbackUsed, true);
+    assert.deepEqual(calls.filter(Boolean), ["東京"], "Japanese suffix retries must remain disabled for zh");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -200,6 +447,30 @@ test("translation hydration calls the stable provider id endpoint once per local
     assert.equal(calls.length, 5);
     assert.ok(calls.every((url) => url.pathname === "/v1/get"));
     assert.ok(calls.every((url) => url.searchParams.get("id") === "3176959"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("known-city hydration keeps canonical names even when provider labels are incomplete", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    const locale = url.searchParams.get("language") ?? "en";
+    return Response.json({
+      id: 2735943, name: locale === "ja" ? "ポルト" : "Porto", latitude: 41.1485, longitude: -8.61097,
+      feature_code: "PPLA", country_code: "PT", timezone: "Europe/Lisbon", country: "Portugal",
+    });
+  };
+  try {
+    const response = await GET(new Request("https://example.test/api/cities/search?q=Porto&locale=ko&translations=1&providerId=2735943", {
+      headers: { "cf-connecting-ip": "203.0.113.121" },
+    }));
+    const payload = await response.json() as { results: Array<{ name: string; names: Record<string, string> }> };
+    assert.equal(payload.results[0].name, "포르투");
+    assert.deepEqual(payload.results[0].names, {
+      ko: "포르투", en: "Porto", fr: "Porto", ja: "ポルト", zh: "波尔图",
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

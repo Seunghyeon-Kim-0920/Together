@@ -89,13 +89,12 @@ test("server-renders the Together travel product", async () => {
   const html = await response.text();
   assert.match(
     html,
-    /<title>Together \| 여러 도시를 가장 빠른 순서로<\/title>/i,
+    /<title>Together \| 공개 운행표 기반 다도시 여행<\/title>/i,
   );
   assert.match(html, /Together/);
-  assert.match(html, /여러 도시를, 가장 빠른 순서로\./);
+  assert.match(html, /공개 운행표로 확인하는 여러 도시 동선\./);
   assert.match(html, /가장 빠른 동선 찾기/);
-  assert.match(html, /철도·버스는 선택한 출발일의 공개 운행표를 우선 확인하며 구간 이동시간만 표시합니다/);
-  assert.match(html, /항공만 공항 이동·체크인·보안검색·도착 후 이동을 포함한 문전 간 계획 추정치/);
+  assert.doesNotMatch(html, /계획 모델 추정치|같은 나라와 가까운 유럽 도시|철도·버스는 선택한 출발일|항공만 공항 이동/);
   assert.match(html, /eiffel-paris-hero/);
   assert.match(html, /가계부/);
   assert.doesNotMatch(
@@ -111,7 +110,7 @@ test("ships installable metadata and device-only storage without login UI", asyn
   const manifestHref = html.match(/<link rel="manifest" href="([^"]+)"/i)?.[1];
   assert.ok(manifestHref, "rendered HTML must include a web manifest link");
   assert.equal(new URL(manifestHref, baseUrl).pathname, "/manifest.webmanifest");
-  assert.match(html, /내 여행에 저장/);
+  assert.match(html, /내 여행/);
   assert.doesNotMatch(html, /로그인|계정|signin-with-chatgpt|signout-with-chatgpt/i);
   const deviceTrips = await fetch(`${baseUrl}/api/trips`, {
     headers: { accept: "application/json" },
@@ -122,11 +121,11 @@ test("ships installable metadata and device-only storage without login UI", asyn
 
 test("server rendering and manifest honor every selected language without a fallback-language flash", async () => {
   const cases = [
-    ["ko", "ko-KR", "여러 도시를, 가장 빠른 순서로."],
-    ["en", "en-US", "Many cities. The fastest order."],
-    ["fr", "fr-FR", "Plusieurs villes, dans l’ordre le plus rapide."],
-    ["ja", "ja-JP", "複数の都市を、最も速い順番で。"],
-    ["zh", "zh-CN", "多个城市，按最快顺序出发。"],
+    ["ko", "ko-KR", "공개 운행표로 확인하는 여러 도시 동선."],
+    ["en", "en-US", "Multi-city routes verified by published timetables."],
+    ["fr", "fr-FR", "Des itinéraires intervilles vérifiés par les horaires publiés."],
+    ["ja", "ja-JP", "公開時刻表で確認する複数都市ルート。"],
+    ["zh", "zh-CN", "通过公开时刻表核验多城市路线。"],
   ];
   for (const [locale, languageTag, routeTitle] of cases) {
     const cookie = `together-locale=${locale}`;

@@ -5,6 +5,7 @@ import {
   type DataProvenance,
   type City,
   type OptimizedItinerary,
+  type ScheduledServiceDetails,
   type TransportMode,
   type TransportSegment,
   type TravelLeg,
@@ -241,8 +242,33 @@ function parseSegment(value: unknown): TransportSegment | null {
       minutes: candidate.minutes as number,
     });
   }
+  let scheduledService: ScheduledServiceDetails | undefined;
+  if (value.scheduledService !== undefined) {
+    if (!isRecord(value.scheduledService)) return null;
+    const serviceName = boundedText(value.scheduledService.serviceName, 200);
+    const departurePlace = boundedText(value.scheduledService.departurePlace, 300);
+    const arrivalPlace = boundedText(value.scheduledService.arrivalPlace, 300);
+    const departureTime = validTimestamp(value.scheduledService.departureTime);
+    const arrivalTime = validTimestamp(value.scheduledService.arrivalTime);
+    if (!serviceName || !departurePlace || !arrivalPlace || !departureTime || !arrivalTime) return null;
+    scheduledService = {
+      serviceName,
+      departurePlace,
+      arrivalPlace,
+      departureTime,
+      arrivalTime,
+    };
+  }
   try {
-    const segment = createTransportSegment({ id, mode, from, to, provenance, components });
+    const segment = createTransportSegment({
+      id,
+      mode,
+      from,
+      to,
+      provenance,
+      components,
+      ...(scheduledService ? { scheduledService } : {}),
+    });
     if (value.duration.totalMinutes !== segment.duration?.totalMinutes) return null;
     return segment;
   } catch {
@@ -366,7 +392,11 @@ export function parseRouteSnapshot(value: unknown): RouteSnapshot | null {
   const endCityId = value.version === 3 ? boundedText(value.endCityId, 100) : cityOrder.at(-1) ?? null;
   if (!startCityId || !endCityId || startCityId === endCityId || !selectedCityIds.includes(startCityId) || !selectedCityIds.includes(endCityId) || cityOrder[0] !== startCityId || cityOrder.at(-1) !== endCityId) return null;
   const optimizationMethod = value.version === 3 && (value.optimizationMethod === "exact" || value.optimizationMethod === "heuristic") ? value.optimizationMethod : null;
-  if (value.version === 3 && (!optimizationMethod || (cityOrder.length <= 10 ? optimizationMethod !== "exact" : optimizationMethod !== "heuristic"))) return null;
+  if (
+    value.version === 3 &&
+    (!optimizationMethod ||
+      (optimizationMethod === "exact" && cityOrder.length > 10))
+  ) return null;
   const parsedItinerary = parseItinerary(value.itinerary, cityOrder, cities);
   if (!parsedItinerary || value.totalMinutes !== parsedItinerary.totalMinutes || value.provenance !== parsedItinerary.provenance.kind) return null;
   // Shared URLs and persisted client payloads are unsigned user input. Preserve

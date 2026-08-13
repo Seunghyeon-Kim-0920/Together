@@ -1,6 +1,6 @@
 # Together
 
-Together is a multilingual multi-city travel planner. It compares city-to-city time for trains and coaches with complete door-to-door time for flights, proposes an efficient city order, creates shareable itineraries and PDFs, stores trips in the current browser, and tracks group expenses.
+Together is a multilingual multi-city travel planner. It compares rail and coach services only when a provider publishes departure and arrival times for the selected date, proposes a city order, creates shareable itineraries and PDFs, stores trips in the current browser, and tracks group expenses.
 
 The interface supports Korean, English, French, Japanese, and Chinese. The project runs as a responsive website and installable PWA, and includes a reproducible workflow for a signed Android APK/App Bundle using a Trusted Web Activity (TWA).
 
@@ -8,14 +8,14 @@ The interface supports Korean, English, French, Japanese, and Chinese. The proje
 
 This repository is an early product implementation, not a production travel booking system.
 
-- Route optimization, transport alternatives, share links, PDF export, profiles, saved trips, expense categories, and equal splits have UI and domain implementations.
+- Route optimization, provider-verified transport legs, route and ledger share links, route and ledger PDF export, profiles, saved trips, expense categories, and equal splits have UI and domain implementations. Ledger links use a URL fragment and exclude profile/self-identification data; linked ledgers open read-only and require an explicit conflict-safe save.
 - Trips, profiles, participants, and expenses are stored without login in the current browser's local storage. They are not synchronized to another browser or device and can be lost if browser storage is cleared.
 - Global city search uses the no-key Open-Meteo Geocoding endpoint backed by GeoNames for the current non-commercial beta. Search results include provider attribution, and dynamic city coordinates/time zones are validated again before routing.
 - City lists have no product-level count cap. Routes with up to 10 cities use exact optimization; larger lists use a deterministic scalable approximation while preserving the chosen start and end cities.
-- Rail and coach options are checked against Transitous/MOTIS public timetables with bounded concurrency, cancellation, caching, a maximum of 12 provider pair lookups per request, and a 12-second batch deadline. Pairs outside that free-provider budget use clearly labelled regional planning estimates. Coverage is best-effort and provider/source specific.
-- Flights remain explicitly labelled planning estimates. They include modeled city-to-airport, check-in/security, air time, operational buffer, and airport-to-city time, but do not claim a live flight exists or that the result is a measured historical average.
+- Rail and coach options are checked against Transitous/MOTIS public timetables with bounded concurrency, cancellation, caching, a maximum of 12 provider pair lookups per calculation, and a 12-second batch deadline. When the full directed matrix fits that budget it is checked; otherwise deterministic geographic candidate paths are checked without using distance as travel time. A result is shown only when all candidate lookups are resolved and the verified graph contains a complete route. Sparse results explicitly say that the shortest order is not guaranteed, and very large or uncovered routes remain unavailable rather than inventing missing times.
+- No flight timetable provider is connected. Together does not create or recommend a flight duration until a provider can verify the service and its published times. Multi-mode details are structured to display the mode, service, stations, and departure/arrival time for every provider-verified segment.
 - The public web build is deployed at `https://together-travel-0920.ocvi-85.chatgpt.site`. Monitoring, a privacy policy, provider-capacity planning, and broader security/accessibility testing remain pre-launch work.
-- Android source and automation target v0.3.0 (version code 3) for `com.together.travel`. The release certificate remains linked to the deployed origin through `public/.well-known/assetlinks.json`; signing material must never enter Git.
+- Android source and automation target v0.4.0 (version code 4) for `com.together.travel`. The release certificate remains linked to the deployed origin through `public/.well-known/assetlinks.json`; signing material must never enter Git.
 
 ## Local development
 
@@ -55,7 +55,7 @@ npm run pwa:check -- https://your-production-domain.example
 
 Android packaging uses Bubblewrap and a Trusted Web Activity, so the Android app loads the same deployed HTTPS PWA rather than carrying a second, divergent frontend. `android/twa-manifest.template.json` is source-controlled; generated Gradle files and signing files are ignored. Verified, versioned APK/AAB deliverables are intentionally published under `release/`.
 
-The current release is documented in `release/README.md`. Android v0.3.0 uses version code 3, minimum SDK 23, target/compile SDK 36, and package ID `com.together.travel`. The APK certificate SHA-256 must match the checked-in Digital Asset Links statement.
+The current release is documented in `release/README.md`. Android v0.4.0 uses version code 4, minimum SDK 23, target/compile SDK 36, and package ID `com.together.travel`. The APK certificate SHA-256 must match the checked-in Digital Asset Links statement.
 
 Configure these GitHub repository secrets:
 
@@ -86,8 +86,8 @@ For a configured local Android toolchain, the manifest preparation step is:
 ```powershell
 $env:TOGETHER_SITE_URL = "https://your-production-domain.example"
 $env:ANDROID_PACKAGE_ID = "com.together.travel"
-$env:ANDROID_VERSION_CODE = "3"
-$env:ANDROID_VERSION_NAME = "0.3.0"
+$env:ANDROID_VERSION_CODE = "4"
+$env:ANDROID_VERSION_NAME = "0.4.0"
 $env:ANDROID_KEY_ALIAS = "together-release"
 npm run android:prepare
 ```
@@ -96,7 +96,7 @@ Do not commit a keystore, passwords, generated Android project files, unsigned A
 
 ## Deployment and storage
 
-`.openai/hosting.json` declares the deployed Sites project and its legacy D1 binding. The current login-free product UI stores private records only in the current browser. Public share snapshots include an itinerary only and must not include profile data, participants, or expense records.
+`.openai/hosting.json` declares the deployed Sites project and its legacy D1 binding. The current login-free product UI stores private records only in the current browser. Route links contain route inputs; unsigned timetable claims are never trusted and must be checked again. Ledger links contain only the bounded, validated participant/expense ledger in the URL fragment and never include profile or self-participant data.
 
 GitHub Actions CI validates the PWA contract, TypeScript, lint, production build, and tests on pull requests and `main`.
 

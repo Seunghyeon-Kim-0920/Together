@@ -9,6 +9,7 @@ import {
   type DurationComponent,
   type DurationComponentKind,
   type OptimizedItinerary,
+  type ScheduledServiceDetails,
   type TransportMode,
   type TransportSegment,
   type TravelLeg,
@@ -27,6 +28,7 @@ export interface TransportSegmentInput {
   readonly to: string;
   readonly provenance: DataProvenance;
   readonly components?: readonly DurationComponentInput[];
+  readonly scheduledService?: ScheduledServiceDetails;
 }
 
 export interface TravelLegInput {
@@ -243,6 +245,9 @@ export function createTransportSegment(
     from: requireNonEmpty(input.from, "Segment origin"),
     to: requireNonEmpty(input.to, "Segment destination"),
     provenance: Object.freeze({ ...input.provenance }) as DataProvenance,
+    ...(input.scheduledService
+      ? { scheduledService: validateScheduledService(input.scheduledService, input.provenance) }
+      : {}),
   };
 
   if (input.provenance.kind === "unavailable") {
@@ -256,6 +261,69 @@ export function createTransportSegment(
 
   const duration = createDurationBreakdown(input.components ?? []);
   return Object.freeze({ ...shared, duration });
+}
+
+function validateScheduledService(
+  details: ScheduledServiceDetails,
+  provenance: DataProvenance,
+): ScheduledServiceDetails {
+  if (provenance.kind !== "scheduled" && provenance.kind !== "observed") {
+    throw new DomainValidationError(
+      "Scheduled service details require scheduled or observed provenance",
+    );
+  }
+  const departureTime = requireNonEmpty(
+    details.departureTime,
+    "Scheduled departure time",
+  );
+  const arrivalTime = requireNonEmpty(
+    details.arrivalTime,
+    "Scheduled arrival time",
+  );
+  const departureMs = Date.parse(departureTime);
+  const arrivalMs = Date.parse(arrivalTime);
+  if (
+    !Number.isFinite(departureMs) ||
+    !Number.isFinite(arrivalMs) ||
+    arrivalMs <= departureMs
+  ) {
+    throw new DomainValidationError(
+      "Scheduled service times must be valid and arrival must follow departure",
+    );
+  }
+  return Object.freeze({
+    serviceName: requireNonEmpty(details.serviceName, "Scheduled service name"),
+    departurePlace: requireNonEmpty(
+      details.departurePlace,
+      "Scheduled departure place",
+    ),
+    arrivalPlace: requireNonEmpty(
+      details.arrivalPlace,
+      "Scheduled arrival place",
+    ),
+    departureTime,
+    arrivalTime,
+  });
+}
+
+/**
+ * True only when every duration in a leg is backed by a provider schedule or
+ * measured observation. Modelled/estimated values are deliberately excluded.
+ */
+export function isVerifiedTransportLeg(leg: TravelLeg): boolean {
+  if (
+    leg.totalMinutes === null ||
+    (leg.provenance.kind !== "scheduled" && leg.provenance.kind !== "observed")
+  ) {
+    return false;
+  }
+  return leg.segments.every((segment) => {
+    if (!segment.duration) return false;
+    if (segment.provenance.kind === "scheduled") {
+      return Boolean(segment.scheduledService);
+    }
+    return segment.provenance.kind === "observed";
+  });
 }
 
 function combineProvenance(
@@ -903,6 +971,22 @@ export function optimizeItinerary(
       combineProvenance(legs.map((leg) => leg.provenance)),
     ),
   });
+}
+
+/**
+ * Product-facing optimizer. It refuses to fabricate missing edges: only
+ * provider-scheduled or measured legs may participate in a recommendation.
+ */
+export function optimizeVerifiedItinerary(
+  cityIds: readonly string[],
+  candidateLegs: readonly TravelLeg[],
+  options: OptimizeItineraryOptions = {},
+): OptimizedItinerary {
+  return optimizeItinerary(
+    cityIds,
+    candidateLegs.filter(isVerifiedTransportLeg),
+    options,
+  );
 }
 
 export function haversineDistanceBetweenCities(

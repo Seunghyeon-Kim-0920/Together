@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { MAX_DEVICE_EXPENSES, MAX_DEVICE_PARTICIPANTS, MAX_DEVICE_TRIPS, parseDeviceExpenseLedger, parseDeviceProfile, parseDeviceTrips } from "../lib/device-storage";
+import { MAX_DEVICE_EXPENSES, MAX_DEVICE_PARTICIPANTS, MAX_DEVICE_TRIPS, MAX_SHARED_LEDGER_ENCODED_LENGTH, parseDeviceExpenseLedger, parseDeviceProfile, parseDeviceTrips, parseSharedExpenseLedger } from "../lib/device-storage";
 import { parseRouteSnapshot, type RouteSnapshot } from "../lib/route-snapshot";
 import { TRUSTED_TIMETABLE_SOURCE } from "../lib/route-snapshot";
 import { getCity } from "../lib/cities";
@@ -9,8 +9,13 @@ import { createEqualSplitExpense, parseExpenseLedger } from "../lib/expenses";
 import type { City } from "../lib/domain";
 import { buildEstimatedFallbackOptions, buildEstimatedFallbackOptionsForCities, optimizeItinerary } from "../lib/routing";
 import { constrainRouteView, fitRouteView, projectRouteCities } from "../app/components/RouteMap";
+import { cityFromSearchResult } from "../app/components/RoutePlanner";
+import { parseEuroMinorUnits } from "../app/components/ExpensesPanel";
 
 const plannerSource = readFileSync(new URL("../app/components/RoutePlanner.tsx", import.meta.url), "utf8");
+const expensesSource = readFileSync(new URL("../app/components/ExpensesPanel.tsx", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../app/TogetherApp.tsx", import.meta.url), "utf8");
+const tripsSource = readFileSync(new URL("../app/components/TripsPanel.tsx", import.meta.url), "utf8");
 
 test("route endpoint selections are repaired atomically when a city is replaced or removed", () => {
   assert.match(plannerSource, /if \(startCityId === previousCityId\) setStartCityId\(cityId\)/);
@@ -24,6 +29,22 @@ test("city-search results are hidden synchronously when the selected language ch
   assert.match(plannerSource, /citySearchResultLocale === locale \? citySearchResults : \[\]/);
   assert.match(plannerSource, /setCitySearchResultLocale\(locale\)/);
   assert.match(plannerSource, /visibleCitySearchResults\.map/);
+});
+
+test("city-search results are cleared before a different query can be clicked", () => {
+  assert.match(plannerSource, /setCitySearchResults\(\[\]\);\s+setCitySearchResultLocale\(null\);\s+setCitySearchLoading\(Boolean\(nextQuery\.trim\(\)\)\)/);
+});
+
+test("city search starts at one character and canonicalizes known catalogue cities", () => {
+  assert.match(plannerSource, /if \(!query\) \{\s+return;/);
+  assert.doesNotMatch(plannerSource, /query\.length < 2|trim\(\)\.length < 2/);
+  assert.match(plannerSource, /localizedResult\?\.names \?\? result\.names/);
+  const vienna = cityFromSearchResult({
+    id: "open-meteo:2761369", providerId: 2761369, name: "빈", country: "오스트리아", countryCode: "AT",
+    latitude: 48.20849, longitude: 16.37208, timeZone: "Europe/Vienna",
+  });
+  assert.equal(vienna.id, "vienna", "searching 빈 must reuse the catalogue city and trip duplicate guard");
+  assert.match(plannerSource, /if \(cityIds\.includes\(city\.id\)\)/);
 });
 
 test("new device storage is empty and rejects malformed collections", () => {
@@ -65,6 +86,14 @@ test("version 3 route snapshots preserve chosen endpoints and exact itinerary", 
   assert.equal(parseRouteSnapshot(tampered), null);
 });
 
+test("a sparse verified route with ten or fewer cities may be stored as heuristic", () => {
+  const snapshot = estimatedSnapshot(["paris", "brussels", "amsterdam"]);
+  const sparse = { ...snapshot, optimizationMethod: "heuristic" as const };
+  const parsed = parseRouteSnapshot(sparse);
+  assert.equal(parsed?.version, 3);
+  assert.equal(parsed?.optimizationMethod, "heuristic");
+});
+
 test("legacy route snapshots remain readable", () => {
   const legacy: RouteSnapshot = { version: 1, name: "Paris to Brussels", departureDate: "2026-09-08", cityOrder: ["paris", "brussels"], totalMinutes: 160, createdAt: "2026-08-09T12:00:00.000Z", provenance: "estimated" };
   assert.deepEqual(parseRouteSnapshot(legacy), legacy);
@@ -92,12 +121,76 @@ test("unsigned imported timetable claims restore only as estimates", () => {
   assert.equal(restored?.provenance, "estimated");
 });
 
+test("unsigned observed-time claims are never restored as verified transport", () => {
+  const snapshot = structuredClone(estimatedSnapshot(["paris", "brussels"])) as Extract<RouteSnapshot, { version: 3 }>;
+  (snapshot as { provenance: "estimated" | "scheduled" | "observed" }).provenance = "observed";
+  const observed = { kind: "observed" as const, source: "Unsigned claim", observedAt: "2026-08-09T12:00:00.000Z" };
+  (snapshot.itinerary as unknown as { provenance: unknown }).provenance = observed;
+  (snapshot.itinerary.legs[0] as unknown as { provenance: unknown }).provenance = observed;
+  snapshot.itinerary.legs[0].segments.forEach((segment) => { (segment as unknown as { provenance: unknown }).provenance = observed; });
+  assert.equal(parseRouteSnapshot(snapshot), null);
+});
+
 test("expense ledger parser rejects malformed persistent data", () => {
   const expense = createEqualSplitExpense({ id: "expense-1", tripId: "trip-1", paidBy: "me", category: "food", description: "Dinner", currency: "EUR", totalMinorUnits: 1_000, participantIds: ["me", "friend"], occurredAt: "2026-08-09T12:00:00.000Z" });
   assert.ok(parseExpenseLedger({ version: 1, expenses: [expense] }));
   assert.equal(parseExpenseLedger({ version: 1, expenses: [{ id: "x" }] }), null);
   const deviceLedger = parseDeviceExpenseLedger({ version: 1, participants: [{ id: "me", name: "Me" }, { id: "friend", name: "Friend" }], selfParticipantId: "me", expenses: [expense] });
   assert.equal(deviceLedger.expenses.length, 1);
+});
+
+test("expense amounts are parsed exactly as euro cents", () => {
+  assert.equal(parseEuroMinorUnits("1"), 100);
+  assert.equal(parseEuroMinorUnits("1.05"), 105);
+  assert.equal(parseEuroMinorUnits("1,5"), 150);
+  assert.equal(parseEuroMinorUnits("1.005"), null);
+  assert.equal(parseEuroMinorUnits("1e3"), null);
+  assert.equal(parseEuroMinorUnits("0"), null);
+  assert.equal(parseEuroMinorUnits("999999999999.99"), 99_999_999_999_999);
+});
+
+test("shared ledgers exclude profile and self identity and validate every participant reference", () => {
+  const expense = createEqualSplitExpense({ id: "expense-1", tripId: "device-ledger", paidBy: "me", category: "food", description: "Dinner", currency: "EUR", totalMinorUnits: 1_000, participantIds: ["me", "friend"], occurredAt: "2026-08-09T12:00:00.000Z" });
+  const share = { version: 1, participants: [{ id: "me", name: "Me" }, { id: "friend", name: "Friend" }], expenses: [expense] };
+  assert.ok(parseSharedExpenseLedger(share));
+  assert.equal(parseSharedExpenseLedger({ ...share, selfParticipantId: "me" }), null);
+  assert.equal(parseSharedExpenseLedger({ ...share, profile: { displayName: "secret" } }), null);
+  assert.equal(parseSharedExpenseLedger({ ...share, participants: [{ id: "me", name: "Me" }] }), null);
+  const jpyExpense = { ...expense, amount: { currency: "JPY", minorUnits: expense.amount.minorUnits } };
+  assert.equal(parseSharedExpenseLedger({ ...share, expenses: [jpyExpense] }), null, "EUR-only UI rejects mixed/crafted currencies");
+  assert.equal(MAX_SHARED_LEDGER_ENCODED_LENGTH, 24_000);
+  const oversizedExpense = { ...expense, amount: { currency: "EUR", minorUnits: Number.MAX_SAFE_INTEGER }, shares: [{ participantId: "friend", minorUnits: Number.MAX_SAFE_INTEGER }] };
+  assert.equal(
+    parseSharedExpenseLedger({ ...share, expenses: [oversizedExpense, { ...oversizedExpense, id: "expense-2" }] }),
+    null,
+    "aggregate unsafe balances must fail before rendering",
+  );
+});
+
+test("ledger sharing is fragment-only, read-only until explicit save, and PDF uses bounded pages", () => {
+  assert.match(expensesSource, /url\.hash = `ledger=/);
+  assert.doesNotMatch(expensesSource, /searchParams\.set\(["']ledger/);
+  assert.match(appSource, /MAX_SHARED_LEDGER_DECODED_BYTES/);
+  assert.match(appSource, /DecompressionStream\("gzip"\)/);
+  assert.match(expensesSource, /formOpen && !sharedLedger/);
+  assert.match(expensesSource, /!sharedLedger \? <button[\s\S]+delete-expense/);
+  assert.match(expensesSource, /participants\.length > 0 \|\| expenses\.length > 0/);
+  assert.match(expensesSource, /if \(!sharedLedger \|\| !loaded\) return/);
+  assert.match(expensesSource, /onClick=\{saveSharedLedger\} disabled=\{!loaded \|\| saving\}/);
+  assert.match(expensesSource, /const parsed = parseDeviceExpenseLedger\(candidate\)/);
+  assert.match(expensesSource, /history\.replaceState/);
+  assert.match(expensesSource, /PDF_EXPENSES_PER_PAGE = 18/);
+  assert.match(expensesSource, /PDF_PARTICIPANTS_PER_PAGE = 36/);
+  assert.match(expensesSource, /PDF_SETTLEMENTS_PER_PAGE = 24/);
+  assert.match(expensesSource, /pdfSettlementPages\.map/);
+  assert.match(expensesSource, /\.expense-pdf-page/);
+});
+
+test("saved unverified routes hide historical totals and require a fresh timetable check", () => {
+  assert.match(tripsSource, /snapshot\.provenance !== "estimated"/);
+  assert.match(tripsSource, /snapshot\?\.provenance === "estimated"/);
+  assert.match(plannerSource, /restoredRoute\.itinerary\.legs\.every\(isVerifiedTransportLeg\)/);
+  assert.match(plannerSource, /void calculate\(\)/);
 });
 
 test("dynamic cities survive route optimization, device storage and snapshot restoration", () => {
@@ -166,12 +259,30 @@ test("route map tightly frames nearby cities and constrains every zoom path", ()
   assert.equal(empty.width, 1_000);
 });
 
+test("route map remounts and refits whenever the verified route changes", () => {
+  assert.match(
+    plannerSource,
+    /<RouteMap key=\{`\$\{itinerary\.cityOrder\.join\("\|"\)\}\|\$\{itinerary\.legs\.map\(\(leg\) => leg\.id\)\.join\("\|"\)\}`\}/,
+  );
+});
+
 test("route map bundles an attribution-noticed Natural Earth layer in the marker projection", () => {
   const landSvg = readFileSync(new URL("../public/assets/natural-earth-land-50m.svg", import.meta.url), "utf8");
+  const boundariesSvg = readFileSync(new URL("../public/assets/natural-earth-admin0-boundaries-50m.svg", import.meta.url), "utf8");
+  const routeMapSource = readFileSync(new URL("../app/components/RouteMap.tsx", import.meta.url), "utf8");
+  const serviceWorker = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
   const notice = readFileSync(new URL("../public/assets/natural-earth-NOTICE.txt", import.meta.url), "utf8");
   assert.match(landSvg, /viewBox="0 0 1000 500"/);
   assert.match(landSvg, /Public-domain Natural Earth 1:50m land polygons projected equirectangularly/);
   assert.match(landSvg, /<path fill="#f6f1df" fill-rule="evenodd" d="M/);
+  assert.match(boundariesSvg, /viewBox="0 0 1000 500"/);
+  assert.match(boundariesSvg, /Natural Earth 1:50m Admin-0 land boundaries projected equirectangularly/);
+  assert.match(boundariesSvg, /<path id="admin0-boundaries"[^>]+d="M/);
+  assert.match(routeMapSource, /natural-earth-admin0-boundaries-50m\.svg#admin0-boundaries/);
+  assert.equal((routeMapSource.match(/natural-earth-admin0-boundaries-50m/g) ?? []).length, 3, "date-line map copies need the same country-boundary layer");
   assert.match(notice, /public domain/i);
   assert.match(notice, /terms-of-use/);
+  assert.match(notice, /Admin-0 Boundary Lines.+version 5\.1\.2/);
+  assert.match(serviceWorker, /together-static-v4/);
+  assert.match(serviceWorker, /\/assets\/natural-earth-admin0-boundaries-50m\.svg/);
 });

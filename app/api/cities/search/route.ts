@@ -5,14 +5,22 @@ const OPEN_METEO_CITY_URL =
 const OPEN_METEO_ATTRIBUTION_URL =
   "https://open-meteo.com/en/docs/geocoding-api";
 const GEONAMES_ATTRIBUTION_URL = "https://www.geonames.org/";
+const WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php";
+const WIKIMEDIA_API_USER_AGENT =
+  "Together/0.4 (+https://github.com/Seunghyeon-Kim-0920/Together)";
 
 export const CITY_SEARCH_MAX_RESULTS = 8;
 export const CITY_SEARCH_CACHE_TTL_SECONDS = 6 * 60 * 60;
 export const CITY_SEARCH_PROVIDER_TIMEOUT_MS = 5_000;
+export const CITY_SEARCH_MAX_PROVIDER_RESPONSE_BYTES = 512_000;
 export const CITY_SEARCH_RATE_LIMIT_REQUESTS = 30;
 export const CITY_SEARCH_RATE_LIMIT_WINDOW_SECONDS = 60;
 
 const PROVIDER_CANDIDATE_COUNT = 20;
+// Pre-charge the bounded worst case: two alias searches, one entity batch,
+// three GeoNames validations, and up to three coordinate rematches.
+const WIKIDATA_FALLBACK_RATE_COST = 12;
+const WIKIDATA_NEGATIVE_CACHE_TTL_SECONDS = 5 * 60;
 const MAX_CACHE_ENTRIES = 256;
 const MAX_RATE_LIMIT_ENTRIES = 4_096;
 
@@ -30,6 +38,47 @@ export interface CitySearchResult {
   readonly longitude: number;
   readonly timeZone: string;
   readonly population?: number;
+  readonly names?: Readonly<Record<CitySearchLocale, string>>;
+}
+
+type LocalizedCityNames = Readonly<Record<CitySearchLocale, string>>;
+
+interface KnownCity {
+  readonly providerId: number;
+  readonly names: LocalizedCityNames;
+  readonly aliases: readonly string[];
+}
+
+// Stable GeoNames populated-place IDs protect short and translated aliases
+// from a provider search endpoint that otherwise treats them as loose prefixes.
+const KNOWN_CITIES: readonly KnownCity[] = Object.freeze([
+  Object.freeze({
+    providerId: 2735943,
+    names: Object.freeze({ ko: "포르투", en: "Porto", fr: "Porto", ja: "ポルト", zh: "波尔图" }),
+    aliases: Object.freeze(["포르투", "porto", "ポルト", "波尔图", "波爾圖"]),
+  }),
+  Object.freeze({
+    providerId: 2761369,
+    names: Object.freeze({ ko: "빈", en: "Vienna", fr: "Vienne", ja: "ウィーン", zh: "维也纳" }),
+    aliases: Object.freeze(["빈", "vienna", "wien", "vienne", "ウィーン", "维也纳", "維也納"]),
+  }),
+]);
+
+function normalizeCityAlias(value: string): string {
+  return value.normalize("NFKC").trim().toLocaleLowerCase();
+}
+
+export function knownCityProviderIds(query: string): readonly number[] {
+  const normalized = normalizeCityAlias(query);
+  if (!normalized) return [];
+  return KNOWN_CITIES.filter((city) => city.aliases.some((alias) => {
+    const normalizedAlias = normalizeCityAlias(alias);
+    return normalizedAlias === normalized;
+  })).map((city) => city.providerId);
+}
+
+function knownNames(providerId: number): LocalizedCityNames | undefined {
+  return KNOWN_CITIES.find((city) => city.providerId === providerId)?.names;
 }
 
 export type ParsedCitySearchQuery =
@@ -55,6 +104,16 @@ interface CityCacheEntry {
   readonly promise: Promise<CitySearchResult>;
 }
 
+interface WikidataCacheEntry {
+  readonly expiresAt: number;
+  readonly promise: Promise<readonly CitySearchResult[]>;
+}
+
+interface NamesCacheEntry {
+  readonly expiresAt: number;
+  readonly names: LocalizedCityNames;
+}
+
 interface RateLimitEntry {
   count: number;
   windowStartedAt: number;
@@ -69,6 +128,8 @@ interface RateLimitResult {
 
 const searchCache = new Map<string, CacheEntry>();
 const cityCache = new Map<string, CityCacheEntry>();
+const wikidataCache = new Map<string, WikidataCacheEntry>();
+const wikidataNamesCache = new Map<number, NamesCacheEntry>();
 const rateLimits = new Map<string, RateLimitEntry>();
 
 const LOCALE_ALIASES: Readonly<Record<string, CitySearchLocale>> = {
@@ -109,10 +170,10 @@ export function parseCitySearchQuery(
   searchParams: URLSearchParams,
 ): ParsedCitySearchQuery {
   const query = searchParams.get("q")?.trim() ?? "";
-  if (query.length < 2 || query.length > 80) {
+  if ([...query].length < 1 || query.length > 80) {
     return {
       ok: false,
-      message: "q must contain between 2 and 80 characters.",
+      message: "q must contain between 1 and 80 characters.",
     };
   }
   const locale = normalizeLocale(searchParams.get("locale"));
@@ -146,6 +207,7 @@ export function parseCitySearchQuery(
 const LATIN_SCRIPT = /\p{Script=Latin}/u;
 const HANGUL_SCRIPT = /\p{Script=Hangul}/u;
 const JAPANESE_SCRIPT = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+const JAPANESE_KANA_SCRIPT = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
 const HAN_SCRIPT = /\p{Script=Han}/u;
 const TWO_HAN_CHARACTERS = /^\p{Script=Han}{2}$/u;
 
@@ -408,6 +470,61 @@ function pruneCache(now: number): void {
     if (!oldestKey) break;
     cityCache.delete(oldestKey);
   }
+  for (const [key, entry] of wikidataCache) {
+    if (entry.expiresAt <= now) wikidataCache.delete(key);
+  }
+  while (wikidataCache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = wikidataCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    wikidataCache.delete(oldestKey);
+  }
+  for (const [providerId, entry] of wikidataNamesCache) {
+    if (entry.expiresAt <= now) wikidataNamesCache.delete(providerId);
+  }
+}
+
+async function readBoundedProviderJson(
+  response: Response,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    if (!/^\d+$/.test(declaredLength)) {
+      throw new Error("invalid_provider_content_length");
+    }
+    const declaredBytes = Number(declaredLength);
+    if (
+      !Number.isSafeInteger(declaredBytes) ||
+      declaredBytes > CITY_SEARCH_MAX_PROVIDER_RESPONSE_BYTES
+    ) {
+      throw new Error("provider_response_too_large");
+    }
+  }
+  if (!response.body) throw new Error("provider_response_missing");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let totalBytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      if (signal.aborted) {
+        throw signal.reason ?? new DOMException("Provider request aborted.", "AbortError");
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > CITY_SEARCH_MAX_PROVIDER_RESPONSE_BYTES) {
+        await reader.cancel("provider_response_too_large");
+        throw new Error("provider_response_too_large");
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return JSON.parse(text) as unknown;
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 async function requestProvider(
@@ -420,12 +537,15 @@ async function requestProvider(
     language: locale,
     format: "json",
   });
+  const signal = AbortSignal.timeout(CITY_SEARCH_PROVIDER_TIMEOUT_MS);
   const response = await fetch(`${OPEN_METEO_GEOCODING_URL}?${search}`, {
     headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(CITY_SEARCH_PROVIDER_TIMEOUT_MS),
+    signal,
   });
   if (!response.ok) throw new Error("provider_unavailable");
-  const parsed = parseOpenMeteoGeocodingResponse(await response.json());
+  const parsed = parseOpenMeteoGeocodingResponse(
+    await readBoundedProviderJson(response, signal),
+  );
   if (!parsed) throw new Error("invalid_provider_response");
   return parsed.map((city) => sanitizeCityForLocale(city, locale));
 }
@@ -435,12 +555,15 @@ async function requestProviderCity(
   locale: CitySearchLocale,
 ): Promise<CitySearchResult> {
   const search = new URLSearchParams({ id: String(providerId), language: locale });
+  const signal = AbortSignal.timeout(CITY_SEARCH_PROVIDER_TIMEOUT_MS);
   const response = await fetch(`${OPEN_METEO_CITY_URL}?${search}`, {
     headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(CITY_SEARCH_PROVIDER_TIMEOUT_MS),
+    signal,
   });
   if (!response.ok) throw new Error("provider_unavailable");
-  const parsed = parseOpenMeteoCityResponse(await response.json());
+  const parsed = parseOpenMeteoCityResponse(
+    await readBoundedProviderJson(response, signal),
+  );
   if (!parsed || parsed.providerId !== providerId) throw new Error("invalid_provider_response");
   return sanitizeCityForLocale(parsed, locale);
 }
@@ -492,6 +615,261 @@ async function lookupCities(
   }
 }
 
+async function lookupKnownCities(
+  query: string,
+  locale: CitySearchLocale,
+): Promise<readonly CitySearchResult[]> {
+  const providerIds = knownCityProviderIds(query);
+  if (providerIds.length === 0) return [];
+  const settled = await Promise.allSettled(providerIds.map((providerId) => lookupCity(providerId, locale)));
+  return settled.flatMap((result) => {
+    if (result.status !== "fulfilled") return [];
+    const names = knownNames(result.value.providerId);
+    return [{ ...result.value, name: names?.[locale] ?? result.value.name, names }];
+  });
+}
+
+function wikidataEntityIds(value: unknown): readonly string[] {
+  if (!isRecord(value) || !Array.isArray(value.search)) return [];
+  return value.search.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const id = boundedText(candidate.id, 24);
+    return id && /^Q[1-9]\d*$/.test(id) ? [id] : [];
+  }).slice(0, 3);
+}
+
+export function wikidataSearchLocales(
+  query: string,
+  interfaceLocale: CitySearchLocale,
+): readonly CitySearchLocale[] {
+  const candidates: CitySearchLocale[] = HANGUL_SCRIPT.test(query)
+    ? ["ko"]
+    : JAPANESE_KANA_SCRIPT.test(query)
+      ? ["ja"]
+      : HAN_SCRIPT.test(query)
+        ? interfaceLocale === "zh" ? ["zh", "ja"] : ["ja", "zh"]
+        : LATIN_SCRIPT.test(query)
+          ? interfaceLocale === "fr" ? ["fr", "en"] : ["en", "fr"]
+          : [interfaceLocale, "en"];
+  return [...new Set(candidates)].slice(0, 2);
+}
+
+function wikidataGeoNamesId(entity: Record<string, unknown>): number | null {
+  const claims = isRecord(entity.claims) ? entity.claims : null;
+  const candidates = claims && Array.isArray(claims.P1566) ? claims.P1566 : [];
+  for (const candidate of candidates) {
+    if (!isRecord(candidate) || !isRecord(candidate.mainsnak)) continue;
+    const dataValue = isRecord(candidate.mainsnak.datavalue) ? candidate.mainsnak.datavalue : null;
+    const value = dataValue?.value;
+    if (typeof value !== "string" || !/^\d+$/.test(value)) continue;
+    const providerId = Number(value);
+    if (Number.isSafeInteger(providerId) && providerId > 0) return providerId;
+  }
+  return null;
+}
+
+function wikidataCoordinates(entity: Record<string, unknown>): { latitude: number; longitude: number } | null {
+  const claims = isRecord(entity.claims) ? entity.claims : null;
+  const candidates = claims && Array.isArray(claims.P625) ? claims.P625 : [];
+  for (const candidate of candidates) {
+    if (!isRecord(candidate) || !isRecord(candidate.mainsnak)) continue;
+    const dataValue = isRecord(candidate.mainsnak.datavalue) ? candidate.mainsnak.datavalue : null;
+    const value = isRecord(dataValue?.value) ? dataValue.value : null;
+    const latitude = finiteNumber(value?.latitude);
+    const longitude = finiteNumber(value?.longitude);
+    if (latitude !== null && latitude >= -90 && latitude <= 90 && longitude !== null && longitude >= -180 && longitude <= 180) {
+      return { latitude, longitude };
+    }
+  }
+  return null;
+}
+
+function wikidataLabel(entity: Record<string, unknown>, locale: CitySearchLocale): string | null {
+  const labels = isRecord(entity.labels) ? entity.labels : {};
+  for (const candidateLocale of [locale, "en"] as const) {
+    const label = isRecord(labels[candidateLocale]) ? boundedText(labels[candidateLocale].value, 200) : null;
+    if (label && (candidateLocale === "en" || usesLocaleScript(label, candidateLocale))) return label;
+  }
+  return null;
+}
+
+function distanceKilometres(
+  left: { latitude: number; longitude: number },
+  right: { latitude: number; longitude: number },
+): number {
+  const radians = (degrees: number) => degrees * Math.PI / 180;
+  const latitudeDelta = radians(right.latitude - left.latitude);
+  const longitudeDelta = radians(right.longitude - left.longitude);
+  const a = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(radians(left.latitude)) * Math.cos(radians(right.latitude)) * Math.sin(longitudeDelta / 2) ** 2;
+  return 6_371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+async function rematchWikidataPopulatedPlace(
+  entity: Record<string, unknown>,
+  locale: CitySearchLocale,
+): Promise<CitySearchResult | null> {
+  const coordinates = wikidataCoordinates(entity);
+  const label = wikidataLabel(entity, locale);
+  if (!coordinates || !label) return null;
+  // Prefer the English label when present: Open-Meteo's free text search has
+  // materially better coverage for Latin canonical names than translations.
+  const englishLabel = wikidataLabel(entity, "en") ?? label;
+  const candidates = await requestProvider(englishLabel, "en");
+  let nearest: CitySearchResult | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const distance = distanceKilometres(coordinates, candidate);
+    if (distance < nearestDistance) {
+      nearest = candidate;
+      nearestDistance = distance;
+    }
+  }
+  // A tight coordinate gate avoids accepting a same-name city in a different
+  // country when a Wikidata GeoNames claim points to an ADM* feature.
+  if (!nearest || nearestDistance > 20) return null;
+  return lookupCity(nearest.providerId, locale);
+}
+
+function wikidataLocalizedNames(
+  entity: Record<string, unknown>,
+  city: CitySearchResult,
+): LocalizedCityNames {
+  const labels = isRecord(entity.labels) ? entity.labels : {};
+  return Object.freeze(Object.fromEntries(CITY_SEARCH_LOCALES.map((locale) => {
+    const label = isRecord(labels[locale]) ? boundedText(labels[locale].value, 200) : null;
+    return [locale, label && usesLocaleScript(label, locale) ? label : neutralCityLabel(city)];
+  })) as Record<CitySearchLocale, string>);
+}
+
+async function requestWikidataJson(search: URLSearchParams): Promise<unknown> {
+  const signal = AbortSignal.timeout(CITY_SEARCH_PROVIDER_TIMEOUT_MS);
+  const response = await fetch(`${WIKIDATA_API_URL}?${search}`, {
+    headers: {
+      Accept: "application/json",
+      "Api-User-Agent": WIKIMEDIA_API_USER_AGENT,
+      "User-Agent": WIKIMEDIA_API_USER_AGENT,
+    },
+    signal,
+  });
+  // Do not immediately retry a Wikimedia 429. The caller returns the original
+  // provider result and a short negative cache prevents repeated fallback traffic.
+  if (!response.ok) throw new Error(response.status === 429 ? "wikimedia_rate_limited" : "wikimedia_unavailable");
+  return readBoundedProviderJson(response, signal);
+}
+
+async function requestWikidataCities(
+  query: string,
+  locale: CitySearchLocale,
+): Promise<readonly CitySearchResult[]> {
+  const entityIds: string[] = [];
+  for (const searchLocale of wikidataSearchLocales(query, locale)) {
+    const ids = wikidataEntityIds(await requestWikidataJson(new URLSearchParams({
+      action: "wbsearchentities",
+      search: query,
+      language: searchLocale,
+      uselang: locale,
+      type: "item",
+      limit: "3",
+      format: "json",
+    })));
+    for (const id of ids) {
+      if (!entityIds.includes(id)) entityIds.push(id);
+      if (entityIds.length === 3) break;
+    }
+    if (entityIds.length === 3) break;
+  }
+  if (entityIds.length === 0) return [];
+  const payload = await requestWikidataJson(new URLSearchParams({
+    action: "wbgetentities",
+    ids: entityIds.join("|"),
+    props: "labels|claims",
+    languages: CITY_SEARCH_LOCALES.join("|"),
+    languagefallback: "1",
+    format: "json",
+  }));
+  const entities = isRecord(payload) && isRecord(payload.entities) ? payload.entities : {};
+  const seen = new Set<number>();
+  const results: CitySearchResult[] = [];
+  // Resolve sequentially: it avoids bursts against both public services and
+  // preserves Wikidata's relevance order.
+  for (const entityId of entityIds) {
+    const entity = isRecord(entities[entityId]) ? entities[entityId] : null;
+    if (!entity) continue;
+    const claimedProviderId = wikidataGeoNamesId(entity);
+    if (!claimedProviderId) continue;
+    try {
+      // /v1/get plus parseProviderCity is the city-only gate: ADM*, airports,
+      // and other non-populated-place Wikidata entities cannot pass it.
+      let city: CitySearchResult;
+      try {
+        city = await lookupCity(claimedProviderId, locale);
+      } catch {
+        const rematched = await rematchWikidataPopulatedPlace(entity, locale);
+        if (!rematched) continue;
+        city = rematched;
+      }
+      if (seen.has(city.providerId)) continue;
+      seen.add(city.providerId);
+      const names = wikidataLocalizedNames(entity, city);
+      wikidataNamesCache.set(city.providerId, {
+        expiresAt: Date.now() + CITY_SEARCH_CACHE_TTL_SECONDS * 1_000,
+        names,
+      });
+      results.push({ ...city, name: names[locale], names });
+    } catch {
+      // A bad/missing GeoNames claim should not hide other valid candidates.
+    }
+  }
+  return results;
+}
+
+async function lookupWikidataCities(
+  query: string,
+  locale: CitySearchLocale,
+): Promise<readonly CitySearchResult[]> {
+  const now = Date.now();
+  const cacheKey = `${locale}|${normalizeCityAlias(query)}`;
+  const cached = wikidataCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.promise;
+  pruneCache(now);
+  const promise = requestWikidataCities(query, locale).then((results) => {
+    const settled = Promise.resolve(results);
+    wikidataCache.set(cacheKey, {
+      expiresAt: now + (results.length > 0 ? CITY_SEARCH_CACHE_TTL_SECONDS : WIKIDATA_NEGATIVE_CACHE_TTL_SECONDS) * 1_000,
+      promise: settled,
+    });
+    return results;
+  }).catch(() => {
+    const results: readonly CitySearchResult[] = [];
+    wikidataCache.set(cacheKey, {
+      expiresAt: now + WIKIDATA_NEGATIVE_CACHE_TTL_SECONDS * 1_000,
+      promise: Promise.resolve(results),
+    });
+    return results;
+  });
+  wikidataCache.set(cacheKey, {
+    expiresAt: now + WIKIDATA_NEGATIVE_CACHE_TTL_SECONDS * 1_000,
+    promise,
+  });
+  return promise;
+}
+
+function mergeCityResults(
+  preferred: readonly CitySearchResult[],
+  additional: readonly CitySearchResult[],
+): readonly CitySearchResult[] {
+  const seen = new Set<number>();
+  const merged: CitySearchResult[] = [];
+  for (const city of [...preferred, ...additional]) {
+    if (seen.has(city.providerId)) continue;
+    seen.add(city.providerId);
+    merged.push(city);
+    if (merged.length === CITY_SEARCH_MAX_RESULTS) break;
+  }
+  return merged;
+}
+
 function errorResponse(
   status: number,
   code: string,
@@ -516,7 +894,12 @@ function providerError(error: unknown): Response {
     );
   }
   const code = error instanceof Error ? error.message : "";
-  if (code === "invalid_provider_response") {
+  if (
+    code === "invalid_provider_response" ||
+    code === "invalid_provider_content_length" ||
+    code === "provider_response_too_large" ||
+    code === "provider_response_missing"
+  ) {
     return errorResponse(
       502,
       "invalid_geocoding_provider_response",
@@ -539,7 +922,11 @@ export async function GET(request: Request): Promise<Response> {
 
   // A five-language hydration may fan out to five provider lookups. Charge
   // that full cost so one client cannot multiply the no-key upstream quota.
-  let requestCost = validated.includeTranslations ? CITY_SEARCH_LOCALES.length : 1;
+  const knownProviderCount = validated.includeTranslations ? 0 : knownCityProviderIds(validated.query).length;
+  const requestCostBase = [...validated.query].length === 1
+    ? Math.max(1, knownProviderCount)
+    : 1 + knownProviderCount;
+  let requestCost = validated.includeTranslations ? CITY_SEARCH_LOCALES.length : requestCostBase;
   const clientIp = parseCitySearchClientIp(request);
   let rateLimit = consumeRateLimit(clientIp, requestCost);
   if (!rateLimit.allowed) {
@@ -555,7 +942,21 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
-    let lookup = validated.includeTranslations ? null : await lookupCities(validated.query, validated.locale);
+    const knownResults = validated.includeTranslations
+      ? []
+      : await lookupKnownCities(validated.query, validated.locale);
+    const codePointLength = [...validated.query].length;
+    const providerLookup = validated.includeTranslations || codePointLength === 1
+      ? null
+      : await lookupCities(validated.query, validated.locale);
+    let lookup = validated.includeTranslations
+      ? null
+      : providerLookup
+        ? {
+            results: mergeCityResults(knownResults, providerLookup.results),
+            cacheHit: providerLookup.cacheHit,
+          }
+        : { results: knownResults, cacheHit: true };
     const fallbackQueriesTried: string[] = [];
     if (lookup && lookup.results.length === 0) {
       for (const fallbackQuery of japaneseCityFallbackQueries(validated.query, validated.locale)) {
@@ -580,6 +981,19 @@ export async function GET(request: Request): Promise<Response> {
         }
       }
     }
+    let wikidataFallbackUsed = false;
+    const needsCrossLanguageFallback = knownResults.length === 0
+      && !usesLocaleScript(validated.query, validated.locale);
+    if (lookup && (lookup.results.length === 0 || needsCrossLanguageFallback)) {
+      const fallbackRateLimit = consumeRateLimit(clientIp, WIKIDATA_FALLBACK_RATE_COST);
+      if (fallbackRateLimit.allowed) {
+        rateLimit = fallbackRateLimit;
+        requestCost += WIKIDATA_FALLBACK_RATE_COST;
+        wikidataFallbackUsed = true;
+        const results = await lookupWikidataCities(validated.query, validated.locale);
+        lookup = { results: mergeCityResults(results, lookup.results), cacheHit: false };
+      }
+    }
     const localizedLookups = validated.includeTranslations
       ? await Promise.allSettled(CITY_SEARCH_LOCALES.map((locale) => lookupCity(validated.providerId!, locale)))
       : [];
@@ -588,9 +1002,12 @@ export async function GET(request: Request): Promise<Response> {
       : []);
     if (validated.includeTranslations && fulfilled.length === 0) throw new Error("provider_unavailable");
     const source = fulfilled.find(({ locale }) => locale === validated.locale)?.city ?? fulfilled[0]?.city;
+    const cachedNames = validated.providerId === undefined
+      ? undefined
+      : knownNames(validated.providerId) ?? wikidataNamesCache.get(validated.providerId)?.names;
     const names = source ? Object.fromEntries(CITY_SEARCH_LOCALES.map((locale) => {
       const localized = fulfilled.find((entry) => entry.locale === locale)?.city;
-      return [locale, localized?.name ?? neutralCityLabel(source)];
+      return [locale, cachedNames?.[locale] ?? localized?.name ?? neutralCityLabel(source)];
     })) as Readonly<Record<CitySearchLocale, string>> : undefined;
     const results = source && names
       ? [{ ...source, name: names[validated.locale], country: localizedCountryName(source.countryCode, validated.locale), admin1: undefined, names }]
@@ -606,6 +1023,7 @@ export async function GET(request: Request): Promise<Response> {
           translationsIncluded: validated.includeTranslations,
           requestCost,
           fallbackQueriesTried,
+          wikidataFallbackUsed,
           provider: "open-meteo-geocoding",
           dataset: "GeoNames",
           attribution: {
