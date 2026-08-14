@@ -1137,7 +1137,7 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
       calls.every(
         (call) =>
           call.userAgent ===
-          "Together/0.4 (https://together-travel-0920.ocvi-85.chatgpt.site)",
+          "Together/0.5 (https://together-travel-0920.ocvi-85.chatgpt.site)",
       ),
     );
     assert.deepEqual(

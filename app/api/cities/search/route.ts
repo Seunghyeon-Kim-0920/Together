@@ -7,7 +7,7 @@ const OPEN_METEO_ATTRIBUTION_URL =
 const GEONAMES_ATTRIBUTION_URL = "https://www.geonames.org/";
 const WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php";
 const WIKIMEDIA_API_USER_AGENT =
-  "Together/0.4 (+https://github.com/Seunghyeon-Kim-0920/Together)";
+  "Together/0.5 (+https://github.com/Seunghyeon-Kim-0920/Together)";
 
 export const CITY_SEARCH_MAX_RESULTS = 8;
 export const CITY_SEARCH_CACHE_TTL_SECONDS = 6 * 60 * 60;
@@ -17,9 +17,14 @@ export const CITY_SEARCH_RATE_LIMIT_REQUESTS = 30;
 export const CITY_SEARCH_RATE_LIMIT_WINDOW_SECONDS = 60;
 
 const PROVIDER_CANDIDATE_COUNT = 20;
-// Pre-charge the bounded worst case: two alias searches, one entity batch,
-// three GeoNames validations, and up to three coordinate rematches.
+const CROSS_LANGUAGE_PROVIDER_HYDRATION_LIMIT = 2;
+const WIKIDATA_ENTITY_LIMIT = 2;
+// Two alias searches, one labels batch, two P1566/city validations, and one
+// bounded P625 coordinate rematch stay below this composite upstream quota.
 const WIKIDATA_FALLBACK_RATE_COST = 12;
+// One UI-locale search preserves homonyms; one input-language search verifies
+// canonical alias ordering. Missing localized IDs are charged only if hydrated.
+const CROSS_LANGUAGE_PROVIDER_RATE_COST = 2;
 const WIKIDATA_NEGATIVE_CACHE_TTL_SECONDS = 5 * 60;
 const MAX_CACHE_ENTRIES = 256;
 const MAX_RATE_LIMIT_ENTRIES = 4_096;
@@ -127,6 +132,7 @@ interface RateLimitResult {
 }
 
 const searchCache = new Map<string, CacheEntry>();
+const inputLanguageSearchCache = new Map<string, CacheEntry>();
 const cityCache = new Map<string, CityCacheEntry>();
 const wikidataCache = new Map<string, WikidataCacheEntry>();
 const wikidataNamesCache = new Map<number, NamesCacheEntry>();
@@ -209,7 +215,40 @@ const HANGUL_SCRIPT = /\p{Script=Hangul}/u;
 const JAPANESE_SCRIPT = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
 const JAPANESE_KANA_SCRIPT = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
 const HAN_SCRIPT = /\p{Script=Han}/u;
+const GREEK_SCRIPT = /\p{Script=Greek}/u;
+const CYRILLIC_SCRIPT = /\p{Script=Cyrillic}/u;
+const ARABIC_SCRIPT = /\p{Script=Arabic}/u;
+const HEBREW_SCRIPT = /\p{Script=Hebrew}/u;
+const DEVANAGARI_SCRIPT = /\p{Script=Devanagari}/u;
+const BENGALI_SCRIPT = /\p{Script=Bengali}/u;
+const THAI_SCRIPT = /\p{Script=Thai}/u;
+const ARMENIAN_SCRIPT = /\p{Script=Armenian}/u;
+const GEORGIAN_SCRIPT = /\p{Script=Georgian}/u;
+const ETHIOPIC_SCRIPT = /\p{Script=Ethiopic}/u;
+const TAMIL_SCRIPT = /\p{Script=Tamil}/u;
+const TELUGU_SCRIPT = /\p{Script=Telugu}/u;
+const KANNADA_SCRIPT = /\p{Script=Kannada}/u;
+const MALAYALAM_SCRIPT = /\p{Script=Malayalam}/u;
+const KHMER_SCRIPT = /\p{Script=Khmer}/u;
+const LAO_SCRIPT = /\p{Script=Lao}/u;
+const MYANMAR_SCRIPT = /\p{Script=Myanmar}/u;
 const TWO_HAN_CHARACTERS = /^\p{Script=Han}{2}$/u;
+const COMBINING_MARKS = /\p{Mark}+/gu;
+const NON_LETTER_OR_NUMBER = /[^\p{Letter}\p{Number}]+/gu;
+
+function normalizedCitySearchText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(COMBINING_MARKS, "")
+    .toLocaleLowerCase()
+    .replace(NON_LETTER_OR_NUMBER, "");
+}
+
+export function providerCityNameMatchesQuery(query: string, cityName: string): boolean {
+  const normalizedQuery = normalizedCitySearchText(query);
+  return normalizedQuery.length > 0
+    && normalizedQuery === normalizedCitySearchText(cityName);
+}
 
 function usesLocaleScript(value: string, locale: CitySearchLocale): boolean {
   if (locale === "ko") return HANGUL_SCRIPT.test(value);
@@ -462,6 +501,14 @@ function pruneCache(now: number): void {
     if (!oldestKey) break;
     searchCache.delete(oldestKey);
   }
+  for (const [key, entry] of inputLanguageSearchCache) {
+    if (entry.expiresAt <= now) inputLanguageSearchCache.delete(key);
+  }
+  while (inputLanguageSearchCache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = inputLanguageSearchCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    inputLanguageSearchCache.delete(oldestKey);
+  }
   for (const [key, entry] of cityCache) {
     if (entry.expiresAt <= now) cityCache.delete(key);
   }
@@ -527,14 +574,14 @@ async function readBoundedProviderJson(
   }
 }
 
-async function requestProvider(
+async function requestProviderInLanguage(
   query: string,
-  locale: CitySearchLocale,
+  providerLanguage: string,
 ): Promise<readonly CitySearchResult[]> {
   const search = new URLSearchParams({
     name: query,
     count: String(PROVIDER_CANDIDATE_COUNT),
-    language: locale,
+    language: providerLanguage,
     format: "json",
   });
   const signal = AbortSignal.timeout(CITY_SEARCH_PROVIDER_TIMEOUT_MS);
@@ -547,7 +594,15 @@ async function requestProvider(
     await readBoundedProviderJson(response, signal),
   );
   if (!parsed) throw new Error("invalid_provider_response");
-  return parsed.map((city) => sanitizeCityForLocale(city, locale));
+  return parsed;
+}
+
+async function requestProvider(
+  query: string,
+  locale: CitySearchLocale,
+): Promise<readonly CitySearchResult[]> {
+  const results = await requestProviderInLanguage(query, locale);
+  return results.map((city) => sanitizeCityForLocale(city, locale));
 }
 
 async function requestProviderCity(
@@ -615,6 +670,43 @@ async function lookupCities(
   }
 }
 
+async function lookupCitiesInProviderLanguage(
+  query: string,
+  providerLanguage: string,
+): Promise<{ readonly results: readonly CitySearchResult[]; readonly cacheHit: boolean }> {
+  const now = Date.now();
+  const cacheKey = `${providerLanguage}|${normalizeCityAlias(query)}`;
+  const cached = inputLanguageSearchCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return { results: await cached.promise, cacheHit: true };
+  }
+
+  pruneCache(now);
+  const promise = requestProviderInLanguage(query, providerLanguage);
+  inputLanguageSearchCache.set(cacheKey, {
+    expiresAt: now + CITY_SEARCH_CACHE_TTL_SECONDS * 1_000,
+    promise,
+  });
+  try {
+    return { results: await promise, cacheHit: false };
+  } catch (error) {
+    inputLanguageSearchCache.delete(cacheKey);
+    throw error;
+  }
+}
+
+async function localizeProviderCandidates(
+  candidates: readonly CitySearchResult[],
+  locale: CitySearchLocale,
+): Promise<readonly CitySearchResult[]> {
+  const settled = await Promise.allSettled(
+    candidates
+      .slice(0, CROSS_LANGUAGE_PROVIDER_HYDRATION_LIMIT)
+      .map((city) => lookupCity(city.providerId, locale)),
+  );
+  return settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+}
+
 async function lookupKnownCities(
   query: string,
   locale: CitySearchLocale,
@@ -635,23 +727,53 @@ function wikidataEntityIds(value: unknown): readonly string[] {
     if (!isRecord(candidate)) return [];
     const id = boundedText(candidate.id, 24);
     return id && /^Q[1-9]\d*$/.test(id) ? [id] : [];
-  }).slice(0, 3);
+  }).slice(0, WIKIDATA_ENTITY_LIMIT);
 }
 
 export function wikidataSearchLocales(
   query: string,
   interfaceLocale: CitySearchLocale,
-): readonly CitySearchLocale[] {
-  const candidates: CitySearchLocale[] = HANGUL_SCRIPT.test(query)
-    ? ["ko"]
-    : JAPANESE_KANA_SCRIPT.test(query)
-      ? ["ja"]
-      : HAN_SCRIPT.test(query)
-        ? interfaceLocale === "zh" ? ["zh", "ja"] : ["ja", "zh"]
-        : LATIN_SCRIPT.test(query)
-          ? interfaceLocale === "fr" ? ["fr", "en"] : ["en", "fr"]
-          : [interfaceLocale, "en"];
-  return [...new Set(candidates)].slice(0, 2);
+): readonly string[] {
+  if (HANGUL_SCRIPT.test(query)) return ["ko"];
+  if (JAPANESE_KANA_SCRIPT.test(query)) return ["ja"];
+  if (HAN_SCRIPT.test(query)) {
+    return interfaceLocale === "zh" ? ["zh", "ja"] : ["ja", "zh"];
+  }
+  if (GREEK_SCRIPT.test(query)) return ["el"];
+  if (CYRILLIC_SCRIPT.test(query)) return ["ru", "uk"];
+  if (ARABIC_SCRIPT.test(query)) return ["ar"];
+  if (HEBREW_SCRIPT.test(query)) return ["he"];
+  if (DEVANAGARI_SCRIPT.test(query)) return ["hi"];
+  if (BENGALI_SCRIPT.test(query)) return ["bn"];
+  if (THAI_SCRIPT.test(query)) return ["th"];
+  if (ARMENIAN_SCRIPT.test(query)) return ["hy"];
+  if (GEORGIAN_SCRIPT.test(query)) return ["ka"];
+  if (ETHIOPIC_SCRIPT.test(query)) return ["am"];
+  if (TAMIL_SCRIPT.test(query)) return ["ta"];
+  if (TELUGU_SCRIPT.test(query)) return ["te"];
+  if (KANNADA_SCRIPT.test(query)) return ["kn"];
+  if (MALAYALAM_SCRIPT.test(query)) return ["ml"];
+  if (KHMER_SCRIPT.test(query)) return ["km"];
+  if (LAO_SCRIPT.test(query)) return ["lo"];
+  if (MYANMAR_SCRIPT.test(query)) return ["my"];
+  if (LATIN_SCRIPT.test(query)) {
+    return interfaceLocale === "fr" ? ["fr", "en"] : ["en", "fr"];
+  }
+  return [...new Set([interfaceLocale, "en"])];
+}
+
+/**
+ * Search language follows the user's input script, while response labels keep
+ * following the selected Together interface locale. This is intentionally
+ * independent of the five UI locales so names written in Greek, Cyrillic,
+ * Arabic, Indic, and other common scripts can still reach the provider index.
+ */
+export function cityProviderSearchLocales(
+  query: string,
+  interfaceLocale: CitySearchLocale,
+): readonly string[] {
+  if (usesLocaleScript(query, interfaceLocale)) return [interfaceLocale];
+  return wikidataSearchLocales(query, interfaceLocale);
 }
 
 function wikidataGeoNamesId(entity: Record<string, unknown>): number | null {
@@ -758,6 +880,21 @@ async function requestWikidataJson(search: URLSearchParams): Promise<unknown> {
   return readBoundedProviderJson(response, signal);
 }
 
+async function requestWikidataClaims(
+  entityId: string,
+  property: "P1566" | "P625",
+): Promise<Record<string, unknown>> {
+  const payload = await requestWikidataJson(new URLSearchParams({
+    action: "wbgetclaims",
+    entity: entityId,
+    property,
+    format: "json",
+  }));
+  return isRecord(payload) && isRecord(payload.claims)
+    ? { claims: payload.claims }
+    : { claims: {} };
+}
+
 async function requestWikidataCities(
   query: string,
   locale: CitySearchLocale,
@@ -770,20 +907,23 @@ async function requestWikidataCities(
       language: searchLocale,
       uselang: locale,
       type: "item",
-      limit: "3",
+      limit: String(WIKIDATA_ENTITY_LIMIT),
       format: "json",
     })));
     for (const id of ids) {
       if (!entityIds.includes(id)) entityIds.push(id);
-      if (entityIds.length === 3) break;
+      if (entityIds.length === WIKIDATA_ENTITY_LIMIT) break;
     }
-    if (entityIds.length === 3) break;
+    if (entityIds.length === WIKIDATA_ENTITY_LIMIT) break;
   }
   if (entityIds.length === 0) return [];
   const payload = await requestWikidataJson(new URLSearchParams({
     action: "wbgetentities",
     ids: entityIds.join("|"),
-    props: "labels|claims",
+    // Claims can make major-city entities exceed the provider response cap.
+    // Only labels are batched; P1566 and (only if needed) P625 are requested
+    // separately below.
+    props: "labels",
     languages: CITY_SEARCH_LOCALES.join("|"),
     languagefallback: "1",
     format: "json",
@@ -793,19 +933,25 @@ async function requestWikidataCities(
   const results: CitySearchResult[] = [];
   // Resolve sequentially: it avoids bursts against both public services and
   // preserves Wikidata's relevance order.
-  for (const entityId of entityIds) {
+  for (const [entityIndex, entityId] of entityIds.entries()) {
     const entity = isRecord(entities[entityId]) ? entities[entityId] : null;
     if (!entity) continue;
-    const claimedProviderId = wikidataGeoNamesId(entity);
-    if (!claimedProviderId) continue;
     try {
+      const geoNamesClaims = await requestWikidataClaims(entityId, "P1566");
+      const claimedProviderId = wikidataGeoNamesId(geoNamesClaims);
+      if (!claimedProviderId) continue;
       // /v1/get plus parseProviderCity is the city-only gate: ADM*, airports,
       // and other non-populated-place Wikidata entities cannot pass it.
       let city: CitySearchResult;
       try {
         city = await lookupCity(claimedProviderId, locale);
       } catch {
-        const rematched = await rematchWikidataPopulatedPlace(entity, locale);
+        if (entityIndex > 0) continue;
+        const coordinateClaims = await requestWikidataClaims(entityId, "P625");
+        const rematched = await rematchWikidataPopulatedPlace(
+          { ...entity, claims: coordinateClaims.claims },
+          locale,
+        );
         if (!rematched) continue;
         city = rematched;
       }
@@ -923,9 +1069,13 @@ export async function GET(request: Request): Promise<Response> {
   // A five-language hydration may fan out to five provider lookups. Charge
   // that full cost so one client cannot multiply the no-key upstream quota.
   const knownProviderCount = validated.includeTranslations ? 0 : knownCityProviderIds(validated.query).length;
-  const requestCostBase = [...validated.query].length === 1
+  const codePointLength = [...validated.query].length;
+  const providerSearchLocales = cityProviderSearchLocales(validated.query, validated.locale);
+  const crossLanguageProviderSearch = codePointLength > 1
+    && (providerSearchLocales.length > 1 || providerSearchLocales[0] !== validated.locale);
+  const requestCostBase = codePointLength === 1
     ? Math.max(1, knownProviderCount)
-    : 1 + knownProviderCount;
+    : (crossLanguageProviderSearch ? CROSS_LANGUAGE_PROVIDER_RATE_COST : 1) + knownProviderCount;
   let requestCost = validated.includeTranslations ? CITY_SEARCH_LOCALES.length : requestCostBase;
   const clientIp = parseCitySearchClientIp(request);
   let rateLimit = consumeRateLimit(clientIp, requestCost);
@@ -945,10 +1095,73 @@ export async function GET(request: Request): Promise<Response> {
     const knownResults = validated.includeTranslations
       ? []
       : await lookupKnownCities(validated.query, validated.locale);
-    const codePointLength = [...validated.query].length;
-    const providerLookup = validated.includeTranslations || codePointLength === 1
-      ? null
-      : await lookupCities(validated.query, validated.locale);
+    const providerSearchLanguagesTried: string[] = [];
+    let providerExactNameMatch = knownResults.length > 0;
+    let providerLookup: { readonly results: readonly CitySearchResult[]; readonly cacheHit: boolean } | null = null;
+    if (!validated.includeTranslations && codePointLength > 1) {
+      providerSearchLanguagesTried.push(validated.locale);
+      const localizedLookup = await lookupCities(validated.query, validated.locale);
+      providerLookup = localizedLookup;
+      if (!crossLanguageProviderSearch) {
+        providerExactNameMatch = providerExactNameMatch || providerLookup.results.some(
+          (city) => providerCityNameMatchesQuery(validated.query, city.name),
+        );
+      } else {
+        let allCacheHits = localizedLookup.cacheHit;
+        let rawResults: readonly CitySearchResult[] = [];
+        for (const [languageIndex, providerLanguage] of providerSearchLocales.slice(0, 2).entries()) {
+          if (languageIndex > 0) {
+            const retryRateLimit = consumeRateLimit(clientIp, 1);
+            if (!retryRateLimit.allowed) break;
+            rateLimit = retryRateLimit;
+            requestCost += 1;
+          }
+          providerSearchLanguagesTried.push(providerLanguage);
+          let rawLookup: Awaited<ReturnType<typeof lookupCitiesInProviderLanguage>>;
+          try {
+            rawLookup = await lookupCitiesInProviderLanguage(validated.query, providerLanguage);
+          } catch {
+            allCacheHits = false;
+            continue;
+          }
+          allCacheHits = allCacheHits && rawLookup.cacheHit;
+          if (rawLookup.results.length === 0) continue;
+          rawResults = rawLookup.results;
+          providerExactNameMatch = providerExactNameMatch || rawLookup.results.some(
+            (city) => providerCityNameMatchesQuery(validated.query, city.name),
+          );
+          break;
+        }
+
+        const localizedById = new Map(
+          localizedLookup.results.map((city) => [city.providerId, city] as const),
+        );
+        const missingRawCandidates = rawResults.filter(
+          (city) => !localizedById.has(city.providerId),
+        ).slice(0, CROSS_LANGUAGE_PROVIDER_HYDRATION_LIMIT);
+        let hydratedMissing: readonly CitySearchResult[] = [];
+        if (missingRawCandidates.length > 0) {
+          const hydrationRateLimit = consumeRateLimit(clientIp, missingRawCandidates.length);
+          if (hydrationRateLimit.allowed) {
+            rateLimit = hydrationRateLimit;
+            requestCost += missingRawCandidates.length;
+            hydratedMissing = await localizeProviderCandidates(missingRawCandidates, validated.locale);
+          }
+        }
+        const localizedCandidatesById = new Map(
+          [...localizedLookup.results, ...hydratedMissing]
+            .map((city) => [city.providerId, city] as const),
+        );
+        const inputRankedLocalized = rawResults.flatMap((city) => {
+          const localized = localizedCandidatesById.get(city.providerId);
+          return localized ? [localized] : [];
+        });
+        providerLookup = {
+          results: mergeCityResults(inputRankedLocalized, localizedLookup.results),
+          cacheHit: allCacheHits,
+        };
+      }
+    }
     let lookup = validated.includeTranslations
       ? null
       : providerLookup
@@ -982,9 +1195,13 @@ export async function GET(request: Request): Promise<Response> {
       }
     }
     let wikidataFallbackUsed = false;
-    const needsCrossLanguageFallback = knownResults.length === 0
-      && !usesLocaleScript(validated.query, validated.locale);
-    if (lookup && (lookup.results.length === 0 || needsCrossLanguageFallback)) {
+    const allowWikidataFallback = codePointLength > 1
+      && (!LATIN_SCRIPT.test(validated.query) || codePointLength >= 3);
+    const needsAliasDisambiguation = lookup !== null
+      && lookup.results.length > 0
+      && codePointLength >= 5
+      && !providerExactNameMatch;
+    if (lookup && allowWikidataFallback && (lookup.results.length === 0 || needsAliasDisambiguation)) {
       const fallbackRateLimit = consumeRateLimit(clientIp, WIKIDATA_FALLBACK_RATE_COST);
       if (fallbackRateLimit.allowed) {
         rateLimit = fallbackRateLimit;
@@ -1023,6 +1240,7 @@ export async function GET(request: Request): Promise<Response> {
           translationsIncluded: validated.includeTranslations,
           requestCost,
           fallbackQueriesTried,
+          providerSearchLanguagesTried,
           wikidataFallbackUsed,
           provider: "open-meteo-geocoding",
           dataset: "GeoNames",

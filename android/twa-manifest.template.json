@@ -20,8 +20,8 @@
     "path": "./release.keystore",
     "alias": "together-release"
   },
-  "appVersionCode": 4,
-  "appVersion": "0.4.0",
+  "appVersionCode": 5,
+  "appVersion": "0.5.0",
   "shortcuts": [],
   "generatorApp": "Together",
   "webManifestUrl": "https://example.invalid/manifest.webmanifest",

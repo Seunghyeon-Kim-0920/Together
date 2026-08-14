@@ -11,7 +11,7 @@ import {
 
 const TRANSITOUS_PLAN_URL = "https://api.transitous.org/api/v6/plan";
 const TRANSITOUS_USER_AGENT =
-  "Together/0.4 (https://together-travel-0920.ocvi-85.chatgpt.site)";
+  "Together/0.5 (https://together-travel-0920.ocvi-85.chatgpt.site)";
 const TRANSITOUS_SOURCE = "Transitous / MOTIS public timetable";
 const TRANSITOUS_ATTRIBUTION = "https://transitous.org/sources/";
 const TRANSITOUS_TRANSIT_MODES = "RAIL,BUS,COACH";
