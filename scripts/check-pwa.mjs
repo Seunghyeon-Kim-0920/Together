@@ -110,6 +110,10 @@ async function checkLocal() {
   invariant(offline.includes("Together"), "offline fallback must identify the app");
   invariant(manifestRoute.includes('short_name: "Together"'), "dynamic manifest must identify the app");
   invariant(manifestRoute.includes('translate(locale, "metadataDescription")'), "dynamic manifest must localize its description");
+  invariant(
+    manifestRoute.includes('request.nextUrl.searchParams.get("platform") === "android"'),
+    "dynamic manifest must provide neutral Android packaging metadata",
+  );
   for (const icon of ["/icon-192.png", "/icon-512.png", "/maskable-512.png"]) {
     invariant(manifestRoute.includes(icon), `dynamic manifest must include ${icon}`);
   }
@@ -139,6 +143,20 @@ async function checkLive(input) {
   const manifestResponse = await fetchOk(`${origin}/manifest.webmanifest`);
   const manifest = await manifestResponse.json();
   validateManifest(manifest, `${origin}/manifest.webmanifest`);
+  const androidManifestUrl = `${origin}/manifest.webmanifest?platform=android`;
+  const androidManifestResponse = await fetchOk(androidManifestUrl);
+  const androidManifest = await androidManifestResponse.json();
+  validateManifest(androidManifest, androidManifestUrl);
+  invariant(androidManifest.name === "Together", `${androidManifestUrl} name must be Together`);
+  invariant(
+    androidManifest.short_name === "Together",
+    `${androidManifestUrl} short_name must be Together`,
+  );
+  invariant(
+    androidManifest.description === "Together",
+    `${androidManifestUrl} description must be Together`,
+  );
+  invariant(androidManifest.lang === "und", `${androidManifestUrl} lang must be und`);
   await fetchOk(`${origin}/sw.js`);
   const offlineResponse = await fetchOk(`${origin}/offline`, "text/html");
   invariant(

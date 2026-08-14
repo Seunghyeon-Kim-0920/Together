@@ -48,7 +48,8 @@ invariant(
   "ANDROID_KEY_ALIAS contains unsupported characters",
 );
 
-const manifestResponse = await fetch(`${origin}/manifest.webmanifest`, {
+const webManifestUrl = `${origin}/manifest.webmanifest?platform=android`;
+const manifestResponse = await fetch(webManifestUrl, {
   signal: AbortSignal.timeout(20_000),
 });
 invariant(
@@ -68,8 +69,8 @@ const twaManifest = {
   ...template,
   packageId,
   host: site.host,
-  name: webManifest.name ?? template.name,
-  launcherName: webManifest.short_name ?? template.launcherName,
+  name: template.name,
+  launcherName: template.launcherName,
   themeColor: webManifest.theme_color ?? template.themeColor,
   backgroundColor: webManifest.background_color ?? template.backgroundColor,
   iconUrl: `${origin}/icon-512.png`,
@@ -77,7 +78,7 @@ const twaManifest = {
   signingKey: { path: "./release.keystore", alias: keyAlias },
   appVersionCode: versionCode,
   appVersion: versionName,
-  webManifestUrl: `${origin}/manifest.webmanifest`,
+  webManifestUrl,
   fullScopeUrl: `${origin}/`,
 };
 

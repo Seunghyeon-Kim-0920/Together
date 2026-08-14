@@ -142,6 +142,20 @@ test("server rendering and manifest honor every selected language without a fall
   }
 });
 
+test("serves locale-neutral metadata for the Android package", async () => {
+  for (const locale of ["ko", "en", "fr", "ja", "zh"]) {
+    const response = await fetch(`${baseUrl}/manifest.webmanifest?platform=android`, {
+      headers: { cookie: `together-locale=${locale}` },
+    });
+    assert.equal(response.status, 200);
+    const manifest = await response.json();
+    assert.equal(manifest.name, "Together");
+    assert.equal(manifest.short_name, "Together");
+    assert.equal(manifest.description, "Together");
+    assert.equal(manifest.lang, "und");
+  }
+});
+
 test("serves Android Digital Asset Links at the required origin path", async () => {
   const response = await fetch(`${baseUrl}/.well-known/assetlinks.json`, {
     headers: { accept: "application/json" },

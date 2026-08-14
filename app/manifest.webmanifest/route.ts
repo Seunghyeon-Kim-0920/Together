@@ -5,20 +5,21 @@ import { localeFromAcceptLanguage, parseSupportedLocale } from "../../lib/locale
 export const dynamic = "force-dynamic";
 
 export function GET(request: NextRequest) {
+  const isAndroidPackage = request.nextUrl.searchParams.get("platform") === "android";
   const locale = parseSupportedLocale(request.cookies.get("together-locale")?.value)
     ?? localeFromAcceptLanguage(request.headers.get("accept-language"));
   return Response.json({
     id: "/",
-    name: translate(locale, "metadataTitle"),
+    name: isAndroidPackage ? "Together" : translate(locale, "metadataTitle"),
     short_name: "Together",
-    description: translate(locale, "metadataDescription"),
+    description: isAndroidPackage ? "Together" : translate(locale, "metadataDescription"),
     start_url: "/",
     scope: "/",
     display: "standalone",
     display_override: ["window-controls-overlay", "standalone"],
     background_color: "#fffdf8",
     theme_color: "#fffdf8",
-    lang: locale,
+    lang: isAndroidPackage ? "und" : locale,
     dir: "ltr",
     orientation: "any",
     categories: ["travel", "navigation", "finance", "utilities"],
