@@ -33,6 +33,26 @@ test("all five locale dictionaries have the same complete key set", () => {
   }
 });
 
+test("route hero uses one localized efficiency headline without the retired subtitle", () => {
+  assert.deepEqual(
+    SUPPORTED_LOCALES.map((locale) => MESSAGES[locale].routeTitle),
+    [
+      "가장 효율적인 여행 동선",
+      "The most efficient travel route",
+      "L’itinéraire de voyage le plus efficace",
+      "最も効率的な旅行ルート",
+      "最高效的旅行路线",
+    ],
+  );
+  for (const locale of SUPPORTED_LOCALES) {
+    assert.equal("routeDescription" in MESSAGES[locale], false, `${locale} still has the retired route subtitle`);
+  }
+  assert.doesNotMatch(
+    JSON.stringify(MESSAGES),
+    /모든 후보 구간의 공개 출발·도착 시간이 확인되어야 결과를 표시합니다|현재 항공 운행표 공급자가 연결되지 않아 항공 구간은 만들지 않습니다/,
+  );
+});
+
 test("new route, map, device-storage, and empty-state messages exist in every locale", () => {
   const requiredKeys = [
     "startCity", "endCity", "fastApproximation",

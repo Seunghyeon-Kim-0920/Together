@@ -9,7 +9,7 @@ import { createEqualSplitExpense, parseExpenseLedger } from "../lib/expenses";
 import type { City } from "../lib/domain";
 import { buildEstimatedFallbackOptions, buildEstimatedFallbackOptionsForCities, optimizeItinerary } from "../lib/routing";
 import { constrainRouteView, fitRouteView, projectRouteCities } from "../app/components/RouteMap";
-import { cityFromSearchResult } from "../app/components/RoutePlanner";
+import { cityFromSearchResult, evaluateScheduleCoverage } from "../app/components/RoutePlanner";
 import { parseEuroMinorUnits } from "../app/components/ExpensesPanel";
 
 const plannerSource = readFileSync(new URL("../app/components/RoutePlanner.tsx", import.meta.url), "utf8");
@@ -45,6 +45,39 @@ test("city search starts at one character and canonicalizes known catalogue citi
   });
   assert.equal(vienna.id, "vienna", "searching 빈 must reuse the catalogue city and trip duplicate guard");
   assert.match(plannerSource, /if \(cityIds\.includes\(city\.id\)\)/);
+});
+
+test("a complete scheduled path may be attempted even when another provider candidate fails", () => {
+  assert.deepEqual(
+    evaluateScheduleCoverage({
+      pairOffset: 12,
+      queriedPairCount: 12,
+      candidatePairCount: 12,
+      eligiblePairCount: 73,
+      unknownProviderFailures: true,
+      cityCount: 10,
+    }),
+    {
+      candidateQueryComplete: true,
+      actualCoverage: false,
+      optimalityGuaranteed: false,
+    },
+  );
+  assert.deepEqual(
+    evaluateScheduleCoverage({
+      pairOffset: 6,
+      queriedPairCount: 6,
+      candidatePairCount: 12,
+      eligiblePairCount: 73,
+      unknownProviderFailures: false,
+      cityCount: 10,
+    }),
+    {
+      candidateQueryComplete: false,
+      actualCoverage: false,
+      optimalityGuaranteed: false,
+    },
+  );
 });
 
 test("new device storage is empty and rejects malformed collections", () => {

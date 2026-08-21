@@ -12,10 +12,10 @@ This repository is an early product implementation, not a production travel book
 - Trips, profiles, participants, and expenses are stored without login in the current browser's local storage. They are not synchronized to another browser or device and can be lost if browser storage is cleared.
 - Global city search uses the no-key Open-Meteo Geocoding endpoint backed by GeoNames plus a bounded Wikidata alias fallback for the current non-commercial beta. The five interface languages keep their own result labels while input-script-aware lookups improve matching across Latin, Hangul, Kana/Han, Greek, Cyrillic, Arabic, and several Indic and regional scripts. Results include provider attribution, and dynamic city coordinates/time zones are validated again before routing; provider coverage is broad but not presented as exhaustive.
 - City lists have no product-level count cap. Routes with up to 10 cities use exact optimization; larger lists use a deterministic scalable approximation while preserving the chosen start and end cities.
-- Rail and coach options are checked against Transitous/MOTIS public timetables with bounded concurrency, cancellation, caching, a maximum of 12 provider pair lookups per calculation, and a 12-second batch deadline. When the full directed matrix fits that budget it is checked; otherwise deterministic geographic candidate paths are checked without using distance as travel time. A result is shown only when all candidate lookups are resolved and the verified graph contains a complete route. Sparse results explicitly say that the shortest order is not guaranteed, and very large or uncovered routes remain unavailable rather than inventing missing times.
+- Rail and coach options are checked against Transitous/MOTIS public timetables with bounded concurrency, cancellation, caching, a maximum of 12 provider pair lookups per calculation, and a 12-second batch deadline. When the full directed matrix fits that budget it is checked; otherwise deterministic geographic candidate paths are checked without using distance as travel time. A result is shown when the provider-verified legs themselves contain a complete route, even if an unrelated candidate lookup fails. Sparse results explicitly say that the shortest order is not guaranteed, and very large or uncovered routes remain unavailable rather than inventing missing times.
 - No flight timetable provider is connected. Together does not create or recommend a flight duration until a provider can verify the service and its published times. Multi-mode details are structured to display the mode, service, stations, and departure/arrival time for every provider-verified segment.
 - The public web build is deployed at `https://together-travel-0920.ocvi-85.chatgpt.site`. Monitoring, a privacy policy, provider-capacity planning, and broader security/accessibility testing remain pre-launch work.
-- Android source and automation target v0.5.0 (version code 5) for `com.together.travel`. The release certificate remains linked to the deployed origin through `public/.well-known/assetlinks.json`; signing material must never enter Git.
+- Android source and automation target v0.6.0 (version code 6) for `com.together.travel`. The release certificate remains linked to the deployed origin through `public/.well-known/assetlinks.json`; signing material must never enter Git.
 
 ## Local development
 
@@ -55,7 +55,7 @@ npm run pwa:check -- https://your-production-domain.example
 
 Android packaging uses Bubblewrap and a Trusted Web Activity, so the Android app loads the same deployed HTTPS PWA rather than carrying a second, divergent frontend. `android/twa-manifest.template.json` is source-controlled; generated Gradle files and signing files are ignored. Verified, versioned APK/AAB deliverables are intentionally published under `release/`.
 
-The latest packaged release is documented in `release/README.md`. The current Android source and automation target is v0.5.0 with version code 5, minimum SDK 23, target/compile SDK 36, and package ID `com.together.travel`. The APK certificate SHA-256 must match the checked-in Digital Asset Links statement.
+The latest packaged release is documented in `release/README.md`. The current Android source and automation target is v0.6.0 with version code 6, minimum SDK 23, target/compile SDK 36, and package ID `com.together.travel`. The APK certificate SHA-256 must match the checked-in Digital Asset Links statement.
 
 Configure these GitHub repository secrets:
 
@@ -86,8 +86,8 @@ For a configured local Android toolchain, the manifest preparation step is:
 ```powershell
 $env:TOGETHER_SITE_URL = "https://your-production-domain.example"
 $env:ANDROID_PACKAGE_ID = "com.together.travel"
-$env:ANDROID_VERSION_CODE = "5"
-$env:ANDROID_VERSION_NAME = "0.5.0"
+$env:ANDROID_VERSION_CODE = "6"
+$env:ANDROID_VERSION_NAME = "0.6.0"
 $env:ANDROID_KEY_ALIAS = "together-release"
 npm run android:prepare
 ```

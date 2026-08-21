@@ -92,7 +92,8 @@ test("server-renders the Together travel product", async () => {
     /<title>Together \| 공개 운행표 기반 다도시 여행<\/title>/i,
   );
   assert.match(html, /Together/);
-  assert.match(html, /공개 운행표로 확인하는 여러 도시 동선\./);
+  assert.match(html, /가장 효율적인 여행 동선/);
+  assert.doesNotMatch(html, /공개 운행표로 확인하는 여러 도시 동선|선택한 날짜의 공개 운행표에 출발·도착 시간이 확인된 철도와 장거리 버스만 비교합니다/);
   assert.match(html, /가장 빠른 동선 찾기/);
   assert.doesNotMatch(html, /계획 모델 추정치|같은 나라와 가까운 유럽 도시|철도·버스는 선택한 출발일|항공만 공항 이동/);
   assert.match(html, /eiffel-paris-hero/);
@@ -121,11 +122,11 @@ test("ships installable metadata and device-only storage without login UI", asyn
 
 test("server rendering and manifest honor every selected language without a fallback-language flash", async () => {
   const cases = [
-    ["ko", "ko-KR", "공개 운행표로 확인하는 여러 도시 동선."],
-    ["en", "en-US", "Multi-city routes verified by published timetables."],
-    ["fr", "fr-FR", "Des itinéraires intervilles vérifiés par les horaires publiés."],
-    ["ja", "ja-JP", "公開時刻表で確認する複数都市ルート。"],
-    ["zh", "zh-CN", "通过公开时刻表核验多城市路线。"],
+    ["ko", "ko-KR", "가장 효율적인 여행 동선"],
+    ["en", "en-US", "The most efficient travel route"],
+    ["fr", "fr-FR", "L’itinéraire de voyage le plus efficace"],
+    ["ja", "ja-JP", "最も効率的な旅行ルート"],
+    ["zh", "zh-CN", "最高效的旅行路线"],
   ];
   for (const [locale, languageTag, routeTitle] of cases) {
     const cookie = `together-locale=${locale}`;
