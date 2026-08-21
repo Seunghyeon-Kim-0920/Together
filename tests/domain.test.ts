@@ -48,6 +48,7 @@ import {
   SCHEDULE_PAST_DATE_HORIZON_DAYS,
   SCHEDULE_PROVIDER_TIMEOUT_MS,
   SCHEDULE_RATE_LIMIT_REQUESTS,
+  SCHEDULE_TRANSIT_ENDPOINT_GATE_MAX_RADIUS_METERS,
   SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
   validateDepartureDate,
 } from "../app/api/routes/schedule/route.js";
@@ -828,7 +829,7 @@ test("Transitous parser selects the fastest valid public-transit itinerary", () 
   assert.equal(parsed.schedule.arrivalTime, "2098-04-05T11:25:00Z");
   assert.equal(
     parsed.schedule.stopSnapping.radiusMeters,
-    SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+    SCHEDULE_TRANSIT_ENDPOINT_GATE_MAX_RADIUS_METERS,
   );
   assert.deepEqual(parsed.schedule.stopSnapping.origin, {
     cityCenter: { latitude: 48.8566, longitude: 2.3522 },
@@ -854,6 +855,167 @@ test("Transitous parser selects the fastest valid public-transit itinerary", () 
   );
   assert.equal(withPreDepartureWait?.leg.totalMinutes, 155);
   assert.equal(withPreDepartureWait?.schedule.elapsedFromQuerySeconds, 9_300);
+});
+
+test("Transitous endpoint gate accepts major metropolitan stations outside the provider search radius", () => {
+  const directRailPlan = (
+    id: string,
+    fromName: string,
+    fromCoordinates: FixtureCoordinates,
+    toName: string,
+    toCoordinates: FixtureCoordinates,
+  ) => ({
+    itineraries: [
+      {
+        id,
+        duration: 7_200,
+        startTime: "2098-04-05T08:00:00Z",
+        endTime: "2098-04-05T10:00:00Z",
+        transfers: 0,
+        legs: [
+          {
+            mode: "LONG_DISTANCE",
+            duration: 7_200,
+            startTime: "2098-04-05T08:00:00Z",
+            endTime: "2098-04-05T10:00:00Z",
+            from: { name: fromName, ...fromCoordinates },
+            to: { name: toName, ...toCoordinates },
+          },
+        ],
+      },
+    ],
+  });
+
+  const milanToVienna = parseTransitousPlan(
+    directRailPlan(
+      "milan-vienna-main-stations",
+      "Milano Centrale",
+      { lat: 45.4863, lon: 9.2045 },
+      "Wien Hauptbahnhof",
+      { lat: 48.185257, lon: 16.372524 },
+    ),
+    "milan",
+    "vienna",
+  );
+  assert.ok(milanToVienna);
+  assert.ok(
+    milanToVienna.schedule.stopSnapping.origin.distanceMeters >
+      SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+  );
+  assert.ok(
+    milanToVienna.schedule.stopSnapping.destination.distanceMeters >
+      SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+  );
+  assert.equal(milanToVienna.leg.totalMinutes, 120);
+  assert.equal(
+    milanToVienna.schedule.intercityDurationSeconds,
+    7_200,
+    "published departure and arrival timestamps remain the displayed duration",
+  );
+
+  const viennaToBudapest = parseTransitousPlan(
+    directRailPlan(
+      "vienna-budapest-main-stations",
+      "Wien Hauptbahnhof",
+      { lat: 48.185974, lon: 16.378326 },
+      "Budapest-Keleti",
+      { lat: 47.5003, lon: 19.0839 },
+    ),
+    "vienna",
+    "budapest",
+  );
+  assert.ok(viennaToBudapest);
+  assert.ok(
+    viennaToBudapest.schedule.stopSnapping.destination.distanceMeters >
+      SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+  );
+  assert.ok(
+    viennaToBudapest.schedule.stopSnapping.destination.distanceMeters <=
+      viennaToBudapest.schedule.stopSnapping.radiusMeters,
+  );
+});
+
+test("Transitous endpoint gate retains Venice-Mestre rail and rejects a stop nearer another selected city", () => {
+  const veniceId = "open-meteo:venice-endpoint-gate";
+  const florenceId = "open-meteo:florence-endpoint-gate";
+  const venice = {
+    id: veniceId,
+    coordinates: { latitude: 45.4408, longitude: 12.3155 },
+    timeZone: "Europe/Rome",
+  };
+  const florence = {
+    id: florenceId,
+    coordinates: { latitude: 43.7696, longitude: 11.2558 },
+    timeZone: "Europe/Rome",
+  };
+  const cityById = new Map([
+    [venice.id, venice],
+    [florence.id, florence],
+  ]);
+  const veniceToFlorencePlan = {
+    itineraries: [
+      {
+        id: "venice-mestre-florence-smn",
+        duration: 7_200,
+        startTime: "2098-04-05T08:00:00Z",
+        endTime: "2098-04-05T10:00:00Z",
+        transfers: 0,
+        legs: [
+          {
+            mode: "HIGHSPEED_RAIL",
+            duration: 7_200,
+            startTime: "2098-04-05T08:00:00Z",
+            endTime: "2098-04-05T10:00:00Z",
+            from: {
+              name: "Venezia Mestre",
+              lat: 45.482031,
+              lon: 12.23208,
+            },
+            to: {
+              name: "Firenze Santa Maria Novella",
+              lat: 43.7762,
+              lon: 11.2488,
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const veniceToFlorence = parseTransitousPlan(
+    veniceToFlorencePlan,
+    veniceId,
+    florenceId,
+    undefined,
+    cityById,
+  );
+  assert.ok(veniceToFlorence);
+  assert.ok(
+    veniceToFlorence.schedule.stopSnapping.origin.distanceMeters >
+      SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+  );
+  assert.equal(veniceToFlorence.leg.totalMinutes, 120);
+
+  const neighbourId = "open-meteo:selected-neighbour";
+  const neighbour = {
+    id: neighbourId,
+    coordinates: { latitude: 45.482031, longitude: 12.23208 },
+    timeZone: "Europe/Rome",
+  };
+  const citiesWithNeighbour = new Map([
+    ...cityById,
+    [neighbour.id, neighbour] as const,
+  ]);
+  assert.equal(
+    parseTransitousPlan(
+      veniceToFlorencePlan,
+      veniceId,
+      florenceId,
+      undefined,
+      citiesWithNeighbour,
+    ),
+    null,
+    "a stop inside the metropolitan cap is still rejected when it belongs more closely to another selected city",
+  );
 });
 
 test("Transitous parser rejects oversized provider structures and uses timestamps for segment time", () => {
@@ -1087,6 +1249,8 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
           strategy: string;
           radiusMeters: number;
           endpointCoordinateGate: boolean;
+          endpointGateMaximumRadiusMeters: number;
+          nearestRequestedCityGuard: boolean;
         };
         departureDateHorizon: {
           basis: string;
@@ -1123,6 +1287,9 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
       strategy: "provider_radius",
       radiusMeters: SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
       endpointCoordinateGate: true,
+      endpointGateMaximumRadiusMeters:
+        SCHEDULE_TRANSIT_ENDPOINT_GATE_MAX_RADIUS_METERS,
+      nearestRequestedCityGuard: true,
     });
     assert.match(body.requestPolicy.rateLimit, /instance-local/i);
     assert.deepEqual(body.requestPolicy.departureDateHorizon, {
@@ -1137,7 +1304,7 @@ test("schedule endpoint queries every ordered pair and keeps failures directiona
       calls.every(
         (call) =>
           call.userAgent ===
-          "Together/0.5 (https://together-travel-0920.ocvi-85.chatgpt.site)",
+          "Together/0.6 (https://together-travel-0920.ocvi-85.chatgpt.site)",
       ),
     );
     assert.deepEqual(

@@ -10,12 +10,12 @@ on:
       version_name:
         description: Human-readable Android version
         required: true
-        default: 0.5.0
+        default: 0.6.0
         type: string
       version_code:
         description: Monotonically increasing Android version code
         required: true
-        default: "5"
+        default: "6"
         type: string
       package_id:
         description: Lowercase Android application ID

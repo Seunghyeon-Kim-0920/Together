@@ -7,7 +7,7 @@ const OPEN_METEO_ATTRIBUTION_URL =
 const GEONAMES_ATTRIBUTION_URL = "https://www.geonames.org/";
 const WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php";
 const WIKIMEDIA_API_USER_AGENT =
-  "Together/0.5 (+https://github.com/Seunghyeon-Kim-0920/Together)";
+  "Together/0.6 (+https://github.com/Seunghyeon-Kim-0920/Together)";
 
 export const CITY_SEARCH_MAX_RESULTS = 8;
 export const CITY_SEARCH_CACHE_TTL_SECONDS = 6 * 60 * 60;

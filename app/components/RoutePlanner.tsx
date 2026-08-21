@@ -33,9 +33,31 @@ type ScheduleResult = {
   partial: boolean;
   calculatedAt: string;
   actualCoverage: boolean;
-  verifiedCandidateCoverage: boolean;
+  candidateQueryComplete: boolean;
   optimalityGuaranteed: boolean;
 };
+
+export function evaluateScheduleCoverage(input: {
+  readonly pairOffset: number;
+  readonly queriedPairCount: number;
+  readonly candidatePairCount: number;
+  readonly eligiblePairCount: number;
+  readonly unknownProviderFailures: boolean;
+  readonly cityCount: number;
+}) {
+  const candidateQueryComplete =
+    input.pairOffset >= input.candidatePairCount &&
+    input.queriedPairCount === input.candidatePairCount;
+  const actualCoverage =
+    candidateQueryComplete &&
+    !input.unknownProviderFailures &&
+    input.candidatePairCount === input.eligiblePairCount;
+  return Object.freeze({
+    candidateQueryComplete,
+    actualCoverage,
+    optimalityGuaranteed: actualCoverage && input.cityCount <= 10,
+  });
+}
 
 export type CitySearchResult = {
   readonly id: string;
@@ -284,7 +306,7 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
       restoredRoute.itinerary.legs.every(isVerifiedTransportLeg) &&
       cityIds.length <= 10
     ) return restoredRoute.itinerary;
-    if (!activeSchedule?.verifiedCandidateCoverage) return null;
+    if (!activeSchedule?.candidateQueryComplete) return null;
     try {
       return optimizeVerifiedItinerary(cityIds, activeSchedule.legs, {
         startCityId: effectiveStartCityId,
@@ -483,24 +505,23 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
         if (!Number.isSafeInteger(next) || (next as number) <= pairOffset) break;
         pairOffset = next as number;
       }
-      const verifiedCandidateCoverage =
-        pairOffset >= candidatePairCount &&
-        queriedPairCount === candidatePairCount &&
-        !unknownProviderFailures;
-      const actualCoverage =
-        verifiedCandidateCoverage && candidatePairCount === eligiblePairCount;
-      const optimalityGuaranteed = actualCoverage && cityIds.length <= 10;
+      const coverage = evaluateScheduleCoverage({
+        pairOffset,
+        queriedPairCount,
+        candidatePairCount,
+        eligiblePairCount,
+        unknownProviderFailures,
+        cityCount: cityIds.length,
+      });
       setScheduleResult({
         key: scheduleKey,
         legs: [...collectedLegs.values()],
-        partial: !actualCoverage,
-        actualCoverage,
-        verifiedCandidateCoverage,
-        optimalityGuaranteed,
+        partial: !coverage.actualCoverage,
+        ...coverage,
         calculatedAt,
       });
     } catch {
-      setScheduleResult({ key: scheduleKey, legs: [], partial: true, actualCoverage: false, verifiedCandidateCoverage: false, optimalityGuaranteed: false, calculatedAt: new Date().toISOString() });
+      setScheduleResult({ key: scheduleKey, legs: [], partial: true, actualCoverage: false, candidateQueryComplete: false, optimalityGuaranteed: false, calculatedAt: new Date().toISOString() });
     } finally {
       setBusy(false);
       setCalculating(false);
@@ -616,7 +637,6 @@ export function RoutePlanner({ locale, initialCityIds, initialDepartureDate, ini
           <div className="route-copy">
             <span className="travel-kicker">Together</span>
             <h1>{translate(locale, "routeTitle")}</h1>
-            <p>{translate(locale, "routeDescription")}</p>
           </div>
         </div>
       </section>

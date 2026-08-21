@@ -11,7 +11,7 @@ import {
 
 const TRANSITOUS_PLAN_URL = "https://api.transitous.org/api/v6/plan";
 const TRANSITOUS_USER_AGENT =
-  "Together/0.5 (https://together-travel-0920.ocvi-85.chatgpt.site)";
+  "Together/0.6 (https://together-travel-0920.ocvi-85.chatgpt.site)";
 const TRANSITOUS_SOURCE = "Transitous / MOTIS public timetable";
 const TRANSITOUS_ATTRIBUTION = "https://transitous.org/sources/";
 const TRANSITOUS_TRANSIT_MODES = "RAIL,BUS,COACH";
@@ -34,10 +34,15 @@ export const SCHEDULE_RATE_LIMIT_REQUESTS = 4;
 export const SCHEDULE_RATE_LIMIT_WINDOW_SECONDS = 60;
 export const SCHEDULE_MAX_REQUEST_BYTES = 65_536;
 export const SCHEDULE_MAX_PROVIDER_RESPONSE_BYTES = 1_000_000;
-// MOTIS' provider-side radius search snaps each city coordinate only to stops
-// inside this bounded circle. It avoids brittle city-centre street matching
-// without ever substituting a station in a different city.
+// MOTIS' provider-side access/egress search stays deliberately tight. The
+// first/last intercity vehicle can nevertheless use a main station just
+// outside this circle, so that station is checked separately below.
 export const SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS = 2_500;
+export const SCHEDULE_TRANSIT_ENDPOINT_GATE_MAX_RADIUS_METERS = 12_000;
+
+const SCHEDULE_TRANSIT_ENDPOINT_GATE_CORE_RADIUS_METERS = 5_000;
+const SCHEDULE_TRANSIT_ENDPOINT_GATE_ROUTE_DISTANCE_RATIO = 0.05;
+const SCHEDULE_TRANSIT_ENDPOINT_NEAREST_CITY_TOLERANCE_METERS = 250;
 
 const MAX_CACHE_ENTRIES = 256;
 const MAX_PROVIDER_CONCURRENCY = 4;
@@ -472,6 +477,8 @@ function transitStopSnapEndpoint(
   city: ScheduleCity,
   providerLeg: TransitousLeg,
   endpoint: "from" | "to",
+  endpointGateRadiusMeters: number,
+  requestedCities: readonly ScheduleCity[],
 ): TransitStopSnapEndpoint | null {
   const coordinates =
     endpoint === "from"
@@ -482,8 +489,25 @@ function transitStopSnapEndpoint(
     city.coordinates,
     coordinates,
   );
-  if (distanceMeters > SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS) {
+  if (distanceMeters > endpointGateRadiusMeters) {
     return null;
+  }
+  // A wider metropolitan gate must not let an itinerary terminate in another
+  // selected city. Provider stop labels are not stable across languages, so
+  // coordinates are the deterministic validation signal.
+  for (const requestedCity of requestedCities) {
+    if (requestedCity.id === city.id) continue;
+    const competingDistanceMeters = scheduleCoordinateDistanceMeters(
+      requestedCity.coordinates,
+      coordinates,
+    );
+    if (
+      competingDistanceMeters +
+        SCHEDULE_TRANSIT_ENDPOINT_NEAREST_CITY_TOLERANCE_METERS <
+      distanceMeters
+    ) {
+      return null;
+    }
   }
   return {
     cityCenter: { ...city.coordinates },
@@ -501,15 +525,46 @@ function stopSnappingMetadata(
   surfaceLegs: readonly IntercitySurfaceLeg[],
   fromCity: ScheduleCity,
   toCity: ScheduleCity,
+  cityById?: ReadonlyMap<string, ScheduleCity>,
 ): TransitousScheduleMetadata["stopSnapping"] | null {
   const firstIntercityLeg = surfaceLegs[0]?.providerLeg;
   const lastIntercityLeg = surfaceLegs.at(-1)?.providerLeg;
   if (!firstIntercityLeg || !lastIntercityLeg) return null;
-  const origin = transitStopSnapEndpoint(fromCity, firstIntercityLeg, "from");
-  const destination = transitStopSnapEndpoint(toCity, lastIntercityLeg, "to");
+  const endpointGateRadiusMeters = Math.round(
+    Math.min(
+      SCHEDULE_TRANSIT_ENDPOINT_GATE_MAX_RADIUS_METERS,
+      Math.max(
+        SCHEDULE_TRANSIT_ENDPOINT_GATE_CORE_RADIUS_METERS,
+        scheduleCoordinateDistanceMeters(
+          fromCity.coordinates,
+          toCity.coordinates,
+        ) * SCHEDULE_TRANSIT_ENDPOINT_GATE_ROUTE_DISTANCE_RATIO,
+      ),
+    ),
+  );
+  const requestedCitiesById = new Map<string, ScheduleCity>([
+    [fromCity.id, fromCity],
+    [toCity.id, toCity],
+    ...(cityById ? [...cityById] : []),
+  ]);
+  const requestedCities = [...requestedCitiesById.values()];
+  const origin = transitStopSnapEndpoint(
+    fromCity,
+    firstIntercityLeg,
+    "from",
+    endpointGateRadiusMeters,
+    requestedCities,
+  );
+  const destination = transitStopSnapEndpoint(
+    toCity,
+    lastIntercityLeg,
+    "to",
+    endpointGateRadiusMeters,
+    requestedCities,
+  );
   if (!origin || !destination) return null;
   return {
-    radiusMeters: SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
+    radiusMeters: endpointGateRadiusMeters,
     origin,
     destination,
   };
@@ -580,7 +635,12 @@ function buildTravelLeg(
   const toCity = resolveScheduleCity(toCityId, cityById);
   const surfaceLegs = selectIntercitySurfaceLegs(itinerary);
   if (!surfaceLegs) return null;
-  const stopSnapping = stopSnappingMetadata(surfaceLegs, fromCity, toCity);
+  const stopSnapping = stopSnappingMetadata(
+    surfaceLegs,
+    fromCity,
+    toCity,
+    cityById,
+  );
   if (!stopSnapping) return null;
 
   const provenance = {
@@ -1879,6 +1939,9 @@ export async function POST(request: Request): Promise<Response> {
           strategy: "provider_radius",
           radiusMeters: SCHEDULE_TRANSIT_STOP_SEARCH_RADIUS_METERS,
           endpointCoordinateGate: true,
+          endpointGateMaximumRadiusMeters:
+            SCHEDULE_TRANSIT_ENDPOINT_GATE_MAX_RADIUS_METERS,
+          nearestRequestedCityGuard: true,
         },
         batchDeadlineMs: SCHEDULE_BATCH_DEADLINE_MS,
         cacheTtlSeconds: SCHEDULE_CACHE_TTL_SECONDS,
