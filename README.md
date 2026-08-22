@@ -1,105 +1,54 @@
-# Together
+# 지갑의 일기
 
-Together is a multilingual multi-city travel planner. It compares rail and coach services only when a provider publishes departure and arrival times for the selected date, proposes a city order, creates shareable itineraries and PDFs, stores trips in the current browser, and tracks group expenses.
+여행 정산과 일상 소비를 한 앱에서 관리하는 오프라인 우선 모바일 가계부입니다. 웹사이트 배포 없이 Capacitor 기반 Android/iOS 앱으로 제공됩니다.
 
-The interface supports Korean, English, French, Japanese, and Chinese. The project runs as a responsive website and installable PWA, and includes a reproducible workflow for a signed Android APK/App Bundle using a Trusted Web Activity (TWA).
+## 주요 기능
 
-## Current implementation status
+- 삼성 인터넷의 탭처럼 여러 가계부를 가로로 전환하고 추가·이름 변경·삭제
+- 새 가계부를 여행 가계부 또는 일반 가계부로 선택
+- 여행 가계부: 여러 현지 화폐, 참가자, 결제자, 균등 N분의1, 통화별 정산, 파일 공유, PDF 내보내기
+- 일반 가계부: 식비·교통비 등 카테고리 입력, 전월 대비 증감률, 월별·연도별·카테고리별 통계
+- 한국어·영어·프랑스어
+- 로그인 없이 SQLite에 기기 내부 저장
+- 첫 실행 시 예시 사람이나 지출이 없는 완전한 빈 상태
 
-This repository is an early product implementation, not a production travel booking system.
-
-- Route optimization, provider-verified transport legs, route and ledger share links, route and ledger PDF export, profiles, saved trips, expense categories, and equal splits have UI and domain implementations. Ledger links use a URL fragment and exclude profile/self-identification data; linked ledgers open read-only and require an explicit conflict-safe save.
-- Trips, profiles, participants, and expenses are stored without login in the current browser's local storage. They are not synchronized to another browser or device and can be lost if browser storage is cleared.
-- Global city search uses the no-key Open-Meteo Geocoding endpoint backed by GeoNames plus a bounded Wikidata alias fallback for the current non-commercial beta. The five interface languages keep their own result labels while input-script-aware lookups improve matching across Latin, Hangul, Kana/Han, Greek, Cyrillic, Arabic, and several Indic and regional scripts. Results include provider attribution, and dynamic city coordinates/time zones are validated again before routing; provider coverage is broad but not presented as exhaustive.
-- City lists have no product-level count cap. Routes with up to 10 cities use exact optimization; larger lists use a deterministic scalable approximation while preserving the chosen start and end cities.
-- Rail and coach options are checked against Transitous/MOTIS public timetables with bounded concurrency, cancellation, caching, a maximum of 12 provider pair lookups per calculation, and a 12-second batch deadline. When the full directed matrix fits that budget it is checked; otherwise deterministic geographic candidate paths are checked without using distance as travel time. A result is shown when the provider-verified legs themselves contain a complete route, even if an unrelated candidate lookup fails. Sparse results explicitly say that the shortest order is not guaranteed, and very large or uncovered routes remain unavailable rather than inventing missing times.
-- No flight timetable provider is connected. Together does not create or recommend a flight duration until a provider can verify the service and its published times. Multi-mode details are structured to display the mode, service, stations, and departure/arrival time for every provider-verified segment.
-- The public web build is deployed at `https://together-travel-0920.ocvi-85.chatgpt.site`. Monitoring, a privacy policy, provider-capacity planning, and broader security/accessibility testing remain pre-launch work.
-- Android source and automation target v0.6.0 (version code 6) for `com.together.travel`. The release certificate remains linked to the deployed origin through `public/.well-known/assetlinks.json`; signing material must never enter Git.
-
-## Local development
-
-Prerequisites: Node.js 22.13 or newer.
+## 개발
 
 ```bash
 npm ci
 npm run dev
-```
-
-Open the local URL printed by vinext. The product UI persists profiles, trips, participants, and expenses in browser storage. `vite.config.ts`, the D1 binding, and migrations under `drizzle/` remain for legacy private API compatibility but are not used by the login-free UI.
-
-Useful verification commands:
-
-```bash
-npm run pwa:check
-npm run typecheck
 npm run lint
+npm run typecheck
 npm test
+npm run build
 ```
 
-`npm test` performs a production build plus domain and rendered-HTML tests.
-
-## PWA behavior
-
-The web manifest contains regular 192 px and 512 px icons, a dedicated maskable icon, standalone display metadata, and a stable root application ID. The production-only service-worker registration is intentionally small.
-
-The service worker caches versioned static assets, including the local Natural Earth map, and provides a minimal offline page. It never caches API responses or browser-local profile, trip, participant, and expense records. Saved records can be viewed and edited without a network connection; live city search and timetable checks still require one.
-
-Validate a deployed build as well as the local files with:
+Android 동기화:
 
 ```bash
-npm run pwa:check -- https://your-production-domain.example
+npm run android:sync
 ```
 
-## Android APK / App Bundle
+iOS 동기화는 macOS와 Xcode가 필요합니다.
 
-Android packaging uses Bubblewrap and a Trusted Web Activity, so the Android app loads the same deployed HTTPS PWA rather than carrying a second, divergent frontend. `android/twa-manifest.template.json` is source-controlled; generated Gradle files and signing files are ignored. Verified, versioned APK/AAB deliverables are intentionally published under `release/`.
-
-The latest packaged release is documented in `release/README.md`. The current Android source and automation target is v0.6.0 with version code 6, minimum SDK 23, target/compile SDK 36, and package ID `com.together.travel`. The APK certificate SHA-256 must match the checked-in Digital Asset Links statement.
-
-Configure these GitHub repository secrets:
-
-| Secret | Purpose |
-| --- | --- |
-| `ANDROID_KEYSTORE_BASE64` | Base64-encoded release keystore |
-| `ANDROID_KEYSTORE_PASSWORD` | Keystore password |
-| `ANDROID_KEY_ALIAS` | Signing-key alias |
-| `ANDROID_KEY_PASSWORD` | Signing-key password |
-
-Then run the **Build signed Android APK** workflow manually with the deployed site URL, monotonically increasing version code, version name, and package ID. The workflow:
-
-1. validates the live HTTPS PWA;
-2. restores the signing key only on the ephemeral runner;
-3. generates and builds the TWA project;
-4. uploads the signed APK/App Bundle, checksums, and `assetlinks.json` as a private workflow artifact.
-
-After each signing-key change, publish the generated `assetlinks.json` at:
-
-```text
-https://together-travel-0920.ocvi-85.chatgpt.site/.well-known/assetlinks.json
+```bash
+npm run ios:sync
 ```
 
-Redeploy the website before distributing the APK. The certificate fingerprint, Android package ID, and deployed Digital Asset Links statement must match; otherwise Android opens the site as a Custom Tab instead of a verified TWA.
+## 데이터와 공유
 
-For a configured local Android toolchain, the manifest preparation step is:
+앱 데이터는 Android/iOS의 로컬 SQLite 데이터베이스에 저장됩니다. 여행 가계부 공유는 개인의 `본인 선택` 정보를 제외한 `.walletdiary` 파일을 만들어 운영체제 공유 시트를 엽니다. 받은 파일은 앱 상단의 가져오기 버튼으로 새 탭에 추가할 수 있습니다. PDF 역시 네이티브 공유 시트를 통해 파일 앱·Drive·메신저 등으로 저장하거나 전송할 수 있습니다.
 
-```powershell
-$env:TOGETHER_SITE_URL = "https://your-production-domain.example"
-$env:ANDROID_PACKAGE_ID = "com.together.travel"
-$env:ANDROID_VERSION_CODE = "6"
-$env:ANDROID_VERSION_NAME = "0.6.0"
-$env:ANDROID_KEY_ALIAS = "together-release"
-npm run android:prepare
-```
+앱을 삭제하면 로컬 데이터가 사라질 수 있으므로 중요한 여행 가계부는 `.walletdiary` 파일 또는 PDF로 백업해야 합니다.
 
-Do not commit a keystore, passwords, generated Android project files, unsigned Android outputs, `.env` files, or local logs. Only verified, signed, versioned APK/AAB deliverables belong under `release/`.
+## 배포
 
-## Deployment and storage
+- Android/iOS application ID: `com.seunghyeonkim.walletdiary`
+- Android version: `1.0.0` / code `100`
+- Android min SDK: 24, target SDK: 36
+- iOS 프로젝트: `ios/App/App.xcodeproj`
+- Android APK/AAB: `release/`
 
-`.openai/hosting.json` declares the deployed Sites project and its legacy D1 binding. The current login-free product UI stores private records only in the current browser. Route links contain route inputs; unsigned timetable claims are never trusted and must be checked again. Ledger links contain only the bounded, validated participant/expense ledger in the URL fragment and never include profile or self-participant data.
+서명 키와 비밀번호는 Git에서 제외됩니다. `release/wallet-diary-upload.jks`와 `release/SIGNING-CREDENTIALS.txt`를 안전한 별도 장소에 함께 백업해야 합니다.
 
-GitHub Actions CI validates the PWA contract, TypeScript, lint, production build, and tests on pull requests and `main`.
-
-## Repository safety
-
-The repository ignores local logs, TypeScript build caches, Cloudflare/vinext output, generated Android projects, signing material, and unversioned Android outputs. Versioned deliverables under `release/` are deliberately tracked. Before publishing, inspect `git status`, staged files, and the remote destination; never use a blanket commit if unrelated or sensitive files are present.
+서명된 IPA 생성에는 macOS, Xcode, Apple Developer Team, 배포 인증서와 App Store 프로비저닝 프로파일이 필요합니다.
