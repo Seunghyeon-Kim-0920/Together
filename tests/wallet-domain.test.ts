@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseMinorUnits } from "../src/lib/currency";
-import { categoryTotals, monthlyTotals, previousMonthComparison, yearlyTotals } from "../src/lib/statistics";
+import { merchantDisplayName, preserveImportedMerchantDescription } from "../src/lib/merchant";
+import { annualAverageComparison, annualCoverageMonths, categoryTotals, monthlyTotals, previousMonthComparison, yearlyTotals } from "../src/lib/statistics";
 import type { GeneralExpense, TravelLedger } from "../src/lib/types";
 import { createLedger, createTravelExpense, newestExpensesFirst, parseLedger, replaceExpenseById, settleTravelExpenses, splitEvenly } from "../src/lib/wallet";
 
@@ -44,6 +45,22 @@ test("general ledger statistics compare months, years, and categories", () => {
   assert.equal(monthlyTotals(expenses, 2026)[0], 2000);
   assert.deepEqual(yearlyTotals(expenses), [{ year: 2025, total: 1000 }, { year: 2026, total: 2000 }]);
   assert.deepEqual([...categoryTotals(expenses, "2026-01")], [["transport", 1500], ["food", 500]]);
+  assert.deepEqual([...categoryTotals(expenses, "2026")], [["transport", 1500], ["food", 500]]);
+  const asOf = new Date(2026, 7, 23);
+  assert.equal(annualCoverageMonths(expenses, 2025, asOf), 1);
+  assert.equal(annualCoverageMonths(expenses, 2026, asOf), 8);
+  assert.deepEqual(annualAverageComparison(expenses, "2026-01", "all", asOf), { current: 2000, average: 250, difference: 1750, percent: 700, coverageMonths: 8 });
+});
+
+test("card provider prefixes are hidden without changing the stored merchant", () => {
+  assert.equal(merchantDisplayName("Revolut · Lidl", "revolut-1"), "Lidl");
+  assert.equal(merchantDisplayName("Swile: Ste Sagane", "swile-1"), "Ste Sagane");
+  assert.equal(merchantDisplayName("Travel Wallet - Uber", "travelwallet-1"), "Uber");
+  assert.equal(merchantDisplayName("트래블월렛 · KFC", "travelwallet-2"), "KFC");
+  assert.equal(merchantDisplayName("Revolut Café", "revolut-2"), "Revolut Café");
+  assert.equal(merchantDisplayName("Revolut · User note", "random-uuid"), "Revolut · User note");
+  assert.equal(preserveImportedMerchantDescription("Revolut · Lidl", "Lidl", "revolut-1"), "Revolut · Lidl");
+  assert.equal(preserveImportedMerchantDescription("Revolut · Lidl", "Lidl Paris", "revolut-1"), "Lidl Paris");
 });
 
 test("invalid ledgers and forged split totals are rejected", () => {
