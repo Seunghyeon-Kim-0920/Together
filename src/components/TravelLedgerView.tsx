@@ -46,7 +46,14 @@ export function TravelLedgerView({ ledger, locale, onChange, onNotify }: { ledge
       if (Capacitor.isNativePlatform()) {
         const pages = [...document.querySelectorAll<HTMLElement>(`#travel-pdf-${CSS.escape(ledger.id)} .pdf-page`)].slice(0, 4);
         const { default: html2canvas } = await import("html2canvas");
-        for (const page of pages) { const canvas = await html2canvas(page, { scale: 1.2, backgroundColor: "#fff" }); previews.push(canvas.toDataURL("image/jpeg", .9).split(",")[1]); }
+        const canvases: HTMLCanvasElement[] = [];
+        for (const page of pages) canvases.push(await html2canvas(page, { scale: 1.2, backgroundColor: "#fff" }));
+        if (canvases.length) {
+          const merged = document.createElement("canvas"); merged.width = Math.max(...canvases.map((canvas) => canvas.width)); merged.height = canvases.reduce((height, canvas) => height + canvas.height, 0);
+          const context = merged.getContext("2d"); if (!context) throw new Error("canvas unavailable"); context.fillStyle = "#fff"; context.fillRect(0, 0, merged.width, merged.height);
+          let top = 0; for (const canvas of canvases) { context.drawImage(canvas, 0, top); top += canvas.height; }
+          previews.push(merged.toDataURL("image/jpeg", .9).split(",")[1]);
+        }
       }
       await shareTravelLedger(ledger, createTravelShareText(ledger, locale), previews); onNotify(t(locale, "sharedFileReady"), "success");
     } catch { onNotify(t(locale, "shareFailed"), "error"); }
