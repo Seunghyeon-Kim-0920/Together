@@ -146,7 +146,9 @@ export function replaceLedger(state: WalletState, ledger: Ledger): WalletState {
 export function mergeGeneralLedgers(existing: GeneralLedger, imported: GeneralLedger): GeneralLedger {
   if (existing.kind !== "general" || imported.kind !== "general" || existing.currency !== imported.currency || existing.title !== imported.title) throw new Error("incompatible ledgers");
   const byId = new Map(existing.expenses.map((expense) => [expense.id, expense]));
-  for (const expense of imported.expenses) byId.set(expense.id, expense);
+  // Existing rows may contain user edits. A repeated provider import should
+  // only add unseen transactions, never overwrite those local corrections.
+  for (const expense of imported.expenses) if (!byId.has(expense.id)) byId.set(expense.id, expense);
   const merged = Object.freeze({ ...existing, expenses: Object.freeze([...byId.values()]), updatedAt: new Date().toISOString() });
   const parsed = parseLedger(merged);
   if (!parsed || parsed.kind !== "general") throw new Error("invalid merged ledger");
@@ -155,6 +157,17 @@ export function mergeGeneralLedgers(existing: GeneralLedger, imported: GeneralLe
 
 export function createTravelExpense(input: Omit<TravelExpense, "id" | "shares"> & { participantIds: readonly string[] }): TravelExpense {
   return Object.freeze({ ...input, id: crypto.randomUUID(), shares: splitEvenly(input.minorUnits, input.participantIds) });
+}
+
+/** Replace one expense without changing list order or the stable expense id. */
+export function replaceExpenseById<T extends { readonly id: string }>(expenses: readonly T[], replacement: T): readonly T[] {
+  if (!expenses.some((expense) => expense.id === replacement.id)) return expenses;
+  return Object.freeze(expenses.map((expense) => expense.id === replacement.id ? replacement : expense));
+}
+
+/** Show later dates first and, for the same date, the most recently added row first. */
+export function newestExpensesFirst<T extends { readonly occurredOn: string }>(expenses: readonly T[]): readonly T[] {
+  return Object.freeze(expenses.map((expense, index) => ({ expense, index })).sort((a, b) => b.expense.occurredOn.localeCompare(a.expense.occurredOn) || b.index - a.index).map(({ expense }) => expense));
 }
 
 export function defaultDate(): string {

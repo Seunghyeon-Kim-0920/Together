@@ -4,7 +4,7 @@ import test from "node:test";
 import { generalCategoryLabel, t, travelCategoryLabel, type MessageKey } from "../src/lib/i18n";
 import { GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES } from "../src/lib/types";
 
-const representativeKeys: MessageKey[] = ["newLedger", "travelLedger", "generalLedger", "participants", "settlement", "share", "exportPdf", "currentMonth", "comparedToPrevious", "yearlySpending", "categorySpending", "storageHelp"];
+const representativeKeys: MessageKey[] = ["newLedger", "travelLedger", "generalLedger", "edit", "editExpense", "saveChanges", "expenseUpdated", "participants", "settlement", "share", "exportPdf", "currentMonth", "comparedToPrevious", "yearlySpending", "categorySpending", "storageHelp"];
 
 test("the app exposes exactly Korean, English, and French", () => {
   assert.deepEqual(SUPPORTED_LOCALES, ["ko", "en", "fr"]);

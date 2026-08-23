@@ -1,8 +1,9 @@
 import { Capacitor } from "@capacitor/core";
-import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
-import type { Ledger, TravelLedger } from "./types";
-import { parseLedger } from "./wallet";
+import { formatMoney } from "./currency";
+import { t, travelCategoryLabel } from "./i18n";
+import type { Ledger, Locale, TravelLedger } from "./types";
+import { newestExpensesFirst, parseLedger, settleTravelExpenses } from "./wallet";
 
 const SHARE_VERSION = 1;
 const MAX_IMPORT_BYTES = 2_000_000;
@@ -39,16 +40,21 @@ export function parseTravelSharePayload(raw: string): TravelLedger | null {
   return parsed?.kind === "travel" ? parsed : null;
 }
 
-export async function shareTravelLedger(ledger: TravelLedger): Promise<void> {
-  const payload = createTravelSharePayload(ledger); const filename = `${safeFilename(ledger.title)}.walletdiary`;
+export function createTravelShareText(ledger: TravelLedger, locale: Locale): string {
+  const participantNames = new Map(ledger.participants.map((person) => [person.id, person.name]));
+  const totals = ledger.currencies.map((currency) => `${formatMoney(ledger.expenses.filter((expense) => expense.currency === currency).reduce((sum, expense) => sum + expense.minorUnits, 0), currency, locale)}`);
+  const recent = newestExpensesFirst(ledger.expenses).slice(0, 10).map((expense) => `${expense.occurredOn} · ${expense.description} · ${travelCategoryLabel(locale, expense.category)} · ${participantNames.get(expense.paidBy) ?? "-"} · ${formatMoney(expense.minorUnits, expense.currency, locale)}`);
+  const transfers = settleTravelExpenses(ledger).flatMap((settlement) => settlement.transfers.map((transfer) => `${participantNames.get(transfer.from) ?? "-"} → ${participantNames.get(transfer.to) ?? "-"} · ${formatMoney(transfer.minorUnits, transfer.currency, locale)}`));
+  return [ledger.title, "", `${t(locale, "totalSpent")}: ${totals.join(" · ")}`, "", t(locale, "recentExpenses"), ...(recent.length ? recent : [t(locale, "noExpenses")]), "", t(locale, "settlement"), ...(transfers.length ? transfers : [t(locale, "settlementEmpty")])].join("\n");
+}
+
+export async function shareTravelLedger(ledger: TravelLedger, text = ledger.title): Promise<void> {
   if (Capacitor.isNativePlatform()) {
-    const written = await Filesystem.writeFile({ path: filename, data: payload, directory: Directory.Cache, encoding: Encoding.UTF8, recursive: true });
-    await Share.share({ title: ledger.title, text: ledger.title, url: written.uri, dialogTitle: ledger.title });
+    await Share.share({ title: ledger.title, text, dialogTitle: ledger.title });
     return;
   }
-  const file = new File([payload], filename, { type: "application/json" });
-  if (navigator.canShare?.({ files: [file] })) { await navigator.share({ title: ledger.title, files: [file] }); return; }
-  const url = URL.createObjectURL(file); const anchor = document.createElement("a"); anchor.href = url; anchor.download = filename; anchor.click(); URL.revokeObjectURL(url);
+  if (navigator.share) { await navigator.share({ title: ledger.title, text }); return; }
+  const file = new File([text], `${safeFilename(ledger.title)}.txt`, { type: "text/plain;charset=utf-8" }); const url = URL.createObjectURL(file); const anchor = document.createElement("a"); anchor.href = url; anchor.download = file.name; anchor.click(); URL.revokeObjectURL(url);
 }
 
 export function safeFilename(value: string): string { return value.normalize("NFKC").replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, " ").trim().slice(0, 60) || "wallet-diary"; }

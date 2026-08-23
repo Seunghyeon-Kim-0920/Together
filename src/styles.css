@@ -55,8 +55,9 @@ button:disabled { cursor: default; opacity: .44; }
 .participant-list strong { font-size: 13px; }
 .participant-list label { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 10px; }
 .participant-list input { accent-color: var(--jade); }
-.participant-list button, .expense-list article > button { width: 34px; height: 34px; display: grid; place-items: center; border: 0; background: transparent; color: #a04c49; }
-.participant-list button svg, .expense-list article > button svg { width: 16px; }
+.participant-list button { width: 34px; height: 34px; display: grid; place-items: center; border: 0; background: transparent; color: #a04c49; }
+.expense-actions button { width: 44px; height: 44px; display: grid; place-items: center; border: 0; background: transparent; color: #a04c49; }
+.participant-list button svg, .expense-actions button svg { width: 16px; }
 .empty-inline, .ledger-empty { margin: 0; padding: 22px 15px; color: var(--muted); font-size: 12px; text-align: center; }
 .currency-settlement { padding: 12px 15px; }
 .currency-settlement > strong { display: block; margin-bottom: 5px; color: var(--jade-dark); font-size: 11px; }
@@ -67,7 +68,7 @@ button:disabled { cursor: default; opacity: .44; }
 .category-rail { display: flex; gap: 6px; padding: 10px 12px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid #f0f2f4; }
 .category-rail button { flex: 0 0 auto; min-height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: var(--muted); font-size: 10px; font-weight: 740; }
 .category-rail button.active { border-color: var(--jade); background: var(--jade-soft); color: var(--jade-dark); }
-.expense-list article { min-height: 68px; display: grid; grid-template-columns: 38px minmax(0,1fr) auto 32px; align-items: center; gap: 9px; padding: 9px 10px 9px 13px; border-bottom: 1px solid #f0f2f4; }
+.expense-list article { min-height: 68px; display: grid; grid-template-columns: 38px minmax(0,1fr) auto 88px; align-items: center; gap: 5px; padding: 9px 6px 9px 11px; border-bottom: 1px solid #f0f2f4; }
 .expense-list article:last-child { border-bottom: 0; }
 .category-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--jade-soft); color: var(--jade-dark); }
 .category-icon svg { width: 17px; }
@@ -75,6 +76,8 @@ button:disabled { cursor: default; opacity: .44; }
 .expense-list article strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .expense-list article small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .expense-list article > b { font-size: 12px; white-space: nowrap; }
+.expense-actions { display: flex; align-items: center; }
+.expense-actions button:first-child { color: var(--jade-dark); }
 .floating-add { position: fixed; z-index: 12; right: max(18px, calc((100vw - 500px) / 2 + 18px)); bottom: calc(20px + env(safe-area-inset-bottom)); min-height: 52px; display: flex; align-items: center; gap: 7px; padding: 0 17px; border: 0; border-radius: 16px; background: var(--jade); color: #fff; box-shadow: 0 12px 28px rgba(0,127,74,.26); font-size: 12px; font-weight: 850; }
 .floating-add svg { width: 20px; }
 .month-navigation { min-height: 46px; display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; text-align: center; }

@@ -3,7 +3,7 @@ import test from "node:test";
 import { parseMinorUnits } from "../src/lib/currency";
 import { categoryTotals, monthlyTotals, previousMonthComparison, yearlyTotals } from "../src/lib/statistics";
 import type { GeneralExpense, TravelLedger } from "../src/lib/types";
-import { createLedger, createTravelExpense, parseLedger, settleTravelExpenses, splitEvenly } from "../src/lib/wallet";
+import { createLedger, createTravelExpense, newestExpensesFirst, parseLedger, replaceExpenseById, settleTravelExpenses, splitEvenly } from "../src/lib/wallet";
 
 test("amounts are stored as exact currency minor units", () => {
   assert.equal(parseMinorUnits("12.34", "EUR"), 1234);
@@ -50,4 +50,15 @@ test("invalid ledgers and forged split totals are rejected", () => {
   const ledger = createLedger("travel", "Trip", "EUR");
   const forged = { ...ledger, participants: [{ id: "a", name: "A" }], expenses: [{ id: "e", description: "Meal", category: "food", currency: "EUR", minorUnits: 100, paidBy: "a", occurredOn: "2026-08-01", shares: [{ participantId: "a", minorUnits: 99 }] }] };
   assert.equal(parseLedger(forged), null);
+});
+
+test("editing replaces one expense in place and keeps its stable id", () => {
+  const original: GeneralExpense = { id: "expense-1", description: "Lunch", category: "food", currency: "EUR", minorUnits: 1000, occurredOn: "2026-08-01" };
+  const untouched: GeneralExpense = { id: "expense-2", description: "Train", category: "transport", currency: "EUR", minorUnits: 2000, occurredOn: "2026-08-02" };
+  const edited: GeneralExpense = { ...original, description: "Dinner", minorUnits: 1250 };
+  const result = replaceExpenseById([original, untouched], edited);
+  assert.deepEqual(result, [edited, untouched]);
+  assert.equal(result[0].id, original.id);
+  assert.equal(replaceExpenseById(result, { ...edited, id: "missing" }), result);
+  assert.deepEqual(newestExpensesFirst([original, edited, untouched]).map((expense) => expense.description), ["Train", "Dinner", "Lunch"]);
 });

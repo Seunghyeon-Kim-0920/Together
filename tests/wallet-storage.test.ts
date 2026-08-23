@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createLedgerSharePayload, createTravelSharePayload, parseLedgerSharePayload, parseTravelSharePayload, safeFilename } from "../src/lib/share";
-import { EMPTY_WALLET_STATE } from "../src/lib/types";
-import { createLedger, mergeGeneralLedgers, parseWalletState, parseWalletStateStrict } from "../src/lib/wallet";
+import { createLedgerSharePayload, createTravelSharePayload, createTravelShareText, parseLedgerSharePayload, parseTravelSharePayload, safeFilename } from "../src/lib/share";
+import { EMPTY_WALLET_STATE, type TravelLedger } from "../src/lib/types";
+import { createLedger, createTravelExpense, mergeGeneralLedgers, parseWalletState, parseWalletStateStrict } from "../src/lib/wallet";
 
 test("a new installation starts with no ledgers, people, or expenses", () => {
   assert.equal(EMPTY_WALLET_STATE.activeLedgerId, null);
@@ -28,6 +28,24 @@ test("share file parser rejects other formats and non-travel ledgers", () => {
   assert.equal(parseTravelSharePayload(JSON.stringify({ format: "wallet-diary", version: 1, ledger: general })), null);
 });
 
+test("chat sharing creates non-empty localized travel details", () => {
+  const base = createLedger("travel", "Paris", "EUR");
+  const participants = Object.freeze([{ id: "a", name: "Alice" }, { id: "b", name: "Bob" }]);
+  const expense = createTravelExpense({ description: "Dinner", category: "food", currency: "EUR", minorUnits: 3000, paidBy: "a", participantIds: ["a", "b"], occurredOn: "2026-08-01" });
+  const ledger: TravelLedger = Object.freeze({ ...base, participants, selfParticipantId: "a", expenses: Object.freeze([expense]) });
+  const korean = createTravelShareText(ledger, "ko");
+  const english = createTravelShareText(ledger, "en");
+  const french = createTravelShareText(ledger, "fr");
+  assert.match(korean, /총 지출/);
+  assert.match(english, /Total spent/);
+  assert.match(french, /Total dépensé/);
+  for (const message of [korean, english, french]) {
+    assert.match(message, /Paris/);
+    assert.match(message, /Dinner/);
+    assert.match(message, /Bob → Alice/);
+  }
+});
+
 test("general ledger share files import as a new ledger with expenses intact", () => {
   const base = createLedger("general", "Card expenses", "EUR");
   const ledger = Object.freeze({ ...base, expenses: Object.freeze([{ id: "expense-1", description: "Lunch", category: "food" as const, currency: "EUR", minorUnits: 1250, occurredOn: "2025-08-04" }]) });
@@ -46,8 +64,17 @@ test("provider imports merge into the existing ledger idempotently", () => {
   const merged = mergeGeneralLedgers(existing, imported);
   assert.equal(merged.id, existing.id);
   assert.equal(merged.expenses.length, 2);
-  assert.equal(merged.expenses.find((expense) => expense.id === "stable-1")?.minorUnits, 125);
+  assert.equal(merged.expenses.find((expense) => expense.id === "stable-1")?.minorUnits, 100);
   assert.equal(mergeGeneralLedgers(merged, imported).expenses.length, 2);
+});
+
+test("provider re-import keeps a user's local expense correction", () => {
+  const base = createLedger("general", "Card expenses", "EUR");
+  const importedExpense = { id: "provider-1", description: "Original merchant", category: "other" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-01" };
+  const localCorrection = Object.freeze({ ...importedExpense, description: "Corrected merchant", category: "food" as const, minorUnits: 450 });
+  const existing = Object.freeze({ ...base, expenses: Object.freeze([localCorrection]) });
+  const imported = Object.freeze({ ...base, id: "import", expenses: Object.freeze([importedExpense]) });
+  assert.deepEqual(mergeGeneralLedgers(existing, imported).expenses, [localCorrection]);
 });
 
 test("state validation rejects duplicate ledger ids", () => {
