@@ -40,7 +40,17 @@ export function TravelLedgerView({ ledger, locale, onChange, onNotify }: { ledge
     if (currency === ledger.defaultCurrency || ledger.currencies.length === 1 || ledger.expenses.some((expense) => expense.currency === currency)) return;
     update({ currencies: Object.freeze(ledger.currencies.filter((code) => code !== currency)) });
   };
-  const share = async () => { try { await shareTravelLedger(ledger, createTravelShareText(ledger, locale)); onNotify(t(locale, "sharedFileReady"), "success"); } catch { onNotify(t(locale, "shareFailed"), "error"); } };
+  const share = async () => {
+    try {
+      const previews: string[] = [];
+      if (Capacitor.isNativePlatform()) {
+        const pages = [...document.querySelectorAll<HTMLElement>(`#travel-pdf-${CSS.escape(ledger.id)} .pdf-page`)].slice(0, 4);
+        const { default: html2canvas } = await import("html2canvas");
+        for (const page of pages) { const canvas = await html2canvas(page, { scale: 1.2, backgroundColor: "#fff" }); previews.push(canvas.toDataURL("image/jpeg", .9).split(",")[1]); }
+      }
+      await shareTravelLedger(ledger, createTravelShareText(ledger, locale), previews); onNotify(t(locale, "sharedFileReady"), "success");
+    } catch { onNotify(t(locale, "shareFailed"), "error"); }
+  };
   const exportPdf = async () => {
     try {
       const pages = [...document.querySelectorAll<HTMLElement>(`#travel-pdf-${CSS.escape(ledger.id)} .pdf-page`)];
@@ -90,7 +100,7 @@ function TravelExpenseSheet({ ledger, locale, expense, onClose, onSave, onNotify
 function minorUnitsInput(minorUnits: number, currency: string): string { const digits = currencyDigits(currency); return (minorUnits / 10 ** digits).toFixed(digits); }
 
 function TravelPdfReport({ ledger, locale, participantNames }: { ledger: TravelLedger; locale: Locale; participantNames: ReadonlyMap<string, string> }) {
-  const chunks: TravelExpense[][] = []; for (let index = 0; index < ledger.expenses.length; index += 16) chunks.push(ledger.expenses.slice(index, index + 16));
+  const sortedExpenses = newestExpensesFirst(ledger.expenses); const chunks: TravelExpense[][] = []; for (let index = 0; index < sortedExpenses.length; index += 16) chunks.push(sortedExpenses.slice(index, index + 16));
   const totals = ledger.currencies.map((currency) => ({ currency, total: ledger.expenses.filter((expense) => expense.currency === currency).reduce((sum, expense) => sum + expense.minorUnits, 0) }));
   const settlements = settleTravelExpenses(ledger);
   return <div className="pdf-report" id={`travel-pdf-${ledger.id}`} aria-hidden="true">

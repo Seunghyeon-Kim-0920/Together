@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import { Directory, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { formatMoney } from "./currency";
 import { t, travelCategoryLabel } from "./i18n";
@@ -48,9 +49,14 @@ export function createTravelShareText(ledger: TravelLedger, locale: Locale): str
   return [ledger.title, "", `${t(locale, "totalSpent")}: ${totals.join(" · ")}`, "", t(locale, "recentExpenses"), ...(recent.length ? recent : [t(locale, "noExpenses")]), "", t(locale, "settlement"), ...(transfers.length ? transfers : [t(locale, "settlementEmpty")])].join("\n");
 }
 
-export async function shareTravelLedger(ledger: TravelLedger, text = ledger.title): Promise<void> {
+export async function shareTravelLedger(ledger: TravelLedger, text = ledger.title, previewJpegs: readonly string[] = []): Promise<void> {
   if (Capacitor.isNativePlatform()) {
-    await Share.share({ title: ledger.title, text, dialogTitle: ledger.title });
+    const files: string[] = [];
+    for (let index = 0; index < previewJpegs.length; index += 1) {
+      const written = await Filesystem.writeFile({ path: `${safeFilename(ledger.title)}-${index + 1}.jpg`, data: previewJpegs[index], directory: Directory.Cache, recursive: true });
+      files.push(written.uri);
+    }
+    await Share.share({ title: ledger.title, text, ...(files.length ? { files } : {}), dialogTitle: ledger.title });
     return;
   }
   if (navigator.share) { await navigator.share({ title: ledger.title, text }); return; }
