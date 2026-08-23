@@ -142,6 +142,17 @@ export function replaceLedger(state: WalletState, ledger: Ledger): WalletState {
   return Object.freeze({ ...state, ledgers: Object.freeze(state.ledgers.map((candidate) => candidate.id === parsed.id ? parsed : candidate)) });
 }
 
+/** Merge provider-imported expenses into an existing general ledger by stable expense id. */
+export function mergeGeneralLedgers(existing: GeneralLedger, imported: GeneralLedger): GeneralLedger {
+  if (existing.kind !== "general" || imported.kind !== "general" || existing.currency !== imported.currency || existing.title !== imported.title) throw new Error("incompatible ledgers");
+  const byId = new Map(existing.expenses.map((expense) => [expense.id, expense]));
+  for (const expense of imported.expenses) byId.set(expense.id, expense);
+  const merged = Object.freeze({ ...existing, expenses: Object.freeze([...byId.values()]), updatedAt: new Date().toISOString() });
+  const parsed = parseLedger(merged);
+  if (!parsed || parsed.kind !== "general") throw new Error("invalid merged ledger");
+  return parsed;
+}
+
 export function createTravelExpense(input: Omit<TravelExpense, "id" | "shares"> & { participantIds: readonly string[] }): TravelExpense {
   return Object.freeze({ ...input, id: crypto.randomUUID(), shares: splitEvenly(input.minorUnits, input.participantIds) });
 }

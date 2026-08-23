@@ -5,10 +5,10 @@ import { LedgerTabs } from "./components/LedgerTabs";
 import { LedgerMenuSheet, NewLedgerSheet } from "./components/Sheets";
 import { TravelLedgerView } from "./components/TravelLedgerView";
 import { t } from "./lib/i18n";
-import { parseTravelSharePayload } from "./lib/share";
+import { parseLedgerSharePayload } from "./lib/share";
 import { getWalletRepository } from "./lib/storage";
 import { EMPTY_WALLET_STATE, SUPPORTED_LOCALES, type Ledger, type LedgerKind, type Locale, type WalletState } from "./lib/types";
-import { createLedger, MAX_LEDGERS, parseWalletStateStrict, replaceLedger } from "./lib/wallet";
+import { createLedger, MAX_LEDGERS, mergeGeneralLedgers, parseWalletStateStrict, replaceLedger } from "./lib/wallet";
 
 type Toast = { readonly id: number; readonly message: string; readonly tone: "success" | "error" | "info" } | null;
 
@@ -46,7 +46,19 @@ export function App() {
     if (!menuLedger) return; commit((current) => { const ledgers = current.ledgers.filter((ledger) => ledger.id !== menuLedger.id); return Object.freeze({ ...current, ledgers: Object.freeze(ledgers), activeLedgerId: current.activeLedgerId === menuLedger.id ? ledgers[0]?.id ?? null : current.activeLedgerId }); }); setMenuLedger(null); notify(t(locale, "ledgerDeleted"), "success");
   };
   const importLedger = async (file: File) => {
-    try { const ledger = parseTravelSharePayload(await file.text()); if (!ledger || state.ledgers.length >= MAX_LEDGERS) throw new Error("invalid"); commit((current) => Object.freeze({ ...current, activeLedgerId: ledger.id, ledgers: Object.freeze([...current.ledgers, ledger]) })); notify(t(locale, "importedLedger"), "success"); } catch { notify(t(locale, "invalidFile"), "error"); }
+    try {
+      const ledger = parseLedgerSharePayload(await file.text()); if (!ledger) throw new Error("invalid");
+      commit((current) => {
+        const target = ledger.kind === "general" ? current.ledgers.find((candidate) => candidate.kind === "general" && candidate.title === ledger.title && candidate.currency === ledger.currency) : undefined;
+        if (target?.kind === "general" && ledger.kind === "general") {
+          const merged = mergeGeneralLedgers(target, ledger);
+          return Object.freeze({ ...current, activeLedgerId: merged.id, ledgers: Object.freeze(current.ledgers.map((candidate) => candidate.id === merged.id ? merged : candidate)) });
+        }
+        if (current.ledgers.length >= MAX_LEDGERS) throw new Error("limit");
+        return Object.freeze({ ...current, activeLedgerId: ledger.id, ledgers: Object.freeze([...current.ledgers, ledger]) });
+      });
+      notify(t(locale, "importedLedger"), "success");
+    } catch { notify(t(locale, "invalidFile"), "error"); }
   };
 
   if (!loaded) return <main className="mobile-app loading-screen"><WalletCards /><p>{t(locale, "loading")}</p></main>;
