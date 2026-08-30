@@ -1,9 +1,10 @@
 import { currencyDigits } from "./currency";
-import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type TravelExpense, type TravelLedger, type WalletState } from "./types";
+import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type TravelExpense, type TravelLedger, type WalletState } from "./types";
 
 export const MAX_LEDGERS = 50;
 export const MAX_EXPENSES_PER_LEDGER = 5_000;
 export const MAX_PARTICIPANTS = 100;
+export const MAX_AUTOMATION_SOURCES = 20;
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function text(value: unknown, maximum: number): string | null {
@@ -15,6 +16,20 @@ function currency(value: unknown): string | null { const normalized = typeof val
 function date(value: unknown): string | null { return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) ? value : null; }
 function timestamp(value: unknown): string | null { return typeof value === "string" && value.length <= 80 && !Number.isNaN(Date.parse(value)) ? value : null; }
 function positiveMinor(value: unknown): number | null { return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : null; }
+export function isValidPackageName(value: string): boolean { return value.length <= 200 && /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(value); }
+
+export function parseAutomationSource(value: unknown): AutomationSource | null {
+  if (!isRecord(value)) return null;
+  const packageName = text(value.packageName, 200); const displayName = text(value.displayName, 80);
+  return packageName && displayName && isValidPackageName(packageName) ? Object.freeze({ packageName, displayName }) : null;
+}
+
+function parseAutomationSources(value: unknown): readonly AutomationSource[] | null {
+  if (!Array.isArray(value) || value.length > MAX_AUTOMATION_SOURCES) return null;
+  const sources: AutomationSource[] = []; const packages = new Set<string>();
+  for (const candidate of value) { const source = parseAutomationSource(candidate); if (!source || packages.has(source.packageName)) return null; packages.add(source.packageName); sources.push(source); }
+  return Object.freeze(sources);
+}
 
 function parseParticipants(value: unknown): readonly Participant[] | null {
   if (!Array.isArray(value) || value.length > MAX_PARTICIPANTS) return null;
@@ -49,8 +64,9 @@ function parseTravelExpense(value: unknown, participantIds: ReadonlySet<string>,
 function parseGeneralExpense(value: unknown, ledgerCurrency: string): GeneralExpense | null {
   if (!isRecord(value)) return null;
   const id = text(value.id, 100); const description = text(value.description, 500); const expenseDate = date(value.occurredOn); const expenseCurrency = currency(value.currency); const minorUnits = positiveMinor(value.minorUnits);
-  if (!id || !description || !expenseDate || expenseCurrency !== ledgerCurrency || !minorUnits || !GENERAL_CATEGORIES.includes(value.category as never)) return null;
-  return Object.freeze({ id, description, category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate });
+  const automationFingerprint = value.automationFingerprint === undefined ? null : text(value.automationFingerprint, 40);
+  if (!id || !description || !expenseDate || expenseCurrency !== ledgerCurrency || !minorUnits || !GENERAL_CATEGORIES.includes(value.category as never) || (value.automationFingerprint !== undefined && (!automationFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(automationFingerprint)))) return null;
+  return Object.freeze({ id, description, category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate, ...(automationFingerprint ? { automationFingerprint } : {}) });
 }
 
 export function parseLedger(value: unknown): Ledger | null {
@@ -78,14 +94,16 @@ export function parseLedger(value: unknown): Ledger | null {
   }
   if (value.kind === "general") {
     const ledgerCurrency = currency(value.currency);
-    if (!ledgerCurrency) return null;
+    const monthlyLimitMinor = value.monthlyLimitMinor === undefined || value.monthlyLimitMinor === null ? null : positiveMinor(value.monthlyLimitMinor);
+    const automationSources = value.automationSources === undefined ? Object.freeze([]) : parseAutomationSources(value.automationSources);
+    if (!ledgerCurrency || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources) return null;
     const expenses: GeneralExpense[] = [];
     for (const candidate of value.expenses) {
       const expense = parseGeneralExpense(candidate, ledgerCurrency);
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, expenses: Object.freeze(expenses) } satisfies GeneralLedger);
+    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationSources, expenses: Object.freeze(expenses) } satisfies GeneralLedger);
   }
   return null;
 }
@@ -108,7 +126,7 @@ export function createLedger(kind: Ledger["kind"], titleInput: string, selectedC
   const now = new Date().toISOString(); const base = { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now };
   return kind === "travel"
     ? Object.freeze({ ...base, kind, currencies: Object.freeze([selectedCurrency]), defaultCurrency: selectedCurrency, participants: Object.freeze([]), selfParticipantId: null, expenses: Object.freeze([]) })
-    : Object.freeze({ ...base, kind, currency: selectedCurrency, expenses: Object.freeze([]) });
+    : Object.freeze({ ...base, kind, currency: selectedCurrency, monthlyLimitMinor: null, automationSources: Object.freeze([]), expenses: Object.freeze([]) });
 }
 
 export function splitEvenly(minorUnits: number, participantIds: readonly string[]): readonly ExpenseShare[] {
@@ -140,6 +158,38 @@ export function settleTravelExpenses(ledger: TravelLedger): readonly CurrencySet
 export function replaceLedger(state: WalletState, ledger: Ledger): WalletState {
   const parsed = parseLedger(ledger); if (!parsed) throw new Error("invalid ledger");
   return Object.freeze({ ...state, ledgers: Object.freeze(state.ledgers.map((candidate) => candidate.id === parsed.id ? parsed : candidate)) });
+}
+
+function sameGeneralExpense(left: GeneralExpense, right: GeneralExpense): boolean {
+  return left.id === right.id && left.description === right.description && left.category === right.category && left.currency === right.currency && left.minorUnits === right.minorUnits && left.occurredOn === right.occurredOn && left.automationFingerprint === right.automationFingerprint;
+}
+
+function sameAutomationSources(left: readonly AutomationSource[], right: readonly AutomationSource[]): boolean {
+  return left.length === right.length && left.every((source, index) => source.packageName === right[index]?.packageName && source.displayName === right[index]?.displayName);
+}
+
+/** Apply a user edit made from `base` onto the latest ledger without dropping
+ * card expenses that were durably inserted while the edit sheet was open. */
+export function mergeGeneralLedgerMutation(base: GeneralLedger, desired: GeneralLedger, latest: GeneralLedger): GeneralLedger {
+  if (base.id !== desired.id || desired.id !== latest.id) return desired;
+  const baseById = new Map(base.expenses.map((expense) => [expense.id, expense]));
+  const desiredById = new Map(desired.expenses.map((expense) => [expense.id, expense]));
+  const latestIds = new Set(latest.expenses.map((expense) => expense.id));
+  const expenses: GeneralExpense[] = [];
+  for (const current of latest.expenses) {
+    const before = baseById.get(current.id); const requested = desiredById.get(current.id);
+    if (before && !requested) continue;
+    expenses.push(before && requested && !sameGeneralExpense(before, requested) ? requested : current);
+  }
+  for (const requested of desired.expenses) if (!baseById.has(requested.id) && !latestIds.has(requested.id)) expenses.push(requested);
+  return Object.freeze({
+    ...latest,
+    title: desired.title !== base.title ? desired.title : latest.title,
+    monthlyLimitMinor: desired.monthlyLimitMinor !== base.monthlyLimitMinor ? desired.monthlyLimitMinor : latest.monthlyLimitMinor,
+    automationSources: sameAutomationSources(desired.automationSources, base.automationSources) ? latest.automationSources : desired.automationSources,
+    expenses: Object.freeze(expenses),
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 /** Merge provider-imported expenses into an existing general ledger by stable expense id. */

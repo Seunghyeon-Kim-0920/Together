@@ -10,10 +10,15 @@ const SHARE_VERSION = 1;
 const MAX_IMPORT_BYTES = 2_000_000;
 
 export function createLedgerSharePayload(ledger: Ledger): string {
-  // A general ledger has no participant identity to redact. Travel ledgers
-  // still omit the local "self" selection when they are shared.
-  const shareSafe = ledger.kind === "travel" ? { ...ledger, selfParticipantId: null } : ledger;
+  // Travel shares omit local identity. General shares omit the local budget
+  // and notification-source allowlist because both are private settings.
+  const shareSafe = ledger.kind === "travel" ? { ...ledger, selfParticipantId: null } : omitGeneralPrivacySettings(ledger);
   return JSON.stringify({ format: "wallet-diary", version: SHARE_VERSION, ledger: shareSafe });
+}
+
+function omitGeneralPrivacySettings(ledger: Extract<Ledger, { kind: "general" }>) {
+  const expenses = ledger.expenses.map((expense) => ({ id: expense.id, description: expense.description, category: expense.category, currency: expense.currency, minorUnits: expense.minorUnits, occurredOn: expense.occurredOn }));
+  return { id: ledger.id, title: ledger.title, kind: ledger.kind, createdAt: ledger.createdAt, updatedAt: ledger.updatedAt, currency: ledger.currency, expenses };
 }
 
 export function createTravelSharePayload(ledger: TravelLedger): string {

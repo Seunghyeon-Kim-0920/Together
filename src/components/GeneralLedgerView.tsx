@@ -1,16 +1,19 @@
 import { ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
+import type { NativeCardCandidate } from "../lib/cardAutomation";
 import { currencyDigits, formatMoney, parseMinorUnits } from "../lib/currency";
 import { generalCategoryLabel, t } from "../lib/i18n";
 import { merchantDisplayName, preserveImportedMerchantDescription } from "../lib/merchant";
+import type { CardAutomationStatus } from "../lib/nativeCardAutomation";
 import { addMonths, annualAverageComparison, categoryTotals, monthKey, monthlyTotals, previousMonthComparison, yearlyTotals } from "../lib/statistics";
-import { GENERAL_CATEGORIES, type GeneralCategory, type GeneralExpense, type GeneralLedger, type Locale } from "../lib/types";
+import { GENERAL_CATEGORIES, type AutomationSource, type GeneralCategory, type GeneralExpense, type GeneralLedger, type Locale } from "../lib/types";
 import { defaultDate, newestExpensesFirst, replaceExpenseById } from "../lib/wallet";
+import { GeneralLedgerAutomation } from "./GeneralLedgerAutomation";
 import { SheetFrame } from "./Sheets";
 
 type Notify = (message: string, tone?: "success" | "error" | "info") => void;
 
-export function GeneralLedgerView({ ledger, locale, onChange, onNotify }: { ledger: GeneralLedger; locale: Locale; onChange: (ledger: GeneralLedger) => void; onNotify: Notify }) {
+export function GeneralLedgerView({ ledger, locale, automationStatus, pendingAutomation, automationBusy, onAutomationRefresh, onOpenAutomationSettings, onRequestAutomationAlertPermission, onRegisterAutomationSource, onRemoveAutomationSource, onConfirmAutomationExpense, onDismissAutomationCandidate, onChange, onNotify }: { ledger: GeneralLedger; locale: Locale; automationStatus: CardAutomationStatus; pendingAutomation: readonly NativeCardCandidate[]; automationBusy: boolean; onAutomationRefresh: () => void; onOpenAutomationSettings: () => void; onRequestAutomationAlertPermission: () => void; onRegisterAutomationSource: (source: AutomationSource) => void; onRemoveAutomationSource: (packageName: string) => void; onConfirmAutomationExpense: (candidate: NativeCardCandidate) => void; onDismissAutomationCandidate: (candidate: NativeCardCandidate) => void; onChange: (ledger: GeneralLedger) => void; onNotify: Notify }) {
   const [selectedMonth, setSelectedMonth] = useState(monthKey(new Date()));
   const [category, setCategory] = useState<GeneralCategory | "all">("all");
   const [formOpen, setFormOpen] = useState(false);
@@ -44,6 +47,7 @@ export function GeneralLedgerView({ ledger, locale, onChange, onNotify }: { ledg
       <ComparisonCard label={t(locale, "comparedToPrevious")} difference={comparison.difference} currency={ledger.currency} locale={locale} copy={comparisonCopy(comparison.percent)} />
       <ComparisonCard label={t(locale, "comparedToAnnualAverage")} difference={averageComparison.difference} currency={ledger.currency} locale={locale} copy={comparisonCopy(averageComparison.percent)} />
     </section>
+    <GeneralLedgerAutomation ledger={ledger} locale={locale} selectedMonth={selectedMonth} status={automationStatus} pending={pendingAutomation} busy={automationBusy} onRefresh={onAutomationRefresh} onOpenAccessSettings={onOpenAutomationSettings} onRequestAlertPermission={onRequestAutomationAlertPermission} onRegisterSource={onRegisterAutomationSource} onRemoveSource={onRemoveAutomationSource} onConfirm={onConfirmAutomationExpense} onDismiss={onDismissAutomationCandidate} onChange={onChange} onNotify={onNotify} />
     <section className="mobile-panel category-breakdown"><div className="section-heading"><h3>{t(locale, "categorySpending")}</h3><label className="stats-filter"><span>{t(locale, "statsFilter")}</span><select value={category} onChange={(event) => setCategory(event.target.value as GeneralCategory | "all")}><option value="all">{t(locale, "allCategories")}</option>{GENERAL_CATEGORIES.map((code) => <option value={code} key={code}>{generalCategoryLabel(locale, code)}</option>)}</select></label></div>{monthCategories.size ? <CategoryBars totals={monthCategories} grandTotal={monthCategoryTotal} currency={ledger.currency} locale={locale} /> : <p className="ledger-empty">{t(locale, "noExpenses")}</p>}</section>
     <section className="mobile-panel annual-chart">
       <div className="section-heading"><h3>{t(locale, "monthlySpending")}</h3><label className="year-select"><span className="sr-only">{t(locale, "selectYear")}</span><select value={year} onChange={(event) => setSelectedMonth(`${event.target.value}-${String(month).padStart(2, "0")}`)}>{allYears.map((value) => <option value={value} key={value}>{value}</option>)}</select></label></div>
@@ -75,7 +79,7 @@ function GeneralExpenseSheet({ ledger, locale, expense, onClose, onSave, onNotif
     const minorUnits = parseMinorUnits(amount, ledger.currency); const editedDescription = description.trim();
     if (!editedDescription || !occurredOn) return onNotify(t(locale, "requiredFields"), "error");
     if (!minorUnits) return onNotify(t(locale, "amountInvalid"), "error");
-    onSave(Object.freeze({ id: expense?.id ?? crypto.randomUUID(), description: expense ? preserveImportedMerchantDescription(expense.description, editedDescription, expense.id) : editedDescription, category, currency: ledger.currency, minorUnits, occurredOn }));
+    onSave(Object.freeze({ id: expense?.id ?? crypto.randomUUID(), description: expense ? preserveImportedMerchantDescription(expense.description, editedDescription, expense.id) : editedDescription, category, currency: ledger.currency, minorUnits, occurredOn, ...(expense?.automationFingerprint ? { automationFingerprint: expense.automationFingerprint } : {}) }));
   };
   return <SheetFrame title={t(locale, expense ? "editExpense" : "addExpense")} locale={locale} onClose={onClose}><div className="expense-form-grid"><label>{t(locale, "description")}<input value={description} maxLength={500} onChange={(event) => setDescription(event.target.value)} autoFocus /></label><label>{t(locale, "amount")}<div className="amount-field"><input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /><span>{ledger.currency}</span></div></label><label>{t(locale, "category")}<select value={category} onChange={(event) => setCategory(event.target.value as GeneralCategory)}>{GENERAL_CATEGORIES.map((code) => <option value={code} key={code}>{generalCategoryLabel(locale, code)}</option>)}</select></label><label>{t(locale, "date")}<input type="date" value={occurredOn} onChange={(event) => setOccurredOn(event.target.value)} /></label><button className="primary-button wide" type="button" onClick={submit}>{t(locale, expense ? "saveChanges" : "addExpense")}</button></div></SheetFrame>;
 }

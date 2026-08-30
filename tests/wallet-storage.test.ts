@@ -58,6 +58,37 @@ test("general ledger share files import as a new ledger with expenses intact", (
   assert.equal(Number.isNaN(Date.parse(imported?.createdAt ?? "")), false);
 });
 
+test("legacy general ledgers migrate private automation settings to safe defaults", () => {
+  const ledger = createLedger("general", "Legacy", "EUR");
+  const legacy = { id: ledger.id, title: ledger.title, kind: ledger.kind, createdAt: ledger.createdAt, updatedAt: ledger.updatedAt, currency: ledger.currency, expenses: [] };
+  const parsed = parseLedgerSharePayload(JSON.stringify({ format: "wallet-diary", version: 1, ledger: legacy }));
+  assert.equal(parsed?.kind, "general");
+  if (parsed?.kind !== "general") throw new Error("expected general ledger");
+  assert.equal(parsed.monthlyLimitMinor, null);
+  assert.deepEqual(parsed.automationSources, []);
+});
+
+test("invalid monthly limits and notification-source settings are rejected", () => {
+  const ledger = createLedger("general", "Settings", "EUR");
+  const state = { version: 2, locale: "ko", activeLedgerId: ledger.id, ledgers: [ledger] };
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, monthlyLimitMinor: 0 }] }), null);
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationSources: [{ packageName: "not a package", displayName: "Bad" }] }] }), null);
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationSources: [{ packageName: "com.example.card", displayName: "One" }, { packageName: "com.example.card", displayName: "Two" }] }] }), null);
+});
+
+test("general ledger shares omit monthly limits, sources, and private automation fingerprints", () => {
+  const expense = Object.freeze({ id: "card-auto-private", description: "Lidl", category: "food" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-30", automationFingerprint: "card-origin-0123456789abcdef" });
+  const ledger = Object.freeze({ ...createLedger("general", "Private", "EUR"), monthlyLimitMinor: 50_000, automationSources: Object.freeze([{ packageName: "com.example.card", displayName: "Example Card" }]), expenses: Object.freeze([expense]) });
+  const payload = createLedgerSharePayload(ledger);
+  assert.equal(payload.includes("monthlyLimitMinor"), false);
+  assert.equal(payload.includes("automationSources"), false);
+  assert.equal(payload.includes("com.example.card"), false);
+  assert.equal(payload.includes("automationFingerprint"), false);
+  assert.equal(payload.includes("card-origin-"), false);
+  const imported = parseLedgerSharePayload(payload);
+  assert.equal(imported?.kind === "general" ? imported.monthlyLimitMinor : undefined, null);
+});
+
 test("provider imports merge into the existing ledger idempotently", () => {
   const existing = Object.freeze({ ...createLedger("general", "생활", "EUR"), expenses: Object.freeze([{ id: "stable-1", description: "Old", category: "food" as const, currency: "EUR", minorUnits: 100, occurredOn: "2025-08-01" }]) });
   const imported = Object.freeze({ ...createLedger("general", "생활", "EUR"), expenses: Object.freeze([{ id: "stable-1", description: "Corrected", category: "food" as const, currency: "EUR", minorUnits: 125, occurredOn: "2025-08-01" }, { id: "stable-2", description: "New", category: "transport" as const, currency: "EUR", minorUnits: 200, occurredOn: "2025-08-02" }]) });

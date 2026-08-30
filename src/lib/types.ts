@@ -35,6 +35,13 @@ export interface GeneralExpense {
   readonly currency: string;
   readonly minorUnits: number;
   readonly occurredOn: string;
+  /** Immutable, private deduplication marker for card-notification imports. */
+  readonly automationFingerprint?: string;
+}
+
+export interface AutomationSource {
+  readonly packageName: string;
+  readonly displayName: string;
 }
 
 interface LedgerBase {
@@ -56,6 +63,8 @@ export interface TravelLedger extends LedgerBase {
 export interface GeneralLedger extends LedgerBase {
   readonly kind: "general";
   readonly currency: string;
+  readonly monthlyLimitMinor: number | null;
+  readonly automationSources: readonly AutomationSource[];
   readonly expenses: readonly GeneralExpense[];
 }
 
