@@ -35,4 +35,14 @@ public class CardAutomationStoreTest {
         JSONArray exactReversalAck = new JSONArray().put(new JSONObject().put("id", "stable-id").put("queueToken", "reversal-token"));
         assertEquals(0, CardAutomationStore.removeAcknowledged(remaining, exactReversalAck).length());
     }
+
+    @Test
+    public void updateDropsCandidatesCreatedByTheOldAmountParser() throws Exception {
+        JSONArray stored = new JSONArray()
+            .put(new JSONObject().put("id", "legacy-balance"))
+            .put(new JSONObject().put("id", "current-payment").put("parserVersion", PaymentNotificationParser.PARSER_VERSION));
+        JSONArray current = CardAutomationStore.retainCurrentParserEvents(stored);
+        assertEquals(1, current.length());
+        assertEquals("current-payment", current.getJSONObject(0).getString("id"));
+    }
 }

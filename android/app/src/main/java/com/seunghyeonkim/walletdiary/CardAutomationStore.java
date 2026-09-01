@@ -116,10 +116,22 @@ final class CardAutomationStore {
 
     static synchronized JSONArray pending(Context context) {
         try {
-            return new JSONArray(preferences(context).getString(KEY_PENDING, "[]"));
+            JSONArray stored = new JSONArray(preferences(context).getString(KEY_PENDING, "[]"));
+            JSONArray current = retainCurrentParserEvents(stored);
+            if (current.length() != stored.length()) preferences(context).edit().putString(KEY_PENDING, current.toString()).commit();
+            return current;
         } catch (JSONException ignored) {
             return new JSONArray();
         }
+    }
+
+    static JSONArray retainCurrentParserEvents(JSONArray events) {
+        JSONArray current = new JSONArray();
+        for (int index = 0; index < events.length(); index++) {
+            JSONObject item = events.optJSONObject(index);
+            if (item != null && item.optInt("parserVersion", 0) == PaymentNotificationParser.PARSER_VERSION) current.put(item);
+        }
+        return current;
     }
 
     static synchronized void acknowledge(Context context, JSONArray events) {

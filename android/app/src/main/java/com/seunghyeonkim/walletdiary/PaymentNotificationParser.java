@@ -22,14 +22,25 @@ import org.json.JSONObject;
 
 final class PaymentNotificationParser {
 
+    static final int PARSER_VERSION = 2;
+
     private static final Pattern ALWAYS_IGNORE = Pattern.compile(
         "(?iu)(\\b(?:declined|failed|rejected|verification|security code|one[ -]?time|otp|pin|pending|processing)\\b|en attente|refus[ée]|[ée]chou[ée]|abgelehnt|fehlgeschlagen|ausstehend|rechazad[oa]|fallid[oa]|pendiente|保留|失败|失敗|拒绝|拒絕|待处理|거절|실패|처리 ?중|승인 ?대기|인증|보안 ?코드|일회용|승인번호|معلّق|مرفوض|فشل|अस्वीकृत)"
     );
     private static final Pattern ALWAYS_NON_PURCHASE = Pattern.compile(
         "(?iu)(\\b(?:cashback|top[ -]?up|transfer|deposit|cash withdrawal|withdrawal|credit(?![-\\s]+card\\b))\\b|virement|rechargement|retrait|versement|überweisung|transferencia|transferência|depósito|prelievo|bonifico|入金|振込|입금|충전|송금|출금|캐시백|적립|تحويل|إيداع)"
     );
-    private static final Pattern NON_EXPENSE = Pattern.compile(
-        "(?iu)(\\b(?:credited|account credit|available balance|current balance|statement balance)\\b|cr[ée]dit re[çc]u|solde disponible|verfügbarer betrag|saldo disponible|利用可能残高|可用余额|可用餘額|이용 가능 잔액)"
+    private static final Pattern BALANCE_BEFORE_AMOUNT = Pattern.compile(
+        "(?iu)(?:(?<!new\\s)\\bbalance\\b|\\b(?:available|current|remaining|account|statement|ending|closing|updated)\\s+balance\\b|\\bbalance\\s+(?:after(?:\\s+(?:payment|purchase|transaction))?|available|remaining|left|now|of\\s+(?:account|card))\\b|\\bavailable\\s+(?:to\\s+spend|funds|credit)\\b|\\bcredit\\s+(?:available|remaining)\\b|\\b(?:nouveau\\s+)?solde(?:\\s+(?:disponible|restant|actuel|du\\s+compte|apr[èe]s(?:\\s+(?:paiement|achat|op[ée]ration))?))?\\b|\\b(?:neuer\\s+)?(?:kontostand|saldo)|\\b(?:verf[üu]gbarer\\s+betrag|verf[üu]gbares\\s+guthaben|restguthaben)\\b|\\b(?:nuevo|novo)\\s+saldo\\b|\\bsaldo(?:\\s+(?:disponible|restante|actual|atual|da\\s+conta|de\\s+la\\s+cuenta|residuo|del\\s+conto))?\\b|(?:결제\\s*후\\s*|거래\\s*후\\s*)?(?:남은\\s*|현재\\s*|계좌\\s*|가용\\s*|출금\\s*가능\\s*|이용\\s*가능\\s*|사용\\s*가능\\s*)?잔액|(?:이용|사용|출금)\\s*가능\\s*(?:금액|한도)|(?:利用可能|口座|現在)?残高|利用可能額|(?:可用|账户|賬戶|当前|當前|剩余|剩餘)?(?:余额|餘額)|可用(?:金额|金額)|الرصيد)(?:\\s*(?:is|are|est|reste|ist|es|[éeè]|now|현재|입니다|은|는|:|：|=|[-–—]))*$"
+    );
+    private static final Pattern NEW_BALANCE_BEFORE_AMOUNT = Pattern.compile(
+        "(?iu)\\bnew\\s+balance(?:\\s*(?:is|now|:|：|=|[-–—]))*$"
+    );
+    private static final Pattern BALANCE_AFTER_AMOUNT = Pattern.compile(
+        "(?iu)^\\s*(?:(?<!new\\s)\\bbalance\\b|\\b(?:available|current|remaining|account|statement|ending|closing)\\s+balance\\b|\\bbalance\\s+(?:available|remaining|left|after(?:\\s+(?:payment|purchase|transaction))?)\\b|\\b(?:solde|saldo|kontostand|guthaben)(?:\\s+(?:disponible|restant|restante|actual|atual|residuo))?\\b|(?:남은\\s*|결제\\s*후\\s*|계좌\\s*|가용\\s*)?잔액|残高|余额|餘額|الرصيد)\\b\\s*$"
+    );
+    private static final Pattern DEFINITIVE_BALANCE_TITLE = Pattern.compile(
+        "(?iu)^(?:(?:available|current|remaining|account|statement|ending|closing|updated)\\s+balance|balance\\s+(?:update|updated|available|remaining|after\\s+(?:payment|purchase|transaction))|(?:nouveau\\s+)?solde\\s+(?:disponible|restant|actuel)|kontostand|saldo\\s+(?:disponible|restante|actual|atual)|(?:결제\\s*후\\s*|남은\\s*|현재\\s*|계좌\\s*)잔액|利用可能残高|可用余额|可用餘額)$"
     );
     private static final Pattern MARKETING = Pattern.compile(
         "(?iu)(\\b(?:weekend offer|special offer|promotion|promo code|save|discount|coupon)\\b|offre|promotion|remise|économisez|angebot|rabatt|oferta|descuento|promoção|desconto|割引|优惠|優惠|할인|쿠폰|프로모션)"
@@ -43,12 +54,15 @@ final class PaymentNotificationParser {
     private static final Pattern PAYMENT_SIGNAL = Pattern.compile(
         "(?iu)(\\b(?:card payment|payment|purchase|paid|spent|card used|card charged|debit card|point of sale|pos transaction|approved|completed)\\b|paiement|achat|carte utilis[ée]e?|dépens[ée]|accept[ée]|zahlung|kartenzahlung|bezahlt|einkauf|compra|pago|pagamento|acquisto|carta usata|결제|카드 ?승인|사용 ?승인|체크카드|신용카드|이용 ?내역|支払|購入|カード利用|決済|消费|消費|付款|刷卡|交易成功|شراء|دفعة|تم الدفع|भुगतान|खरीद|pembayaran|pembelian|thanh toán|giao dịch thẻ|ชำระเงิน|ซื้อ)"
     );
-    private static final String CURRENCY_TOKEN = "(?:[A-Z]{3}|US\\$|CA\\$|AU\\$|NZ\\$|HK\\$|S\\$|R\\$|NT\\$|€|£|₩|¥|￥|\\$|₹|₽|₺|₫|฿|₱|₪|₦|₴|₵|₾|₸|₭|₮|؋|₲|₡|zł|Kč|Ft)";
+    // Bound the whole match so a code cannot be cut out of an ordinary word
+    // such as "carte" (RTE) or "EUROPE" (EUR), while still accepting the
+    // lowercase ISO codes used by some banks.
+    private static final String CURRENCY_TOKEN = "(?iu:[A-Z]{3}|US\\$|CA\\$|AU\\$|NZ\\$|HK\\$|S\\$|R\\$|NT\\$|€|£|₩|¥|￥|\\$|₹|₽|₺|₫|฿|₱|₪|₦|₴|₵|₾|₸|₭|₮|؋|₲|₡|zł|Kč|Ft)";
     private static final Pattern CURRENCY_BEFORE = Pattern.compile(
-        "(?iu)([+−-]?)\\s*(" + CURRENCY_TOKEN + ")\\s*([+−-]?\\(?\\d[\\d\\s\\u00a0\\u202f'.,]*\\)?)"
+        "(?u)(?<![\\p{L}\\p{N}])([+−-]?)[\\p{Zs}\\t]*(" + CURRENCY_TOKEN + ")(?!\\p{L})[\\p{Zs}\\t]*([+−-]?\\(?\\d[\\d\\p{Zs}\\t\\u00a0\\u202f'.,]*\\)?)"
     );
     private static final Pattern CURRENCY_AFTER = Pattern.compile(
-        "(?iu)([+−-]?\\(?\\d[\\d\\s\\u00a0\\u202f'.,]*\\)?)\\s*(" + CURRENCY_TOKEN + ")"
+        "(?u)(?<![\\p{L}\\p{N}])([+−-]?\\(?\\d[\\d\\p{Zs}\\t\\u00a0\\u202f'.,]*\\)?)[\\p{Zs}\\t]*(" + CURRENCY_TOKEN + ")(?![\\p{L}\\p{N}])"
     );
     private static final Pattern MERCHANT_AFTER = Pattern.compile(
         "(?iu)(?:\\bat\\b|\\bchez\\b|\\bmerchant\\b|\\bcommer[çc]ant\\b|\\b(?:paid|payment)\\s+to\\b|\\b(?:pagado|pago)\\s+(?:a|en)\\b|\\b(?:pago|pagamento)\\s+(?:a|em)\\b|\\bbei\\b|\\bpresso\\b|\\besercente\\b|\\bcomercio\\b|\\bestablecimiento\\b|가맹점|사용처|에서|店舗|加盟店|商户|商戶|商家|لدى|متجر)\\s*[:：-]?\\s*([^\\n;]{2,100})"
@@ -68,6 +82,9 @@ final class PaymentNotificationParser {
     );
     private static final Pattern TRAILING_PURCHASE_STATUS = Pattern.compile(
         "(?iu)\\b(?:(?:has\\s+been|was|is|a\\s+[ée]t[ée]|wurde|ha\\s+sido|foi|[èe]\\s+stato)\\s+)?(?:approved|completed|accepted|authori[sz]ed|approuv[ée]|accept[ée]|autoris[ée]|genehmigt|abgeschlossen|aprobada?|completad[oa]|aprovad[oa]|conclu[íi]d[oa]|approvat[oa]|completat[oa])\\b.*$"
+    );
+    private static final Pattern TRAILING_BALANCE_FIELD = Pattern.compile(
+        "(?iu)(?:[.;|•]|\\s[/｜]\\s|\\s[-–—]\\s)\\s*(?:(?:available|current|remaining|account|statement|ending|closing|updated|new)\\s+balance|balance(?:\\s+(?:after(?:\\s+(?:payment|purchase|transaction))?|available|remaining|left|now))?|(?:nouveau\\s+)?solde(?:\\s+(?:disponible|restant|actuel))?|(?:neuer\\s+)?(?:kontostand|saldo)|saldo(?:\\s+(?:disponible|restante|actual|atual))?|(?:결제\\s*후\\s*|거래\\s*후\\s*)?(?:남은\\s*|현재\\s*|계좌\\s*|가용\\s*|출금\\s*가능\\s*|이용\\s*가능\\s*|사용\\s*가능\\s*)?잔액|(?:利用可能|口座|現在)?残高|(?:可用|账户|賬戶|当前|當前|剩余|剩餘)?(?:余额|餘額)|الرصيد)\\b.*$"
     );
     private static final Set<String> DOLLAR_CURRENCIES = new HashSet<>(Arrays.asList("USD", "CAD", "AUD", "NZD", "SGD", "HKD", "TWD"));
 
@@ -94,12 +111,16 @@ final class PaymentNotificationParser {
         if (reversal && NON_TERMINAL_REVERSAL.matcher(combined).find()) return null;
         // Refund alerts often also say that money was "credited". A reversal
         // signal must therefore take precedence over the generic income filter.
-        if (!reversal && NON_EXPENSE.matcher(combined).find()) return null;
         boolean paymentSignal = PAYMENT_SIGNAL.matcher(combined).find();
+        // Balance fields are classified per amount below. A global rejection
+        // here would also discard valid signed-debit alerts from apps such as
+        // Swile when the same notification happens to include a balance.
         if (!reversal && !paymentSignal && MARKETING.matcher(combined).find()) return null;
 
-        AmountMatch amount = findSingleAmount(combined, currencyHint, reversal);
+        int bodyStart = body.isEmpty() || !combined.endsWith(body) ? 0 : combined.length() - body.length();
+        AmountMatch amount = findSingleAmount(combined, currencyHint, reversal, bodyStart);
         if (amount == null || amount.minorUnits <= 0) return null;
+        if (!reversal && DEFINITIVE_BALANCE_TITLE.matcher(safeTitle).matches()) return null;
         // Trusted apps may use a merchant title with only a signed debit in the
         // body (for example Swile). Positive amounts without a payment signal
         // are balance/offer-shaped and must never become automatic expenses.
@@ -130,13 +151,14 @@ final class PaymentNotificationParser {
             result.put("confidence", confidence);
             result.put("eventType", eventType);
             result.put("manualOnly", manualOnly);
+            result.put("parserVersion", PARSER_VERSION);
             return result;
         } catch (JSONException ignored) {
             return null;
         }
     }
 
-    private static AmountMatch findSingleAmount(String value, String currencyHint, boolean allowPlus) {
+    private static AmountMatch findSingleAmount(String value, String currencyHint, boolean allowPlus, int bodyStart) {
         AmountMatch first = null;
         Set<String> distinct = new HashSet<>();
         Matcher before = CURRENCY_BEFORE.matcher(value);
@@ -144,7 +166,7 @@ final class PaymentNotificationParser {
             String leadingSign = before.group(1);
             String number = before.group(3);
             AmountMatch candidate = parseAmount(leadingSign.isEmpty() ? number : leadingSign + number, normalizeCurrency(before.group(2), currencyHint), before.group(0), allowPlus);
-            if (candidate != null) {
+            if (candidate != null && !isBalanceAmount(value, before.start(), before.end(), bodyStart)) {
                 if (first == null) first = candidate;
                 distinct.add(candidate.currency + "|" + candidate.minorUnits + "|" + candidate.explicitDebit);
             }
@@ -152,12 +174,37 @@ final class PaymentNotificationParser {
         Matcher after = CURRENCY_AFTER.matcher(value);
         while (after.find()) {
             AmountMatch candidate = parseAmount(after.group(1), normalizeCurrency(after.group(2), currencyHint), after.group(0), allowPlus);
-            if (candidate != null) {
+            if (candidate != null && !isBalanceAmount(value, after.start(), after.end(), bodyStart)) {
                 if (first == null) first = candidate;
                 distinct.add(candidate.currency + "|" + candidate.minorUnits + "|" + candidate.explicitDebit);
             }
         }
         return distinct.size() == 1 ? first : null;
+    }
+
+    private static boolean isBalanceAmount(String value, int start, int end, int bodyStart) {
+        int contextFloor = start >= bodyStart ? bodyStart : 0;
+        int beforeStart = Math.max(contextFloor, start - 180);
+        String before = value.substring(beforeStart, start);
+        int boundary = Math.max(before.lastIndexOf(';'), Math.max(before.lastIndexOf('|'), before.lastIndexOf('•')));
+        if (boundary >= 0) before = before.substring(boundary + 1);
+        before = before.replaceFirst("\\s+$", "");
+        String after = value.substring(end, Math.min(value.length(), end + 120));
+        int afterBoundary = firstBoundary(after);
+        if (afterBoundary >= 0) after = after.substring(0, afterBoundary);
+        if (BALANCE_BEFORE_AMOUNT.matcher(before).find()
+            || NEW_BALANCE_BEFORE_AMOUNT.matcher(before).find()
+            || BALANCE_AFTER_AMOUNT.matcher(after).find()) return true;
+        return false;
+    }
+
+    private static int firstBoundary(String value) {
+        int result = -1;
+        for (char marker : new char[] {';', '|', '•'}) {
+            int index = value.indexOf(marker);
+            if (index >= 0 && (result < 0 || index < result)) result = index;
+        }
+        return result;
     }
 
     private static AmountMatch parseAmount(String rawNumber, String currency, String raw, boolean allowPlus) {
@@ -168,6 +215,9 @@ final class PaymentNotificationParser {
         normalized = normalized.replace("\u00a0", "").replace("\u202f", "").replace(" ", "").replace("'", "");
         if (normalized.startsWith("+") && !allowPlus) return null;
         normalized = normalized.replace("+", "").replace("-", "");
+        // Currency-before matches may include sentence punctuation immediately
+        // after the amount (for example "€12.34."). It is not a decimal mark.
+        normalized = normalized.replaceFirst("[.,]+$", "");
         if (!normalized.matches("\\d[\\d.,]*")) return null;
 
         int digits = currencyDigits(currency);
@@ -213,12 +263,12 @@ final class PaymentNotificationParser {
         result = SENSITIVE_TRAILING_FIELD.matcher(result).replaceAll(" ");
         result = TRAILING_REVERSAL_STATUS.matcher(result).replaceAll(" ");
         result = TRAILING_PURCHASE_STATUS.matcher(result).replaceAll(" ");
+        result = TRAILING_BALANCE_FIELD.matcher(result).replaceAll(" ");
         result = CURRENCY_BEFORE.matcher(result).replaceAll(" ");
         result = CURRENCY_AFTER.matcher(result).replaceAll(" ");
         result = result.replaceAll("(?iu)\\b(card|payment|purchase|transaction|approved|paid|paiement|carte|achat|accept[ée]|zahlung|bezahlt|compra|pago|pagamento|결제|카드|승인|완료)\\b", " ");
-        result = result.replaceAll("(?iu)\\b(balance|solde|account|compte|card ending|carte se terminant|saldo|kontostand|잔액|계좌|카드번호)\\b.*$", " ");
         result = result.replaceAll("(?u)\\b\\d{4,}\\b", " ");
-        result = result.replaceAll("\\s+", " ").replaceAll("^[·•|:：,;—–-]+|[·•|:：,;—–-]+$", "").trim();
+        result = result.replaceAll("\\s+", " ").replaceAll("^[.·•|:：,;—–-]+|[.·•|:：,;—–-]+$", "").trim();
         return result.length() > 100 ? result.substring(0, 100).trim() : result;
     }
 
@@ -226,6 +276,17 @@ final class PaymentNotificationParser {
         if (token == null) return null;
         String value = token.trim();
         String normalizedHint = hint == null ? "" : hint.trim().toUpperCase(Locale.ROOT);
+        if (value.equalsIgnoreCase("zł")) return "PLN";
+        if (value.equalsIgnoreCase("Kč")) return "CZK";
+        if (value.equalsIgnoreCase("Ft")) return "HUF";
+        if (value.equalsIgnoreCase("US$")) return "USD";
+        if (value.equalsIgnoreCase("CA$")) return "CAD";
+        if (value.equalsIgnoreCase("AU$")) return "AUD";
+        if (value.equalsIgnoreCase("NZ$")) return "NZD";
+        if (value.equalsIgnoreCase("HK$")) return "HKD";
+        if (value.equalsIgnoreCase("S$")) return "SGD";
+        if (value.equalsIgnoreCase("R$")) return "BRL";
+        if (value.equalsIgnoreCase("NT$")) return "TWD";
         switch (value) {
             case "€": return "EUR";
             case "£": return "GBP";
@@ -247,17 +308,6 @@ final class PaymentNotificationParser {
             case "؋": return "AFN";
             case "₲": return "PYG";
             case "₡": return "CRC";
-            case "zł": return "PLN";
-            case "Kč": return "CZK";
-            case "Ft": return "HUF";
-            case "US$": return "USD";
-            case "CA$": return "CAD";
-            case "AU$": return "AUD";
-            case "NZ$": return "NZD";
-            case "HK$": return "HKD";
-            case "S$": return "SGD";
-            case "R$": return "BRL";
-            case "NT$": return "TWD";
             case "$": return DOLLAR_CURRENCIES.contains(normalizedHint) ? normalizedHint : null;
             case "¥":
             case "￥": return "JPY".equals(normalizedHint) || "CNY".equals(normalizedHint) ? normalizedHint : null;
