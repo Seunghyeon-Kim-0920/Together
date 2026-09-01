@@ -65,8 +65,8 @@ public final class CardAutomationPlugin extends Plugin {
 
     @PluginMethod
     public void acknowledgeEvents(PluginCall call) {
-        JSArray ids = call.getArray("ids", new JSArray());
-        CardAutomationStore.acknowledge(getContext(), ids);
+        JSArray events = call.getArray("events", new JSArray());
+        CardAutomationStore.acknowledge(getContext(), events);
         call.resolve();
     }
 
@@ -74,10 +74,12 @@ public final class CardAutomationPlugin extends Plugin {
     public void configure(PluginCall call) {
         JSONArray ledgers = call.getArray("ledgers", new JSArray());
         JSONArray sources = call.getArray("sources", new JSArray());
+        boolean detectAllApps = Boolean.TRUE.equals(call.getBoolean("detectAllApps", false));
         JSONObject configuration = new JSONObject();
         try {
             configuration.put("ledgers", ledgers);
             configuration.put("sources", sources);
+            configuration.put("detectAllApps", detectAllApps);
         } catch (JSONException exception) {
             call.reject("Invalid automation configuration.", exception);
             return;

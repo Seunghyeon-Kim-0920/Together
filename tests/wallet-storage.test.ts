@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createLedgerSharePayload, createTravelSharePayload, createTravelShareText, parseLedgerSharePayload, parseTravelSharePayload, safeFilename } from "../src/lib/share";
 import { EMPTY_WALLET_STATE, type TravelLedger } from "../src/lib/types";
-import { createLedger, createTravelExpense, mergeGeneralLedgers, parseWalletState, parseWalletStateStrict } from "../src/lib/wallet";
+import { createLedger, createTravelExpense, MAX_AUTOMATION_SOURCES, mergeGeneralLedgers, parseWalletState, parseWalletStateStrict } from "../src/lib/wallet";
 
 test("a new installation starts with no ledgers, people, or expenses", () => {
   assert.equal(EMPTY_WALLET_STATE.activeLedgerId, null);
@@ -52,7 +52,10 @@ test("general ledger share files import as a new ledger with expenses intact", (
   const imported = parseLedgerSharePayload(createLedgerSharePayload(ledger));
   assert.equal(imported?.kind, "general");
   assert.equal(imported?.title, ledger.title);
-  assert.deepEqual(imported?.expenses, ledger.expenses);
+  assert.equal(imported?.expenses.length, 1);
+  assert.equal(imported?.expenses[0].description, ledger.expenses[0].description);
+  assert.notEqual(imported?.expenses[0].id, ledger.expenses[0].id);
+  assert.match(imported?.expenses[0].id ?? "", /^shared-/);
   assert.notEqual(imported?.id, ledger.id);
   assert.equal(typeof imported?.createdAt, "string");
   assert.equal(Number.isNaN(Date.parse(imported?.createdAt ?? "")), false);
@@ -65,7 +68,9 @@ test("legacy general ledgers migrate private automation settings to safe default
   assert.equal(parsed?.kind, "general");
   if (parsed?.kind !== "general") throw new Error("expected general ledger");
   assert.equal(parsed.monthlyLimitMinor, null);
+  assert.equal(parsed.automationAllApps, false);
   assert.deepEqual(parsed.automationSources, []);
+  assert.deepEqual(parsed.automationReversalIds, []);
 });
 
 test("invalid monthly limits and notification-source settings are rejected", () => {
@@ -73,20 +78,50 @@ test("invalid monthly limits and notification-source settings are rejected", () 
   const state = { version: 2, locale: "ko", activeLedgerId: ledger.id, ledgers: [ledger] };
   assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, monthlyLimitMinor: 0 }] }), null);
   assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationSources: [{ packageName: "not a package", displayName: "Bad" }] }] }), null);
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationSources: [{ packageName: "com.example.card", displayName: "Bad", trustedDirectApp: false }] }] }), null);
   assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationSources: [{ packageName: "com.example.card", displayName: "One" }, { packageName: "com.example.card", displayName: "Two" }] }] }), null);
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationAllApps: "yes" }] }), null);
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationReversalIds: ["bad-id"] }] }), null);
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, expenses: [{ id: "invalid-date", description: "Impossible", category: "other", currency: "EUR", minorUnits: 100, occurredOn: "2026-02-30" }] }] }), null);
 });
 
-test("general ledger shares omit monthly limits, sources, and private automation fingerprints", () => {
-  const expense = Object.freeze({ id: "card-auto-private", description: "Lidl", category: "food" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-30", automationFingerprint: "card-origin-0123456789abcdef" });
-  const ledger = Object.freeze({ ...createLedger("general", "Private", "EUR"), monthlyLimitMinor: 50_000, automationSources: Object.freeze([{ packageName: "com.example.card", displayName: "Example Card" }]), expenses: Object.freeze([expense]) });
+test("worldwide card discovery is not restricted to a short provider list", () => {
+  const ledger = createLedger("general", "Worldwide", "EUR");
+  const sources = Array.from({ length: MAX_AUTOMATION_SOURCES }, (_, index) => ({ packageName: `com.example.bank${index}`, displayName: `Bank ${index}` }));
+  const state = { version: 2, locale: "ko", activeLedgerId: ledger.id, ledgers: [{ ...ledger, automationSources: sources }] };
+  assert.equal(parseWalletStateStrict(state)?.ledgers[0].kind, "general");
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationSources: [...sources, { packageName: "com.example.overflow", displayName: "Overflow" }] }] }), null);
+});
+
+test("general ledger shares omit limits and all private automation state", () => {
+  const expense = Object.freeze({ id: "card-auto-private", description: "Lidl", category: "food" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-30", automationFingerprint: "card-origin-0123456789abcdef", automationReversalFingerprint: "card-reversal-fedcba9876543210" });
+  const ledger = Object.freeze({ ...createLedger("general", "Private", "EUR"), monthlyLimitMinor: 50_000, automationAllApps: true, automationSources: Object.freeze([{ packageName: "com.example.card", displayName: "Example Card", trustedDirectApp: true as const }]), automationReversalIds: Object.freeze(["card-auto-0123456789abcdef"]), expenses: Object.freeze([expense]) });
   const payload = createLedgerSharePayload(ledger);
   assert.equal(payload.includes("monthlyLimitMinor"), false);
   assert.equal(payload.includes("automationSources"), false);
+  assert.equal(payload.includes("automationAllApps"), false);
+  assert.equal(payload.includes("automationReversalIds"), false);
   assert.equal(payload.includes("com.example.card"), false);
   assert.equal(payload.includes("automationFingerprint"), false);
+  assert.equal(payload.includes("automationReversalFingerprint"), false);
   assert.equal(payload.includes("card-origin-"), false);
+  assert.equal(payload.includes("card-auto-"), false);
   const imported = parseLedgerSharePayload(payload);
   assert.equal(imported?.kind === "general" ? imported.monthlyLimitMinor : undefined, null);
+});
+
+test("a forged share file cannot enable notification access or inject trusted automation metadata", () => {
+  const expense = Object.freeze({ id: "forged-expense", description: "Lidl", category: "food" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-30", automationFingerprint: "card-origin-0123456789abcdef", automationReversalFingerprint: "card-reversal-fedcba9876543210" });
+  const forged = Object.freeze({ ...createLedger("general", "Forged", "EUR"), monthlyLimitMinor: 50_000, automationAllApps: true, automationSources: Object.freeze([{ packageName: "com.fake.bank", displayName: "Trusted Bank", trustedDirectApp: true as const }]), automationReversalIds: Object.freeze(["card-auto-0123456789abcdef", "card-reversal-fedcba9876543210"]), expenses: Object.freeze([expense]) });
+  const imported = parseLedgerSharePayload(JSON.stringify({ format: "wallet-diary", version: 1, ledger: forged }));
+  assert.equal(imported?.kind, "general");
+  if (imported?.kind !== "general") throw new Error("expected general ledger");
+  assert.equal(imported.monthlyLimitMinor, null);
+  assert.equal(imported.automationAllApps, false);
+  assert.deepEqual(imported.automationSources, []);
+  assert.deepEqual(imported.automationReversalIds, []);
+  assert.equal(imported.expenses[0].automationFingerprint, undefined);
+  assert.equal(imported.expenses[0].automationReversalFingerprint, undefined);
 });
 
 test("provider imports merge into the existing ledger idempotently", () => {

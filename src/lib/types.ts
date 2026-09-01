@@ -37,11 +37,15 @@ export interface GeneralExpense {
   readonly occurredOn: string;
   /** Immutable, private deduplication marker for card-notification imports. */
   readonly automationFingerprint?: string;
+  /** Immutable, private merchant/amount marker used to match later reversals. */
+  readonly automationReversalFingerprint?: string;
 }
 
 export interface AutomationSource {
   readonly packageName: string;
   readonly displayName: string;
+  /** The user explicitly confirmed this is a direct bank/card app, not a relay. */
+  readonly trustedDirectApp: true;
 }
 
 interface LedgerBase {
@@ -64,7 +68,11 @@ export interface GeneralLedger extends LedgerBase {
   readonly kind: "general";
   readonly currency: string;
   readonly monthlyLimitMinor: number | null;
+  /** Explicit consent to inspect payment-shaped notifications from any app. */
+  readonly automationAllApps: boolean;
   readonly automationSources: readonly AutomationSource[];
+  /** Private idempotency tombstones for durably applied cancellation alerts. */
+  readonly automationReversalIds: readonly string[];
   readonly expenses: readonly GeneralExpense[];
 }
 

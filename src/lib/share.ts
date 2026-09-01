@@ -17,8 +17,22 @@ export function createLedgerSharePayload(ledger: Ledger): string {
 }
 
 function omitGeneralPrivacySettings(ledger: Extract<Ledger, { kind: "general" }>) {
-  const expenses = ledger.expenses.map((expense) => ({ id: expense.id, description: expense.description, category: expense.category, currency: expense.currency, minorUnits: expense.minorUnits, occurredOn: expense.occurredOn }));
+  // Do not expose provider-derived or card-auto id prefixes. A deterministic
+  // opaque id keeps repeated imports idempotent without revealing provenance.
+  const expenses = ledger.expenses.map((expense) => ({ id: publicExpenseId(ledger.id, expense.id), description: expense.description, category: expense.category, currency: expense.currency, minorUnits: expense.minorUnits, occurredOn: expense.occurredOn }));
   return { id: ledger.id, title: ledger.title, kind: ledger.kind, createdAt: ledger.createdAt, updatedAt: ledger.updatedAt, currency: ledger.currency, expenses };
+}
+
+function publicExpenseId(ledgerId: string, expenseId: string): string {
+  const value = `${ledgerId}\u0000${expenseId}`;
+  let left = 0x811c9dc5; let right = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    left = Math.imul(left ^ code, 0x01000193);
+    right = Math.imul(right ^ code, 0x85ebca6b);
+    right ^= right >>> 13;
+  }
+  return `shared-${(left >>> 0).toString(16).padStart(8, "0")}${(right >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 export function createTravelSharePayload(ledger: TravelLedger): string {
@@ -26,8 +40,13 @@ export function createTravelSharePayload(ledger: TravelLedger): string {
 }
 
 function cloneImportedLedger(parsed: Ledger): Ledger {
-  const importedBase = { ...parsed, id: crypto.randomUUID(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-  return parsed.kind === "travel" ? Object.freeze({ ...importedBase, selfParticipantId: null }) : Object.freeze(importedBase);
+  const now = new Date().toISOString();
+  if (parsed.kind === "travel") return Object.freeze({ ...parsed, id: crypto.randomUUID(), createdAt: now, updatedAt: now, selfParticipantId: null });
+  const shareSafe = omitGeneralPrivacySettings(parsed);
+  // Treat imported JSON as untrusted even when it passes the ledger schema.
+  // Automation consent, trusted packages, reversal tombstones, and private
+  // expense fingerprints are local-only state and must never cross this edge.
+  return Object.freeze({ ...shareSafe, id: crypto.randomUUID(), createdAt: now, updatedAt: now, monthlyLimitMinor: null, automationAllApps: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), expenses: Object.freeze(shareSafe.expenses.map((expense) => Object.freeze(expense))) });
 }
 
 /** Parse either a travel or general `.walletdiary` share file. */

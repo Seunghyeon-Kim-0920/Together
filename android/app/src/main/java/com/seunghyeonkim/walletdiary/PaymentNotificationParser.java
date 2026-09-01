@@ -6,8 +6,14 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.text.Normalizer;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Currency;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -16,21 +22,54 @@ import org.json.JSONObject;
 
 final class PaymentNotificationParser {
 
-    private static final Pattern REJECTED = Pattern.compile(
-        "(?iu)(\\b(?:declined|failed|reverted|reversal|refunded?|refund|cancel(?:led)?|rejected|cashback|credit(?:ed)?|top[ -]?up|transfer|deposit|verification|security code|one[ -]?time|otp|pin|pending|processing)\\b|\\bcr[ée]dit\\b|en attente|rembours[ée]|annul[ée]|refus[ée]|[ée]chou[ée]|virement|rechargement|입금|충전|송금|환불|취소|거절|실패|처리 ?중|승인 ?대기|캐시백|적립|인증|보안 ?코드|일회용|승인번호)"
+    private static final Pattern ALWAYS_IGNORE = Pattern.compile(
+        "(?iu)(\\b(?:declined|failed|rejected|verification|security code|one[ -]?time|otp|pin|pending|processing)\\b|en attente|refus[ée]|[ée]chou[ée]|abgelehnt|fehlgeschlagen|ausstehend|rechazad[oa]|fallid[oa]|pendiente|保留|失败|失敗|拒绝|拒絕|待处理|거절|실패|처리 ?중|승인 ?대기|인증|보안 ?코드|일회용|승인번호|معلّق|مرفوض|فشل|अस्वीकृत)"
     );
+    private static final Pattern ALWAYS_NON_PURCHASE = Pattern.compile(
+        "(?iu)(\\b(?:cashback|top[ -]?up|transfer|deposit|cash withdrawal|withdrawal|credit(?![-\\s]+card\\b))\\b|virement|rechargement|retrait|versement|überweisung|transferencia|transferência|depósito|prelievo|bonifico|入金|振込|입금|충전|송금|출금|캐시백|적립|تحويل|إيداع)"
+    );
+    private static final Pattern NON_EXPENSE = Pattern.compile(
+        "(?iu)(\\b(?:credited|account credit|available balance|current balance|statement balance)\\b|cr[ée]dit re[çc]u|solde disponible|verfügbarer betrag|saldo disponible|利用可能残高|可用余额|可用餘額|이용 가능 잔액)"
+    );
+    private static final Pattern MARKETING = Pattern.compile(
+        "(?iu)(\\b(?:weekend offer|special offer|promotion|promo code|save|discount|coupon)\\b|offre|promotion|remise|économisez|angebot|rabatt|oferta|descuento|promoção|desconto|割引|优惠|優惠|할인|쿠폰|프로모션)"
+    );
+    private static final Pattern REVERSAL = Pattern.compile(
+        "(?iu)(\\b(?:refund(?:ed)?|revers(?:al|e[sd]?)|reverted|cancelled|canceled|chargeback|voided)\\b|rembours[ée]?|annul[ée]?|erstattet|storniert|rückbuchung|widerrufen|rückgängig|reversad[oa]?|revertid[oa]?|reembolsad[oa]?|reembolso|estornad[oa]?|estorno|cancelad[oa]?|rimborsat[oa]?|annullat[oa]?|stornat[oa]?|返金|取消|キャンセル|退款|撤销|撤銷|환불|결제 ?취소|승인 ?취소|취소 ?완료|استرداد|إلغاء|रिफंड|वापसी)"
+    );
+    private static final Pattern NON_TERMINAL_REVERSAL = Pattern.compile(
+        "(?iu)(\\b(?:partial(?:ly)?|requested|initiated|expected|scheduled)\\b|remboursement partiel|demand[ée]|en cours|teilweise|beantragt|parcial|solicitad[oa]|iniciad[oa]|parziale|richiest[oa]|一部返金|返金申請|部分退款|退款申请|退款申請|부분 ?환불|환불 ?요청|취소 ?요청|استرداد جزئي|طلب استرداد)"
+    );
+    private static final Pattern PAYMENT_SIGNAL = Pattern.compile(
+        "(?iu)(\\b(?:card payment|payment|purchase|paid|spent|card used|card charged|debit card|point of sale|pos transaction|approved|completed)\\b|paiement|achat|carte utilis[ée]e?|dépens[ée]|accept[ée]|zahlung|kartenzahlung|bezahlt|einkauf|compra|pago|pagamento|acquisto|carta usata|결제|카드 ?승인|사용 ?승인|체크카드|신용카드|이용 ?내역|支払|購入|カード利用|決済|消费|消費|付款|刷卡|交易成功|شراء|دفعة|تم الدفع|भुगतान|खरीद|pembayaran|pembelian|thanh toán|giao dịch thẻ|ชำระเงิน|ซื้อ)"
+    );
+    private static final String CURRENCY_TOKEN = "(?:[A-Z]{3}|US\\$|CA\\$|AU\\$|NZ\\$|HK\\$|S\\$|R\\$|NT\\$|€|£|₩|¥|￥|\\$|₹|₽|₺|₫|฿|₱|₪|₦|₴|₵|₾|₸|₭|₮|؋|₲|₡|zł|Kč|Ft)";
     private static final Pattern CURRENCY_BEFORE = Pattern.compile(
-        "(?iu)(EUR|USD|GBP|KRW|JPY|CHF|CAD|AUD|CNY|HKD|SGD|THB|VND|PHP|IDR|MYR|TRY|AED|KWD|€|£|₩|¥|\\$)\\s*([+−-]?\\(?\\d[\\d\\s\\u00a0\\u202f'.,]*\\)?)"
+        "(?iu)([+−-]?)\\s*(" + CURRENCY_TOKEN + ")\\s*([+−-]?\\(?\\d[\\d\\s\\u00a0\\u202f'.,]*\\)?)"
     );
     private static final Pattern CURRENCY_AFTER = Pattern.compile(
-        "(?iu)([+−-]?\\(?\\d[\\d\\s\\u00a0\\u202f'.,]*\\)?)\\s*(EUR|USD|GBP|KRW|JPY|CHF|CAD|AUD|CNY|HKD|SGD|THB|VND|PHP|IDR|MYR|TRY|AED|KWD|€|£|₩|¥|\\$)"
+        "(?iu)([+−-]?\\(?\\d[\\d\\s\\u00a0\\u202f'.,]*\\)?)\\s*(" + CURRENCY_TOKEN + ")"
     );
     private static final Pattern MERCHANT_AFTER = Pattern.compile(
-        "(?iu)(?:\\bat\\b|\\bchez\\b|\\bmerchant\\b|\\bcommer[çc]ant\\b|가맹점|사용처|에서)\\s*[:：-]?\\s*([^\\n;]{2,100})"
+        "(?iu)(?:\\bat\\b|\\bchez\\b|\\bmerchant\\b|\\bcommer[çc]ant\\b|\\b(?:paid|payment)\\s+to\\b|\\b(?:pagado|pago)\\s+(?:a|en)\\b|\\b(?:pago|pagamento)\\s+(?:a|em)\\b|\\bbei\\b|\\bpresso\\b|\\besercente\\b|\\bcomercio\\b|\\bestablecimiento\\b|가맹점|사용처|에서|店舗|加盟店|商户|商戶|商家|لدى|متجر)\\s*[:：-]?\\s*([^\\n;]{2,100})"
     );
     private static final Pattern GENERIC_TITLE = Pattern.compile(
-        "(?iu)(payment|card|purchase|transaction|paiement|carte|achat|결제|카드|승인|revolut|swile|travel ?wallet)"
+        "(?iu)(payment|card|purchase|transaction|paid|paiement|carte|achat|zahlung|compra|pago|pagamento|acquisto|결제|카드|승인|지출|支払|購入|決済|消费|付款|交易|شراء|دفعة|भुगतान|pembayaran|thanh toán|ชำระเงิน|refund|reversal|cancel|rembours|annul|환불|취소|退款|返金)"
     );
+    private static final Pattern EMAIL = Pattern.compile("(?iu)[\\p{L}\\p{N}._%+-]+@[\\p{L}\\p{N}.-]+\\.[\\p{L}]{2,}");
+    private static final Pattern URL = Pattern.compile("(?iu)\\b(?:https?://|www\\.)\\S+");
+    private static final Pattern PHONE = Pattern.compile("(?u)(?<![\\p{L}\\p{N}])\\+?\\d(?:[\\s().-]*\\d){6,}(?![\\p{L}\\p{N}])");
+    private static final Pattern IBAN = Pattern.compile("(?iu)\\b[A-Z]{2}\\d{2}(?:[\\s-]?[A-Z0-9]){11,30}\\b");
+    private static final Pattern SENSITIVE_TRAILING_FIELD = Pattern.compile(
+        "(?iu)\\b(?:iban|account(?:\\s+(?:number|no\\.?))?|acct|compte|konto|계좌(?:번호)?|card\\s+(?:ending|number)|carte\\s+(?:se terminant|num[ée]ro)|카드(?:번호|끝자리)|contact|e-?mail|courriel|phone|t[ée]l[ée]phone|tel\\.?|transaction\\s+(?:id|reference|ref)|reference|ref\\.?|authorization\\s+(?:id|code)|auth\\s+(?:id|code)|approval\\s+(?:id|code)|r[ée]f[ée]rence|code d['’]autorisation|transaktions?(?:nummer|referenz)|referencia|referência|c[óo]digo de autoriza[çc][aã]o|riferimento|codice di autorizzazione|取引(?:ID|番号)|参照番号|交易(?:编号|編號)|参考号|參考號|거래번호|참조번호|승인코드|승인번호)\\b.*$"
+    );
+    private static final Pattern TRAILING_REVERSAL_STATUS = Pattern.compile(
+        "(?iu)\\b(?:(?:for|pour|für|por|per)\\s+)?(?:(?:has\\s+been|was|is|a\\s+[ée]t[ée]|wurde|ha\\s+sido|foi|[èe]\\s+stato)\\s+)?(?:refund(?:ed)?|revers(?:al|e[sd]?)|reverted|cancelled|canceled|voided|rembours[ée]?|annul[ée]?|erstattet|storniert|reversad[oa]?|revertid[oa]?|reembolsad[oa]?|estornad[oa]?|cancelad[oa]?|rimborsat[oa]?|annullat[oa]?|stornat[oa]?)\\b.*$"
+    );
+    private static final Pattern TRAILING_PURCHASE_STATUS = Pattern.compile(
+        "(?iu)\\b(?:(?:has\\s+been|was|is|a\\s+[ée]t[ée]|wurde|ha\\s+sido|foi|[èe]\\s+stato)\\s+)?(?:approved|completed|accepted|authori[sz]ed|approuv[ée]|accept[ée]|autoris[ée]|genehmigt|abgeschlossen|aprobada?|completad[oa]|aprovad[oa]|conclu[íi]d[oa]|approvat[oa]|completat[oa])\\b.*$"
+    );
+    private static final Set<String> DOLLAR_CURRENCIES = new HashSet<>(Arrays.asList("USD", "CAD", "AUD", "NZD", "SGD", "HKD", "TWD"));
 
     private PaymentNotificationParser() {}
 
@@ -42,23 +81,45 @@ final class PaymentNotificationParser {
         String bigText,
         String subText,
         long postedAt,
-        String notificationKey
+        String notificationKey,
+        boolean explicitlyConfigured,
+        boolean manualOnly,
+        String currencyHint
     ) {
         String safeTitle = clean(title);
         String body = join(text, bigText, subText);
         String combined = join(safeTitle, body);
-        if (combined.isEmpty() || REJECTED.matcher(combined).find()) return null;
+        if (combined.isEmpty() || ALWAYS_IGNORE.matcher(combined).find() || ALWAYS_NON_PURCHASE.matcher(combined).find()) return null;
+        boolean reversal = REVERSAL.matcher(combined).find();
+        if (reversal && NON_TERMINAL_REVERSAL.matcher(combined).find()) return null;
+        // Refund alerts often also say that money was "credited". A reversal
+        // signal must therefore take precedence over the generic income filter.
+        if (!reversal && NON_EXPENSE.matcher(combined).find()) return null;
+        boolean paymentSignal = PAYMENT_SIGNAL.matcher(combined).find();
+        if (!reversal && !paymentSignal && MARKETING.matcher(combined).find()) return null;
 
-        AmountMatch amount = findSingleAmount(combined);
+        AmountMatch amount = findSingleAmount(combined, currencyHint, reversal);
         if (amount == null || amount.minorUnits <= 0) return null;
+        // Trusted apps may use a merchant title with only a signed debit in the
+        // body (for example Swile). Positive amounts without a payment signal
+        // are balance/offer-shaped and must never become automatic expenses.
+        if (!reversal && !paymentSignal && (!explicitlyConfigured || !amount.explicitDebit)) return null;
 
         MerchantMatch merchant = findMerchant(safeTitle, body, sourceName, amount.raw);
         if (merchant == null || merchant.value.isEmpty()) return null;
 
-        String confidence = merchant.highConfidence ? "high" : "review";
+        // Newly discovered packages remain review-only until the user registers
+        // that exact package. This prevents silent expenses from spoofed alerts.
+        String confidence = explicitlyConfigured && !manualOnly && merchant.highConfidence ? "high" : "review";
         try {
+            String eventType = reversal ? "reversal" : "purchase";
+            String eventId = fingerprint(packageName + "|" + notificationKey + "|" + postedAt);
+            String queueToken = fingerprint(
+                eventId + "|" + eventType + "|" + amount.currency + "|" + amount.minorUnits + "|" + merchant.value + "|" + confidence + "|" + manualOnly
+            );
             JSONObject result = new JSONObject();
-            result.put("id", fingerprint(packageName + "|" + notificationKey + "|" + postedAt));
+            result.put("id", eventId);
+            result.put("queueToken", queueToken);
             result.put("packageName", packageName);
             result.put("sourceName", clean(sourceName).isEmpty() ? packageName : clean(sourceName));
             result.put("merchant", merchant.value);
@@ -67,48 +128,50 @@ final class PaymentNotificationParser {
             result.put("occurredAt", isoTimestamp(postedAt));
             result.put("occurredOn", localDate(postedAt));
             result.put("confidence", confidence);
+            result.put("eventType", eventType);
+            result.put("manualOnly", manualOnly);
             return result;
         } catch (JSONException ignored) {
             return null;
         }
     }
 
-    private static AmountMatch findSingleAmount(String value) {
+    private static AmountMatch findSingleAmount(String value, String currencyHint, boolean allowPlus) {
         AmountMatch first = null;
-        int matches = 0;
+        Set<String> distinct = new HashSet<>();
         Matcher before = CURRENCY_BEFORE.matcher(value);
         while (before.find()) {
-            AmountMatch candidate = parseAmount(before.group(2), normalizeCurrency(before.group(1)), before.group(0));
+            String leadingSign = before.group(1);
+            String number = before.group(3);
+            AmountMatch candidate = parseAmount(leadingSign.isEmpty() ? number : leadingSign + number, normalizeCurrency(before.group(2), currencyHint), before.group(0), allowPlus);
             if (candidate != null) {
                 if (first == null) first = candidate;
-                matches++;
+                distinct.add(candidate.currency + "|" + candidate.minorUnits + "|" + candidate.explicitDebit);
             }
         }
         Matcher after = CURRENCY_AFTER.matcher(value);
         while (after.find()) {
-            AmountMatch candidate = parseAmount(after.group(1), normalizeCurrency(after.group(2)), after.group(0));
-            if (candidate != null && (first == null || !candidate.raw.equals(first.raw))) {
+            AmountMatch candidate = parseAmount(after.group(1), normalizeCurrency(after.group(2), currencyHint), after.group(0), allowPlus);
+            if (candidate != null) {
                 if (first == null) first = candidate;
-                matches++;
+                distinct.add(candidate.currency + "|" + candidate.minorUnits + "|" + candidate.explicitDebit);
             }
         }
-        // Two monetary values commonly mean "amount + remaining balance". Do
-        // not guess which one is the purchase.
-        return matches == 1 ? first : null;
+        return distinct.size() == 1 ? first : null;
     }
 
-    private static AmountMatch parseAmount(String rawNumber, String currency, String raw) {
+    private static AmountMatch parseAmount(String rawNumber, String currency, String raw, boolean allowPlus) {
         if (currency == null) return null;
+        String signed = rawNumber.trim();
+        boolean explicitDebit = signed.startsWith("-") || signed.startsWith("−") || signed.startsWith("(");
         String normalized = rawNumber.replace('\u2212', '-').replace("(", "-").replace(")", "");
         normalized = normalized.replace("\u00a0", "").replace("\u202f", "").replace(" ", "").replace("'", "");
-        if (normalized.startsWith("+")) return null;
+        if (normalized.startsWith("+") && !allowPlus) return null;
         normalized = normalized.replace("+", "").replace("-", "");
         if (!normalized.matches("\\d[\\d.,]*")) return null;
 
         int digits = currencyDigits(currency);
-        int lastComma = normalized.lastIndexOf(',');
-        int lastDot = normalized.lastIndexOf('.');
-        int decimalIndex = Math.max(lastComma, lastDot);
+        int decimalIndex = Math.max(normalized.lastIndexOf(','), normalized.lastIndexOf('.'));
         if (digits == 0) {
             normalized = normalized.replace(",", "").replace(".", "");
         } else if (decimalIndex >= 0 && normalized.length() - decimalIndex - 1 <= digits) {
@@ -120,12 +183,9 @@ final class PaymentNotificationParser {
         }
         try {
             BigDecimal value = new BigDecimal(normalized).abs();
-            // Card apps commonly prefix completed expenses with a minus sign.
-            // Credit/refund notifications are rejected by their status text,
-            // while a signed debit is stored as a positive expense amount.
             if (value.signum() <= 0) return null;
             long minor = value.movePointRight(digits).setScale(0, RoundingMode.UNNECESSARY).longValueExact();
-            return minor > 0 ? new AmountMatch(currency, minor, raw) : null;
+            return minor > 0 ? new AmountMatch(currency, minor, raw, explicitDebit) : null;
         } catch (ArithmeticException | NumberFormatException ignored) {
             return null;
         }
@@ -141,39 +201,79 @@ final class PaymentNotificationParser {
             String candidate = trimMerchant(title, rawAmount);
             if (!candidate.isEmpty()) return new MerchantMatch(candidate, true);
         }
-        // Never persist an unlabelled copy of the notification body. It may
-        // contain a balance, account suffix, or other private text. Unknown
-        // templates are ignored until a source-specific merchant rule exists.
         return null;
     }
 
     private static String trimMerchant(String value, String rawAmount) {
         String result = clean(value).replace(rawAmount, " ");
+        result = EMAIL.matcher(result).replaceAll(" ");
+        result = URL.matcher(result).replaceAll(" ");
+        result = PHONE.matcher(result).replaceAll(" ");
+        result = IBAN.matcher(result).replaceAll(" ");
+        result = SENSITIVE_TRAILING_FIELD.matcher(result).replaceAll(" ");
+        result = TRAILING_REVERSAL_STATUS.matcher(result).replaceAll(" ");
+        result = TRAILING_PURCHASE_STATUS.matcher(result).replaceAll(" ");
         result = CURRENCY_BEFORE.matcher(result).replaceAll(" ");
         result = CURRENCY_AFTER.matcher(result).replaceAll(" ");
-        result = result.replaceAll("(?iu)\\b(card|payment|purchase|transaction|approved|paid|paiement|carte|achat|accept[ée]|결제|카드|승인|완료)\\b", " ");
-        result = result.replaceAll("(?iu)\\b(balance|solde|account|compte|card ending|carte se terminant|잔액|계좌|카드번호)\\b.*$", " ");
+        result = result.replaceAll("(?iu)\\b(card|payment|purchase|transaction|approved|paid|paiement|carte|achat|accept[ée]|zahlung|bezahlt|compra|pago|pagamento|결제|카드|승인|완료)\\b", " ");
+        result = result.replaceAll("(?iu)\\b(balance|solde|account|compte|card ending|carte se terminant|saldo|kontostand|잔액|계좌|카드번호)\\b.*$", " ");
         result = result.replaceAll("(?u)\\b\\d{4,}\\b", " ");
         result = result.replaceAll("\\s+", " ").replaceAll("^[·•|:：,;—–-]+|[·•|:：,;—–-]+$", "").trim();
         return result.length() > 100 ? result.substring(0, 100).trim() : result;
     }
 
-    private static String normalizeCurrency(String token) {
+    private static String normalizeCurrency(String token, String hint) {
         if (token == null) return null;
-        switch (token.toUpperCase(Locale.ROOT)) {
+        String value = token.trim();
+        String normalizedHint = hint == null ? "" : hint.trim().toUpperCase(Locale.ROOT);
+        switch (value) {
             case "€": return "EUR";
             case "£": return "GBP";
             case "₩": return "KRW";
-            case "¥": return "JPY";
-            case "$": return "USD";
-            default: return token.toUpperCase(Locale.ROOT);
+            case "₹": return "INR";
+            case "₽": return "RUB";
+            case "₺": return "TRY";
+            case "₫": return "VND";
+            case "฿": return "THB";
+            case "₱": return "PHP";
+            case "₪": return "ILS";
+            case "₦": return "NGN";
+            case "₴": return "UAH";
+            case "₵": return "GHS";
+            case "₾": return "GEL";
+            case "₸": return "KZT";
+            case "₭": return "LAK";
+            case "₮": return "MNT";
+            case "؋": return "AFN";
+            case "₲": return "PYG";
+            case "₡": return "CRC";
+            case "zł": return "PLN";
+            case "Kč": return "CZK";
+            case "Ft": return "HUF";
+            case "US$": return "USD";
+            case "CA$": return "CAD";
+            case "AU$": return "AUD";
+            case "NZ$": return "NZD";
+            case "HK$": return "HKD";
+            case "S$": return "SGD";
+            case "R$": return "BRL";
+            case "NT$": return "TWD";
+            case "$": return DOLLAR_CURRENCIES.contains(normalizedHint) ? normalizedHint : null;
+            case "¥":
+            case "￥": return "JPY".equals(normalizedHint) || "CNY".equals(normalizedHint) ? normalizedHint : null;
+            default:
+                String code = value.toUpperCase(Locale.ROOT);
+                try { Currency.getInstance(code); return code; } catch (IllegalArgumentException ignored) { return null; }
         }
     }
 
     private static int currencyDigits(String currency) {
-        if ("JPY".equals(currency) || "KRW".equals(currency) || "VND".equals(currency)) return 0;
-        if ("KWD".equals(currency)) return 3;
-        return 2;
+        try {
+            int digits = Currency.getInstance(currency).getDefaultFractionDigits();
+            return digits < 0 ? 2 : digits;
+        } catch (IllegalArgumentException ignored) {
+            return 2;
+        }
     }
 
     private static String fingerprint(String value) {
@@ -199,26 +299,31 @@ final class PaymentNotificationParser {
     }
 
     private static String join(String... values) {
-        StringBuilder result = new StringBuilder();
+        List<String> parts = new ArrayList<>();
         for (String value : values) {
             String cleaned = clean(value);
-            if (cleaned.isEmpty() || result.indexOf(cleaned) >= 0) continue;
-            if (result.length() > 0) result.append('\n');
-            result.append(cleaned);
+            if (cleaned.isEmpty()) continue;
+            boolean alreadyContained = false;
+            for (String part : parts) if (part.contains(cleaned)) { alreadyContained = true; break; }
+            if (alreadyContained) continue;
+            parts.removeIf(cleaned::contains);
+            parts.add(cleaned);
         }
-        return result.toString();
+        return String.join("\n", parts);
     }
 
     private static String clean(String value) {
         if (value == null) return "";
-        return Normalizer.normalize(value, Normalizer.Form.NFKC).replaceAll("[\\p{Cntrl}&&[^\\n]]", " ").replaceAll("[ \\t]+", " ").trim();
+        String bounded = value.length() > 2_000 ? value.substring(0, 2_000) : value;
+        return Normalizer.normalize(bounded, Normalizer.Form.NFKC).replaceAll("[\\p{Cntrl}&&[^\\n]]", " ").replaceAll("[ \\t]+", " ").trim();
     }
 
     private static final class AmountMatch {
         final String currency;
         final long minorUnits;
         final String raw;
-        AmountMatch(String currency, long minorUnits, String raw) { this.currency = currency; this.minorUnits = minorUnits; this.raw = raw; }
+        final boolean explicitDebit;
+        AmountMatch(String currency, long minorUnits, String raw, boolean explicitDebit) { this.currency = currency; this.minorUnits = minorUnits; this.raw = raw; this.explicitDebit = explicitDebit; }
     }
 
     private static final class MerchantMatch {

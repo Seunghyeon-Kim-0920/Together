@@ -1,5 +1,5 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
-import type { NativeAutomationConfiguration } from "./cardAutomation";
+import type { NativeAutomationConfiguration, NativeEventAcknowledgement } from "./cardAutomation";
 
 export interface CardAutomationStatus {
   readonly supported: boolean;
@@ -12,7 +12,7 @@ interface CardAutomationNativePlugin {
   openAccessSettings(): Promise<void>;
   requestAlertPermission(): Promise<void>;
   peekPendingEvents(): Promise<unknown>;
-  acknowledgeEvents(options: { readonly ids: readonly string[] }): Promise<void>;
+  acknowledgeEvents(options: { readonly events: readonly NativeEventAcknowledgement[] }): Promise<void>;
   configure(options: NativeAutomationConfiguration): Promise<void>;
 }
 
@@ -32,6 +32,6 @@ export const cardAutomationPlugin = Object.freeze({
   async openAccessSettings(): Promise<void> { if (isAndroid()) await NativeCardAutomation.openAccessSettings(); },
   async requestAlertPermission(): Promise<void> { if (isAndroid()) await NativeCardAutomation.requestAlertPermission(); },
   async peekPendingEvents(): Promise<unknown> { return isAndroid() ? NativeCardAutomation.peekPendingEvents() : Object.freeze({ events: Object.freeze([]) }); },
-  async acknowledgeEvents(options: { readonly ids: readonly string[] }): Promise<void> { if (isAndroid() && options.ids.length) await NativeCardAutomation.acknowledgeEvents(options); },
+  async acknowledgeEvents(options: { readonly events: readonly NativeEventAcknowledgement[] }): Promise<void> { if (isAndroid() && options.events.length) await NativeCardAutomation.acknowledgeEvents(options); },
   async configure(options: NativeAutomationConfiguration): Promise<void> { if (isAndroid()) await NativeCardAutomation.configure(options); },
 });

@@ -17,9 +17,9 @@ import java.text.NumberFormat;
 import java.text.SimpleDateFormat;
 import java.util.Currency;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.Locale;
 import java.util.Set;
+import java.util.HashSet;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -32,24 +32,58 @@ final class CardAutomationStore {
     private static final String KEY_LAST_CAPTURED = "last_captured_at";
     private static final String CHANNEL_ID = "wallet_diary_budget";
     private static final int MAX_PENDING = 5_000;
-    private static final Set<String> VERIFIED_PACKAGES = new HashSet<>();
-
-    static {
-        VERIFIED_PACKAGES.add("com.revolut.revolut");
-        VERIFIED_PACKAGES.add("hr.lunc.client");
-        VERIFIED_PACKAGES.add("com.mobiletoong.travelwallet");
-    }
     private CardAutomationStore() {}
 
     static synchronized boolean isAllowedPackage(Context context, String packageName) {
         if (packageName == null || packageName.equals(context.getPackageName())) return false;
-        if (!VERIFIED_PACKAGES.contains(packageName)) return false;
-        JSONArray sources = configuration(context).optJSONArray("sources");
+        JSONObject configuration = configuration(context);
+        if (configuration.optBoolean("detectAllApps", false)) return true;
+        return isConfiguredSourcePackage(configuration, packageName);
+    }
+
+    static synchronized boolean isConfiguredSourcePackage(Context context, String packageName) {
+        return isConfiguredSourcePackage(configuration(context), packageName);
+    }
+
+    private static boolean isConfiguredSourcePackage(JSONObject configuration, String packageName) {
+        JSONArray sources = configuration.optJSONArray("sources");
         if (sources == null) return false;
         for (int index = 0; index < sources.length(); index++) {
             if (packageName.equals(sources.optJSONObject(index) == null ? null : sources.optJSONObject(index).optString("packageName"))) return true;
         }
         return false;
+    }
+
+    static synchronized String currencyHint(Context context, String packageName) {
+        JSONObject configuration = configuration(context);
+        JSONArray ledgers = configuration.optJSONArray("ledgers");
+        if (ledgers == null) return "";
+        Set<String> sourceLedgerIds = new HashSet<>();
+        Set<String> sourceCurrencies = new HashSet<>();
+        JSONArray sources = configuration.optJSONArray("sources");
+        if (sources != null) {
+            for (int index = 0; index < sources.length(); index++) {
+                JSONObject source = sources.optJSONObject(index);
+                if (source != null && packageName.equals(source.optString("packageName"))) {
+                    String configuredCurrency = source.optString("currency");
+                    if (!configuredCurrency.isEmpty()) sourceCurrencies.add(configuredCurrency);
+                    String ledgerId = source.optString("ledgerId");
+                    if (!ledgerId.isEmpty()) sourceLedgerIds.add(ledgerId);
+                }
+            }
+        }
+        if (sourceCurrencies.size() > 1) return "";
+        if (sourceCurrencies.size() == 1) return sourceCurrencies.iterator().next();
+        Set<String> currencies = new HashSet<>();
+        for (int index = 0; index < ledgers.length(); index++) {
+            JSONObject ledger = ledgers.optJSONObject(index);
+            if (ledger == null) continue;
+            String currency = ledger.optString("currency");
+            if (sourceLedgerIds.contains(ledger.optString("ledgerId")) && !currency.isEmpty()) sourceCurrencies.add(currency);
+            if (configuration.optBoolean("detectAllApps", false) && ledger.optBoolean("automationAllApps", false) && !currency.isEmpty()) currencies.add(currency);
+        }
+        if (!sourceLedgerIds.isEmpty()) return sourceCurrencies.size() == 1 ? sourceCurrencies.iterator().next() : "";
+        return currencies.size() == 1 ? currencies.iterator().next() : "";
     }
 
     static synchronized boolean addPending(Context context, JSONObject candidate) {
@@ -76,6 +110,10 @@ final class CardAutomationStore {
         return !exists;
     }
 
+    static synchronized boolean addPendingIfAllowed(Context context, String packageName, JSONObject candidate) {
+        return isAllowedPackage(context, packageName) && addPending(context, candidate);
+    }
+
     static synchronized JSONArray pending(Context context) {
         try {
             return new JSONArray(preferences(context).getString(KEY_PENDING, "[]"));
@@ -84,19 +122,28 @@ final class CardAutomationStore {
         }
     }
 
-    static synchronized void acknowledge(Context context, JSONArray ids) {
+    static synchronized void acknowledge(Context context, JSONArray events) {
+        JSONArray next = removeAcknowledged(pending(context), events);
+        preferences(context).edit().putString(KEY_PENDING, next.toString()).commit();
+    }
+
+    static JSONArray removeAcknowledged(JSONArray current, JSONArray events) {
         Set<String> acknowledged = new HashSet<>();
-        for (int index = 0; index < ids.length(); index++) {
-            String id = ids.optString(index, "");
-            if (!id.isEmpty()) acknowledged.add(id);
+        for (int index = 0; index < events.length(); index++) {
+            JSONObject event = events.optJSONObject(index);
+            if (event == null) continue;
+            String id = event.optString("id", "");
+            String queueToken = event.isNull("queueToken") ? "" : event.optString("queueToken", "");
+            if (!id.isEmpty()) acknowledged.add(id + "\u0000" + queueToken);
         }
         JSONArray next = new JSONArray();
-        JSONArray current = pending(context);
         for (int index = 0; index < current.length(); index++) {
             JSONObject item = current.optJSONObject(index);
-            if (item != null && !acknowledged.contains(item.optString("id"))) next.put(item);
+            if (item == null) continue;
+            String queueToken = item.isNull("queueToken") || !item.has("queueToken") ? "" : item.optString("queueToken", "");
+            if (!acknowledged.contains(item.optString("id") + "\u0000" + queueToken)) next.put(item);
         }
-        preferences(context).edit().putString(KEY_PENDING, next.toString()).commit();
+        return next;
     }
 
     static synchronized void clear(Context context) {
@@ -109,6 +156,7 @@ final class CardAutomationStore {
         try {
             safe.put("ledgers", value.optJSONArray("ledgers") == null ? new JSONArray() : value.optJSONArray("ledgers"));
             safe.put("sources", value.optJSONArray("sources") == null ? new JSONArray() : value.optJSONArray("sources"));
+            safe.put("detectAllApps", value.optBoolean("detectAllApps", false));
         } catch (JSONException ignored) {}
         preferences(context).edit().putString(KEY_CONFIGURATION, safe.toString()).commit();
         JSONArray ledgers = safe.optJSONArray("ledgers");

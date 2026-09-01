@@ -4,7 +4,9 @@ import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEG
 export const MAX_LEDGERS = 50;
 export const MAX_EXPENSES_PER_LEDGER = 5_000;
 export const MAX_PARTICIPANTS = 100;
-export const MAX_AUTOMATION_SOURCES = 20;
+// This is a storage-safety bound, not a provider allow-list. Five hundred
+// distinct Android packages is deliberately well beyond normal card usage.
+export const MAX_AUTOMATION_SOURCES = 500;
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function text(value: unknown, maximum: number): string | null {
@@ -13,7 +15,11 @@ function text(value: unknown, maximum: number): string | null {
   return normalized && normalized.length <= maximum ? normalized : null;
 }
 function currency(value: unknown): string | null { const normalized = typeof value === "string" ? value.trim().toUpperCase() : ""; return /^[A-Z]{3}$/.test(normalized) ? normalized : null; }
-function date(value: unknown): string | null { return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) ? value : null; }
+function date(value: unknown): string | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : null;
+}
 function timestamp(value: unknown): string | null { return typeof value === "string" && value.length <= 80 && !Number.isNaN(Date.parse(value)) ? value : null; }
 function positiveMinor(value: unknown): number | null { return Number.isSafeInteger(value) && (value as number) > 0 ? value as number : null; }
 export function isValidPackageName(value: string): boolean { return value.length <= 200 && /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/.test(value); }
@@ -21,7 +27,11 @@ export function isValidPackageName(value: string): boolean { return value.length
 export function parseAutomationSource(value: unknown): AutomationSource | null {
   if (!isRecord(value)) return null;
   const packageName = text(value.packageName, 200); const displayName = text(value.displayName, 80);
-  return packageName && displayName && isValidPackageName(packageName) ? Object.freeze({ packageName, displayName }) : null;
+  // Sources saved before v1.3 were already explicitly registered by the user.
+  // Migrate those entries, but reject a value that explicitly denies the
+  // direct-app attestation.
+  const trustedDirectApp = value.trustedDirectApp === undefined ? true : value.trustedDirectApp;
+  return packageName && displayName && isValidPackageName(packageName) && trustedDirectApp === true ? Object.freeze({ packageName, displayName, trustedDirectApp: true }) : null;
 }
 
 function parseAutomationSources(value: unknown): readonly AutomationSource[] | null {
@@ -29,6 +39,13 @@ function parseAutomationSources(value: unknown): readonly AutomationSource[] | n
   const sources: AutomationSource[] = []; const packages = new Set<string>();
   for (const candidate of value) { const source = parseAutomationSource(candidate); if (!source || packages.has(source.packageName)) return null; packages.add(source.packageName); sources.push(source); }
   return Object.freeze(sources);
+}
+
+function parseAutomationReversalIds(value: unknown): readonly string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_EXPENSES_PER_LEDGER) return null;
+  const ids = value.map((candidate) => text(candidate, 100));
+  if (ids.some((candidate) => !candidate || !/^card-(?:auto|reversal)-[0-9a-f]{16}$/.test(candidate as string)) || new Set(ids).size !== ids.length) return null;
+  return Object.freeze(ids as string[]);
 }
 
 function parseParticipants(value: unknown): readonly Participant[] | null {
@@ -65,8 +82,9 @@ function parseGeneralExpense(value: unknown, ledgerCurrency: string): GeneralExp
   if (!isRecord(value)) return null;
   const id = text(value.id, 100); const description = text(value.description, 500); const expenseDate = date(value.occurredOn); const expenseCurrency = currency(value.currency); const minorUnits = positiveMinor(value.minorUnits);
   const automationFingerprint = value.automationFingerprint === undefined ? null : text(value.automationFingerprint, 40);
-  if (!id || !description || !expenseDate || expenseCurrency !== ledgerCurrency || !minorUnits || !GENERAL_CATEGORIES.includes(value.category as never) || (value.automationFingerprint !== undefined && (!automationFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(automationFingerprint)))) return null;
-  return Object.freeze({ id, description, category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate, ...(automationFingerprint ? { automationFingerprint } : {}) });
+  const automationReversalFingerprint = value.automationReversalFingerprint === undefined ? null : text(value.automationReversalFingerprint, 42);
+  if (!id || !description || !expenseDate || expenseCurrency !== ledgerCurrency || !minorUnits || !GENERAL_CATEGORIES.includes(value.category as never) || (value.automationFingerprint !== undefined && (!automationFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(automationFingerprint))) || (value.automationReversalFingerprint !== undefined && (!automationReversalFingerprint || !/^card-reversal-[0-9a-f]{16}$/.test(automationReversalFingerprint)))) return null;
+  return Object.freeze({ id, description, category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate, ...(automationFingerprint ? { automationFingerprint } : {}), ...(automationReversalFingerprint ? { automationReversalFingerprint } : {}) });
 }
 
 export function parseLedger(value: unknown): Ledger | null {
@@ -95,15 +113,17 @@ export function parseLedger(value: unknown): Ledger | null {
   if (value.kind === "general") {
     const ledgerCurrency = currency(value.currency);
     const monthlyLimitMinor = value.monthlyLimitMinor === undefined || value.monthlyLimitMinor === null ? null : positiveMinor(value.monthlyLimitMinor);
+    const automationAllApps = value.automationAllApps === undefined ? false : value.automationAllApps;
     const automationSources = value.automationSources === undefined ? Object.freeze([]) : parseAutomationSources(value.automationSources);
-    if (!ledgerCurrency || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources) return null;
+    const automationReversalIds = value.automationReversalIds === undefined ? Object.freeze([]) : parseAutomationReversalIds(value.automationReversalIds);
+    if (!ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds) return null;
     const expenses: GeneralExpense[] = [];
     for (const candidate of value.expenses) {
       const expense = parseGeneralExpense(candidate, ledgerCurrency);
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationSources, expenses: Object.freeze(expenses) } satisfies GeneralLedger);
+    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, expenses: Object.freeze(expenses) } satisfies GeneralLedger);
   }
   return null;
 }
@@ -126,7 +146,7 @@ export function createLedger(kind: Ledger["kind"], titleInput: string, selectedC
   const now = new Date().toISOString(); const base = { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now };
   return kind === "travel"
     ? Object.freeze({ ...base, kind, currencies: Object.freeze([selectedCurrency]), defaultCurrency: selectedCurrency, participants: Object.freeze([]), selfParticipantId: null, expenses: Object.freeze([]) })
-    : Object.freeze({ ...base, kind, currency: selectedCurrency, monthlyLimitMinor: null, automationSources: Object.freeze([]), expenses: Object.freeze([]) });
+    : Object.freeze({ ...base, kind, currency: selectedCurrency, monthlyLimitMinor: null, automationAllApps: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), expenses: Object.freeze([]) });
 }
 
 export function splitEvenly(minorUnits: number, participantIds: readonly string[]): readonly ExpenseShare[] {
@@ -161,11 +181,15 @@ export function replaceLedger(state: WalletState, ledger: Ledger): WalletState {
 }
 
 function sameGeneralExpense(left: GeneralExpense, right: GeneralExpense): boolean {
-  return left.id === right.id && left.description === right.description && left.category === right.category && left.currency === right.currency && left.minorUnits === right.minorUnits && left.occurredOn === right.occurredOn && left.automationFingerprint === right.automationFingerprint;
+  return left.id === right.id && left.description === right.description && left.category === right.category && left.currency === right.currency && left.minorUnits === right.minorUnits && left.occurredOn === right.occurredOn && left.automationFingerprint === right.automationFingerprint && left.automationReversalFingerprint === right.automationReversalFingerprint;
 }
 
 function sameAutomationSources(left: readonly AutomationSource[], right: readonly AutomationSource[]): boolean {
   return left.length === right.length && left.every((source, index) => source.packageName === right[index]?.packageName && source.displayName === right[index]?.displayName);
+}
+
+function sameStringList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 /** Apply a user edit made from `base` onto the latest ledger without dropping
@@ -186,7 +210,9 @@ export function mergeGeneralLedgerMutation(base: GeneralLedger, desired: General
     ...latest,
     title: desired.title !== base.title ? desired.title : latest.title,
     monthlyLimitMinor: desired.monthlyLimitMinor !== base.monthlyLimitMinor ? desired.monthlyLimitMinor : latest.monthlyLimitMinor,
+    automationAllApps: desired.automationAllApps !== base.automationAllApps ? desired.automationAllApps : latest.automationAllApps,
     automationSources: sameAutomationSources(desired.automationSources, base.automationSources) ? latest.automationSources : desired.automationSources,
+    automationReversalIds: sameStringList(desired.automationReversalIds, base.automationReversalIds) ? latest.automationReversalIds : desired.automationReversalIds,
     expenses: Object.freeze(expenses),
     updatedAt: new Date().toISOString(),
   });
