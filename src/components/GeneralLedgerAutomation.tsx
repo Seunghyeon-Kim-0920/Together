@@ -1,6 +1,6 @@
 import { BellRing, Check, Gauge, Globe2, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { automationReversalFingerprint, calculateMonthlyLimitStatus, reversalMatchIndexes, type NativeCardCandidate } from "../lib/cardAutomation";
+import { automationExpenseId, automationReversalFingerprint, calculateMonthlyLimitStatus, reversalMatchIndexes, type NativeCardCandidate } from "../lib/cardAutomation";
 import { currencyDigits, formatMoney, parseMinorUnits } from "../lib/currency";
 import { t } from "../lib/i18n";
 import type { CardAutomationStatus } from "../lib/nativeCardAutomation";
@@ -32,7 +32,7 @@ export function GeneralLedgerAutomation({ ledger, locale, selectedMonth, status,
       </div>}
     </section>
     <section className="mobile-panel automation-card">
-      <div className="section-heading"><h3><BellRing aria-hidden="true" />{t(locale, "cardAutomation")}</h3><button type="button" onClick={() => setAutomationOpen(true)}><Settings />{t(locale, "edit")}</button></div>
+      <div className="section-heading"><h3><BellRing aria-hidden="true" />{notificationAutomationLabel(locale)}</h3><button type="button" onClick={() => setAutomationOpen(true)}><Settings />{t(locale, "edit")}</button></div>
       <div className="automation-card-body">
         <span className={status.accessGranted ? "status-chip granted" : "status-chip"}>{status.accessGranted ? <Check /> : <BellRing />}{t(locale, status.accessGranted ? "accessGranted" : "accessNotGranted")}</span>
         <span>{ledger.automationAllApps ? t(locale, "allPaymentAppsOn") : `${ledger.automationSources.length.toLocaleString(locale)} ${t(locale, "registeredSources")}`}</span>
@@ -61,9 +61,17 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh,
   const registeredPackages = useMemo(() => new Set(ledger.automationSources.map((source) => source.packageName)), [ledger.automationSources]);
   const [directAppConfirmations, setDirectAppConfirmations] = useState<ReadonlySet<string>>(() => new Set());
   const dateFormatter = useMemo(() => new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }), [locale]);
+  const reviewTravelLedgers = () => {
+    onClose();
+    requestAnimationFrame(() => {
+      const tabs = document.getElementById("wallet-ledger-tabs");
+      tabs?.scrollIntoView({ block: "center" });
+      tabs?.focus({ preventScroll: true });
+    });
+  };
 
-  return <SheetFrame title={t(locale, "cardAutomation")} locale={locale} onClose={onClose}>
-    <div className="automation-disclosure"><ShieldCheck /><div><strong>{t(locale, "localProcessing")}</strong><p>{t(locale, "automationDisclosure")}</p></div></div>
+  return <SheetFrame title={notificationAutomationLabel(locale)} locale={locale} onClose={onClose}>
+    <div className="automation-disclosure"><ShieldCheck /><div><strong>{t(locale, "localProcessing")}</strong><p>{t(locale, "automationDisclosure")}</p><p>{notificationHistoryNotice(locale)}</p></div></div>
     {!status.supported ? <p className="automation-unsupported">{t(locale, "automationUnsupported")}</p> : <>
       <div className="permission-grid">
         <article><span>{t(locale, "notificationAccess")}</span><b className={status.accessGranted ? "granted" : ""}>{t(locale, status.accessGranted ? "accessGranted" : "accessNotGranted")}</b><button type="button" disabled={busy} onClick={onOpenAccessSettings}>{t(locale, "openNotificationSettings")}</button></article>
@@ -73,13 +81,14 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh,
       <div className="automation-section-heading"><h3>{t(locale, "registeredSources")}</h3><button type="button" disabled={busy} onClick={onRefresh}><RefreshCw />{t(locale, "refresh")}</button></div>
       {ledger.automationSources.length ? <div className="automation-source-list">{ledger.automationSources.map((source) => <article key={source.packageName}><div><strong>{source.displayName}</strong><small>{source.packageName}</small></div><button type="button" disabled={busy} onClick={() => onRemoveSource(source.packageName)} aria-label={`${t(locale, "removeCardApp")}: ${source.displayName}`}><Trash2 /></button></article>)}</div> : <p className="automation-empty">{t(locale, "noRegisteredSources")}</p>}
       <div className="automation-section-heading"><h3>{t(locale, "pendingExpenses")}</h3><span>{pending.length.toLocaleString(locale)}</span></div>
-      {pending.length ? <div className="candidate-list">{pending.map((candidate) => { const reversalHandled = candidate.eventType === "reversal" && ledger.automationReversalIds.includes(automationReversalFingerprint(candidate)); const reversalMatches = reversalHandled ? 0 : reversalMatchIndexes(ledger.expenses, candidate).length; const registered = registeredPackages.has(candidate.packageName); const directAppConfirmed = directAppConfirmations.has(candidate.packageName); return <article key={`${candidate.packageName}:${candidate.id}`}>
+      {pending.length ? <div className="candidate-list">{pending.map((candidate) => { const movedReversal = candidate.eventType === "reversal" && (ledger.movedExpenseIds.includes(automationExpenseId(candidate)) || ledger.movedExpenseIds.includes(automationReversalFingerprint(candidate))); const reversalHandled = candidate.eventType === "reversal" && ledger.automationReversalIds.includes(automationReversalFingerprint(candidate)); const reversalMatches = reversalHandled ? 0 : reversalMatchIndexes(ledger.expenses, candidate).length; const registered = registeredPackages.has(candidate.packageName); const directAppConfirmed = directAppConfirmations.has(candidate.packageName); return <article key={`${candidate.packageName}:${candidate.id}`}>
         <div className="candidate-heading"><span><strong>{candidate.merchant}</strong><small>{candidate.sourceName} · {dateFormatter.format(new Date(candidate.occurredAt))}</small></span><b>{formatMoney(candidate.minorUnits, candidate.currency, locale)}</b></div>
-        <span className={`confidence-chip ${candidate.confidence}`}>{candidate.eventType === "reversal" ? <><RotateCcw />{t(locale, "cancellationReview")}</> : t(locale, candidate.confidence === "high" ? "highConfidence" : "needsReview")}</span>
+        <span className={`confidence-chip ${candidate.confidence}`}>{candidate.eventType === "reversal" ? <><RotateCcw />{t(locale, "cancellationReview")}</> : <>{automationEventTypeLabel(locale, candidate.eventType)} · {candidate.confidence === "high" ? automationConfidenceLabel(locale) : t(locale, "needsReview")}</>}</span>
         {candidate.manualOnly ? <p className="reversal-help">{t(locale, "manualReviewSource")}</p> : null}
         {!registered && !candidate.manualOnly ? <><label className="direct-source-confirm"><input type="checkbox" checked={directAppConfirmed} disabled={busy} onChange={(event) => setDirectAppConfirmations((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.packageName); else next.delete(candidate.packageName); return next; })} /><span>{t(locale, "confirmDirectPaymentApp")}</span></label><button className="wide-secondary" type="button" disabled={busy || !directAppConfirmed} onClick={() => onRegisterSource(Object.freeze({ packageName: candidate.packageName, displayName: candidate.sourceName, trustedDirectApp: true }))}>{t(locale, "registerSource")}</button></> : null}
-        {candidate.eventType === "reversal" && reversalMatches !== 1 ? <p className="reversal-help">{t(locale, reversalMatches > 1 ? "cancellationAmbiguous" : "cancellationNoMatch")}</p> : null}
-        <div className="candidate-actions"><button type="button" disabled={busy} onClick={() => onDismiss(candidate)}><Trash2 />{t(locale, "dismissCandidate")}</button><button className="primary-button" type="button" disabled={busy || (candidate.eventType === "reversal" && reversalMatches !== 1)} onClick={() => onConfirm(candidate)}><Check />{t(locale, candidate.eventType === "reversal" ? "applyCancellation" : "confirmExpense")}</button></div>
+        {candidate.eventType === "reversal" && !movedReversal && reversalMatches !== 1 ? <p className="reversal-help">{t(locale, reversalMatches > 1 ? "cancellationAmbiguous" : "cancellationNoMatch")}</p> : null}
+        {movedReversal ? <><p className="reversal-help">{movedReversalNotice(locale)}</p><button className="wide-secondary" type="button" disabled={busy} onClick={reviewTravelLedgers}>{reviewTravelLedgersLabel(locale)}</button></> : null}
+        <div className="candidate-actions"><button type="button" disabled={busy} onClick={() => onDismiss(candidate)}><Trash2 />{t(locale, "dismissCandidate")}</button><button className="primary-button" type="button" disabled={busy || movedReversal || (candidate.eventType === "reversal" && reversalMatches !== 1)} onClick={() => onConfirm(candidate)}><Check />{t(locale, candidate.eventType === "reversal" ? "applyCancellation" : "confirmExpense")}</button></div>
       </article>; })}</div> : <p className="automation-empty">{t(locale, "noPendingExpenses")}</p>}
     </>}
   </SheetFrame>;
@@ -88,4 +97,41 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh,
 function minorUnitsInput(minorUnits: number, currency: string): string {
   const digits = currencyDigits(currency);
   return (minorUnits / 10 ** digits).toFixed(digits);
+}
+
+function automationEventTypeLabel(locale: Locale, eventType: NativeCardCandidate["eventType"]): string {
+  if (eventType === "outgoing_transfer") return t(locale, "outgoingTransferEvent");
+  if (eventType === "direct_debit") return t(locale, "directDebitEvent");
+  if (eventType === "standing_order") return t(locale, "standingOrderEvent");
+  return t(locale, "paymentEvent");
+}
+
+function notificationAutomationLabel(locale: Locale): string {
+  if (locale === "en") return "Notification-based payment & transfer records";
+  if (locale === "fr") return "Paiements et virements à partir des notifications";
+  return "알림 기반 결제·이체 자동기록";
+}
+
+function notificationHistoryNotice(locale: Locale): string {
+  if (locale === "en") return "Only new notifications posted after access is granted can be detected; past bank history is not imported.";
+  if (locale === "fr") return "Seules les nouvelles notifications publiées après l’autorisation peuvent être détectées ; l’historique bancaire n’est pas importé.";
+  return "권한을 허용한 뒤 새로 게시된 알림만 감지하며 과거 은행 거래내역은 가져오지 않습니다.";
+}
+
+function automationConfidenceLabel(locale: Locale): string {
+  if (locale === "en") return "High-confidence match";
+  if (locale === "fr") return "Détection à haute confiance";
+  return "고신뢰 인식";
+}
+
+function movedReversalNotice(locale: Locale): string {
+  if (locale === "en") return "This payment was moved to a travel ledger. Open that trip and review or delete the cancelled expense there; its settlement has not been changed automatically.";
+  if (locale === "fr") return "Ce paiement a été déplacé dans un carnet de voyage. Ouvrez ce voyage pour vérifier ou supprimer la dépense annulée ; le règlement n’a pas été modifié automatiquement.";
+  return "여행 가계부로 옮긴 결제의 취소입니다. 해당 여행을 열어 취소된 지출을 확인하거나 삭제해주세요. 여행 정산은 자동 변경되지 않았습니다.";
+}
+
+function reviewTravelLedgersLabel(locale: Locale): string {
+  if (locale === "en") return "Review travel ledgers";
+  if (locale === "fr") return "Vérifier les carnets de voyage";
+  return "여행 가계부 확인";
 }

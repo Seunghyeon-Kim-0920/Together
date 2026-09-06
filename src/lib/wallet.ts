@@ -1,9 +1,11 @@
 import { currencyDigits } from "./currency";
+import { legacyPublicExpenseId, publicExpenseId } from "./expenseIdentity";
 import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type TravelExpense, type TravelLedger, type WalletState } from "./types";
 
 export const MAX_LEDGERS = 50;
 export const MAX_EXPENSES_PER_LEDGER = 5_000;
 export const MAX_PARTICIPANTS = 100;
+export const MAX_MOVED_EXPENSE_MARKERS = MAX_EXPENSES_PER_LEDGER * 4;
 // This is a storage-safety bound, not a provider allow-list. Five hundred
 // distinct Android packages is deliberately well beyond normal card usage.
 export const MAX_AUTOMATION_SOURCES = 500;
@@ -45,6 +47,13 @@ function parseAutomationReversalIds(value: unknown): readonly string[] | null {
   if (!Array.isArray(value) || value.length > MAX_EXPENSES_PER_LEDGER) return null;
   const ids = value.map((candidate) => text(candidate, 100));
   if (ids.some((candidate) => !candidate || !/^card-(?:auto|reversal)-[0-9a-f]{16}$/.test(candidate as string)) || new Set(ids).size !== ids.length) return null;
+  return Object.freeze(ids as string[]);
+}
+
+function parseMovedExpenseIds(value: unknown): readonly string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_MOVED_EXPENSE_MARKERS) return null;
+  const ids = value.map((candidate) => text(candidate, 100));
+  if (ids.some((candidate) => !candidate) || new Set(ids).size !== ids.length) return null;
   return Object.freeze(ids as string[]);
 }
 
@@ -116,14 +125,15 @@ export function parseLedger(value: unknown): Ledger | null {
     const automationAllApps = value.automationAllApps === undefined ? false : value.automationAllApps;
     const automationSources = value.automationSources === undefined ? Object.freeze([]) : parseAutomationSources(value.automationSources);
     const automationReversalIds = value.automationReversalIds === undefined ? Object.freeze([]) : parseAutomationReversalIds(value.automationReversalIds);
-    if (!ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds) return null;
+    const movedExpenseIds = value.movedExpenseIds === undefined ? Object.freeze([]) : parseMovedExpenseIds(value.movedExpenseIds);
+    if (!ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds || !movedExpenseIds) return null;
     const expenses: GeneralExpense[] = [];
     for (const candidate of value.expenses) {
       const expense = parseGeneralExpense(candidate, ledgerCurrency);
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, expenses: Object.freeze(expenses) } satisfies GeneralLedger);
+    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses) } satisfies GeneralLedger);
   }
   return null;
 }
@@ -146,7 +156,7 @@ export function createLedger(kind: Ledger["kind"], titleInput: string, selectedC
   const now = new Date().toISOString(); const base = { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now };
   return kind === "travel"
     ? Object.freeze({ ...base, kind, currencies: Object.freeze([selectedCurrency]), defaultCurrency: selectedCurrency, participants: Object.freeze([]), selfParticipantId: null, expenses: Object.freeze([]) })
-    : Object.freeze({ ...base, kind, currency: selectedCurrency, monthlyLimitMinor: null, automationAllApps: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), expenses: Object.freeze([]) });
+    : Object.freeze({ ...base, kind, currency: selectedCurrency, monthlyLimitMinor: null, automationAllApps: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), movedExpenseIds: Object.freeze([]), expenses: Object.freeze([]) });
 }
 
 export function splitEvenly(minorUnits: number, participantIds: readonly string[]): readonly ExpenseShare[] {
@@ -205,7 +215,7 @@ export function mergeGeneralLedgerMutation(base: GeneralLedger, desired: General
     if (before && !requested) continue;
     expenses.push(before && requested && !sameGeneralExpense(before, requested) ? requested : current);
   }
-  for (const requested of desired.expenses) if (!baseById.has(requested.id) && !latestIds.has(requested.id)) expenses.push(requested);
+  for (const requested of desired.expenses) if (!baseById.has(requested.id) && !latestIds.has(requested.id) && !latest.movedExpenseIds.includes(requested.id)) expenses.push(requested);
   return Object.freeze({
     ...latest,
     title: desired.title !== base.title ? desired.title : latest.title,
@@ -213,18 +223,38 @@ export function mergeGeneralLedgerMutation(base: GeneralLedger, desired: General
     automationAllApps: desired.automationAllApps !== base.automationAllApps ? desired.automationAllApps : latest.automationAllApps,
     automationSources: sameAutomationSources(desired.automationSources, base.automationSources) ? latest.automationSources : desired.automationSources,
     automationReversalIds: sameStringList(desired.automationReversalIds, base.automationReversalIds) ? latest.automationReversalIds : desired.automationReversalIds,
+    // Moving and editing can happen while another sheet is open. Tombstones
+    // are monotonic and must never be erased by an older view of the ledger.
+    movedExpenseIds: Object.freeze([...new Set([...latest.movedExpenseIds, ...desired.movedExpenseIds])]),
     expenses: Object.freeze(expenses),
     updatedAt: new Date().toISOString(),
   });
 }
 
 /** Merge provider-imported expenses into an existing general ledger by stable expense id. */
-export function mergeGeneralLedgers(existing: GeneralLedger, imported: GeneralLedger): GeneralLedger {
+export function mergeGeneralLedgers(existing: GeneralLedger, imported: GeneralLedger, sourceLedgerId?: string): GeneralLedger {
   if (existing.kind !== "general" || imported.kind !== "general" || existing.currency !== imported.currency || existing.title !== imported.title) throw new Error("incompatible ledgers");
   const byId = new Map(existing.expenses.map((expense) => [expense.id, expense]));
+  const knownIds = new Set<string>();
+  const remember = (id: string) => {
+    knownIds.add(id);
+    // A local expense and its exported opaque id still identify one row.
+    knownIds.add(publicExpenseId(existing.id, id));
+    if (sourceLedgerId && /^shared-[0-9a-f]{16}$/.test(id)) knownIds.add(legacyPublicExpenseId(sourceLedgerId, id));
+  };
+  for (const expense of existing.expenses) remember(expense.id);
+  for (const id of existing.movedExpenseIds) remember(id);
   // Existing rows may contain user edits. A repeated provider import should
   // only add unseen transactions, never overwrite those local corrections.
-  for (const expense of imported.expenses) if (!byId.has(expense.id)) byId.set(expense.id, expense);
+  for (const expense of imported.expenses) {
+    const legacyId = sourceLedgerId ? legacyPublicExpenseId(sourceLedgerId, expense.id) : null;
+    if (!knownIds.has(expense.id) && !(legacyId && knownIds.has(legacyId)) && !(expense.automationFingerprint && knownIds.has(expense.automationFingerprint))) {
+      byId.set(expense.id, expense);
+    }
+    // Also remember a matched incoming alias so one file cannot insert both
+    // legacy and stable forms of the same transaction in either order.
+    remember(expense.id);
+  }
   const merged = Object.freeze({ ...existing, expenses: Object.freeze([...byId.values()]), updatedAt: new Date().toISOString() });
   const parsed = parseLedger(merged);
   if (!parsed || parsed.kind !== "general") throw new Error("invalid merged ledger");

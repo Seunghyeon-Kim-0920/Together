@@ -19,11 +19,32 @@ test("native candidates are strictly validated and duplicate queue rows collapse
   assert.equal(parseNativeCardCandidate({ ...candidate, occurredAt: "2026-02-30T10:00:00Z" }), null);
   assert.equal(parseNativeCardCandidate({ ...candidate, occurredOn: "2026-02-30" }), null);
   assert.equal(parseNativeCardCandidate({ ...candidate, eventType: "credit" }), null);
+  assert.equal(parseNativeCardCandidate({ ...candidate, eventType: "outgoing_transfer" })?.eventType, "outgoing_transfer");
+  assert.equal(parseNativeCardCandidate({ ...candidate, eventType: "direct_debit" })?.eventType, "direct_debit");
+  assert.equal(parseNativeCardCandidate({ ...candidate, eventType: "standing_order" })?.eventType, "standing_order");
   assert.equal(parseNativeCardCandidate({ ...candidate, eventType: undefined })?.eventType, "purchase");
   const batch = parseNativeCandidateBatch({ events: [candidate, candidate, { ...candidate, id: "bad", queueToken: "bad-version", currency: "EURO" }] });
   assert.equal(batch.candidates.length, 1);
   assert.deepEqual(batch.rejectedIds, ["bad"]);
   assert.deepEqual(batch.rejectedAcknowledgements, [{ id: "bad", queueToken: "bad-version" }]);
+});
+
+test("completed outgoing transfers and executed recurring debits use the normal editable expense pipeline", () => {
+  const outbound = Object.freeze({ ...candidate, id: "transfer-1", merchant: "Marie Dupont", eventType: "outgoing_transfer" as const });
+  const directDebit = Object.freeze({ ...candidate, id: "debit-1", merchant: "Electric EDF", eventType: "direct_debit" as const });
+  const standingOrder = Object.freeze({ ...candidate, id: "standing-1", merchant: "Landlord", eventType: "standing_order" as const });
+  const result = applyHighConfidenceCardAutomation(wallet(), [outbound, directDebit, standingOrder]);
+  assert.deepEqual(result.insertedIds, [outbound.id, directDebit.id, standingOrder.id]);
+  assert.equal(result.state.ledgers[0].kind === "general" ? result.state.ledgers[0].expenses.length : 0, 3);
+  if (result.state.ledgers[0].kind !== "general") throw new Error("expected general ledger");
+  assert.equal(result.state.ledgers[0].expenses[0].category, "other");
+  assert.equal(result.state.ledgers[0].expenses[1].category, "utilities");
+  const edited = Object.freeze({ ...result.state.ledgers[0].expenses[0], description: "친구에게 보냄", category: "leisure" as const });
+  const editedLedger = Object.freeze({ ...result.state.ledgers[0], expenses: replaceExpenseById(result.state.ledgers[0].expenses, edited) });
+  const replay = applyHighConfidenceCardAutomation(wallet(editedLedger), [outbound]);
+  assert.deepEqual(replay.state.ledgers[0].kind === "general" ? replay.state.ledgers[0].expenses[0] : null, edited);
+  assert.deepEqual(replay.acknowledgedIds, [outbound.id]);
+  assert.deepEqual(replay.pending, []);
 });
 
 test("stable ids and category inference are deterministic", () => {

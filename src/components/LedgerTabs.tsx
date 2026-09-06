@@ -7,7 +7,7 @@ export function LedgerTabs({ ledgers, activeId, locale, onSelect, onAdd, onMenu 
   onSelect: (id: string) => void; onAdd: () => void; onMenu: (ledger: Ledger) => void;
 }) {
   return (
-    <nav className="ledger-tabs" aria-label={t(locale, "ledgers")}>
+    <nav id="wallet-ledger-tabs" className="ledger-tabs" tabIndex={-1} aria-label={t(locale, "ledgers")}>
       {ledgers.map((ledger) => {
         const Icon = ledger.kind === "travel" ? Plane : Home;
         return (

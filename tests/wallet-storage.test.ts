@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createLedgerSharePayload, createTravelSharePayload, createTravelShareText, parseLedgerSharePayload, parseTravelSharePayload, safeFilename } from "../src/lib/share";
+import { legacyPublicExpenseId, publicExpenseId } from "../src/lib/expenseIdentity";
+import { createLedgerSharePayload, createTravelSharePayload, createTravelShareText, parseLedgerShareDocument, parseLedgerSharePayload, parseTravelSharePayload, safeFilename } from "../src/lib/share";
 import { EMPTY_WALLET_STATE, type TravelLedger } from "../src/lib/types";
 import { createLedger, createTravelExpense, MAX_AUTOMATION_SOURCES, mergeGeneralLedgers, parseWalletState, parseWalletStateStrict } from "../src/lib/wallet";
 
@@ -143,6 +144,70 @@ test("provider re-import keeps a user's local expense correction", () => {
   assert.deepEqual(mergeGeneralLedgers(existing, imported).expenses, [localCorrection]);
 });
 
+test("a v1.3.1 general share reimport keeps its legacy row and local correction", () => {
+  const source = Object.freeze({ ...createLedger("general", "Card expenses", "EUR"), id: "source-ledger", expenses: Object.freeze([{ id: "expense-1", description: "Original merchant", category: "other" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-01" }]) });
+  const payload = createLedgerSharePayload(source);
+  const document = parseLedgerShareDocument(payload);
+  const imported = parseLedgerSharePayload(payload);
+  assert.ok(document && imported?.kind === "general");
+  const sharedId = publicExpenseId(source.id, source.expenses[0].id);
+  const legacyId = legacyPublicExpenseId(source.id, sharedId);
+  assert.equal(sharedId, "shared-7bcd904c17d58ee1");
+  assert.equal(legacyId, "shared-f7f16cd2f0bfe059");
+  assert.notEqual(legacyId, sharedId);
+  assert.equal(imported.expenses[0].id, sharedId);
+  const localCorrection = Object.freeze({ ...source.expenses[0], id: legacyId, description: "Corrected merchant", category: "food" as const, minorUnits: 450 });
+  const existing = Object.freeze({ ...createLedger("general", source.title, "EUR"), expenses: Object.freeze([localCorrection]) });
+  const merged = mergeGeneralLedgers(existing, imported, document.sourceLedgerId);
+  assert.deepEqual(merged.expenses, [localCorrection]);
+  assert.equal(merged.expenses.reduce((sum, expense) => sum + expense.minorUnits, 0), 450);
+  assert.deepEqual(mergeGeneralLedgers(merged, imported, document.sourceLedgerId).expenses, [localCorrection]);
+});
+
+test("a legacy share alias cannot restore an expense moved to a travel ledger", () => {
+  const source = Object.freeze({ ...createLedger("general", "Card expenses", "EUR"), expenses: Object.freeze([{ id: "expense-1", description: "Lunch", category: "food" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-01" }]) });
+  const payload = createLedgerSharePayload(source);
+  const document = parseLedgerShareDocument(payload);
+  const imported = parseLedgerSharePayload(payload);
+  assert.ok(document && imported?.kind === "general");
+  const sharedId = imported.expenses[0].id;
+  const legacyId = legacyPublicExpenseId(source.id, sharedId);
+  const existing = Object.freeze({ ...createLedger("general", source.title, "EUR"), movedExpenseIds: Object.freeze([legacyId]) });
+  assert.deepEqual(mergeGeneralLedgers(existing, imported, document.sourceLedgerId).expenses, []);
+  // Support the reverse form too: a file forwarded by an older app can hold
+  // a rehashed identity while the local moved marker uses the stable id.
+  const stableMoved = Object.freeze({ ...existing, movedExpenseIds: Object.freeze([sharedId]) });
+  const legacyImported = Object.freeze({ ...imported, expenses: Object.freeze([{ ...imported.expenses[0], id: legacyId }]) });
+  assert.deepEqual(mergeGeneralLedgers(stableMoved, legacyImported, source.id).expenses, []);
+});
+
+test("reimporting a local export does not duplicate the original non-shared row", () => {
+  const original = Object.freeze({ ...createLedger("general", "Card expenses", "EUR"), expenses: Object.freeze([{ id: "local-expense", description: "Lunch", category: "food" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-01" }]) });
+  const payload = createLedgerSharePayload(original);
+  const imported = parseLedgerSharePayload(payload);
+  assert.ok(imported?.kind === "general");
+  const corrected = Object.freeze({ ...original, expenses: Object.freeze([{ ...original.expenses[0], minorUnits: 400 }]) });
+  assert.deepEqual(mergeGeneralLedgers(corrected, imported, original.id).expenses, corrected.expenses);
+});
+
+test("legacy compatibility retains unseen transactions and deduplicates both alias orders", () => {
+  const base = createLedger("general", "Card expenses", "EUR");
+  const sourceId = "source-ledger";
+  const expense = Object.freeze({ id: publicExpenseId(sourceId, "expense-1"), description: "Lunch", category: "food" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-01" });
+  const legacy = Object.freeze({ ...expense, id: legacyPublicExpenseId(sourceId, expense.id) });
+  const distinct = Object.freeze({ ...expense, id: publicExpenseId(sourceId, "expense-2") });
+  for (const pair of [[expense, legacy], [legacy, expense]]) {
+    const imported = Object.freeze({ ...base, expenses: Object.freeze([...pair, distinct]) });
+    const merged = mergeGeneralLedgers(base, imported, sourceId);
+    assert.deepEqual(merged.expenses, [pair[0], distinct]);
+    assert.equal(merged.expenses.reduce((sum, row) => sum + row.minorUnits, 0), 1000);
+  }
+  // A legacy alias is scoped to the actual share source, not its title.
+  const existing = Object.freeze({ ...base, expenses: Object.freeze([legacy]) });
+  const imported = Object.freeze({ ...base, expenses: Object.freeze([expense]) });
+  assert.equal(mergeGeneralLedgers(existing, imported, "unrelated-source").expenses.length, 2);
+});
+
 test("state validation rejects duplicate ledger ids", () => {
   const ledger = createLedger("general", "Home", "KRW");
   const result = parseWalletState({ version: 2, locale: "ko", activeLedgerId: ledger.id, ledgers: [ledger, ledger] });
@@ -152,4 +217,13 @@ test("state validation rejects duplicate ledger ids", () => {
 
 test("filenames are safe on Android, iOS, and Windows", () => {
   assert.equal(safeFilename('Paris: 2026 / A*B?'), "Paris- 2026 - A-B-");
+});
+
+test("general share keeps merchant-only text when opaque ids hide import provenance", () => {
+  const source = Object.freeze({ ...createLedger("general", "Home", "EUR"), expenses: Object.freeze([{ id: "revolut-original", description: "Revolut · Lidl", category: "food" as const, currency: "EUR", minorUnits: 500, occurredOn: "2026-08-01" }]) });
+  const payload = createLedgerSharePayload(source);
+  const imported = parseLedgerSharePayload(payload);
+  assert.equal(imported?.expenses[0].description, "Lidl");
+  assert.equal(source.expenses[0].description, "Revolut · Lidl", "export does not rewrite local records");
+  assert.equal(parseLedgerSharePayload(createLedgerSharePayload(imported!))?.expenses[0].description, "Lidl");
 });

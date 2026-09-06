@@ -7,7 +7,15 @@ const DATE_PREFIX = /^\d{4}-\d{2}-\d{2}/;
 const PACKAGE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/;
 
 export type CardCandidateConfidence = "high" | "review";
-export type CardCandidateEventType = "purchase" | "reversal";
+export type CardCandidateEventType = "purchase" | "outgoing_transfer" | "direct_debit" | "standing_order" | "reversal";
+
+const CARD_CANDIDATE_EVENT_TYPES: readonly CardCandidateEventType[] = Object.freeze([
+  "purchase",
+  "outgoing_transfer",
+  "direct_debit",
+  "standing_order",
+  "reversal",
+]);
 
 export interface NativeCardCandidate {
   readonly id: string;
@@ -83,10 +91,10 @@ export function parseNativeCardCandidate(value: unknown): NativeCardCandidate | 
   const queueToken = value.queueToken === undefined || value.queueToken === null ? null : boundedText(value.queueToken, 200);
   const eventType = value.eventType === undefined ? "purchase" : value.eventType;
   const manualOnly = value.manualOnly === undefined ? false : value.manualOnly;
-  if (!id || (value.queueToken !== undefined && value.queueToken !== null && !queueToken) || !packageName || !PACKAGE_NAME.test(packageName) || !sourceName || !merchant || !occurredAt || !Number.isSafeInteger(value.minorUnits) || (value.minorUnits as number) <= 0 || !/^[A-Z]{3}$/.test(currency) || (value.confidence !== "high" && value.confidence !== "review") || (eventType !== "purchase" && eventType !== "reversal") || typeof manualOnly !== "boolean") return null;
+  if (!id || (value.queueToken !== undefined && value.queueToken !== null && !queueToken) || !packageName || !PACKAGE_NAME.test(packageName) || !sourceName || !merchant || !occurredAt || !Number.isSafeInteger(value.minorUnits) || (value.minorUnits as number) <= 0 || !/^[A-Z]{3}$/.test(currency) || (value.confidence !== "high" && value.confidence !== "review") || !CARD_CANDIDATE_EVENT_TYPES.includes(eventType as CardCandidateEventType) || typeof manualOnly !== "boolean") return null;
   const occurredOn = value.occurredOn === undefined ? localCalendarDate(occurredAt) : validCalendarDate(value.occurredOn);
   if (!occurredOn) return null;
-  return Object.freeze({ id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, occurredOn, confidence: value.confidence, eventType, manualOnly });
+  return Object.freeze({ id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, occurredOn, confidence: value.confidence, eventType: eventType as CardCandidateEventType, manualOnly });
 }
 
 export function parseNativeCandidateBatch(value: unknown): ParsedCandidateBatch {
@@ -162,7 +170,8 @@ function likelyExistingExpense(expenses: readonly GeneralExpense[], candidate: N
 }
 
 function candidateExpense(candidate: NativeCardCandidate): GeneralExpense {
-  return Object.freeze({ id: automationExpenseId(candidate), description: candidate.merchant, category: inferGeneralCategory(candidate.merchant), currency: candidate.currency, minorUnits: candidate.minorUnits, occurredOn: candidateDate(candidate), automationFingerprint: automationOriginFingerprint(candidate), automationReversalFingerprint: automationReversalFingerprint(candidate) });
+  const category = candidate.eventType === "outgoing_transfer" ? "other" : inferGeneralCategory(candidate.merchant);
+  return Object.freeze({ id: automationExpenseId(candidate), description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits, occurredOn: candidateDate(candidate), automationFingerprint: automationOriginFingerprint(candidate), automationReversalFingerprint: automationReversalFingerprint(candidate) });
 }
 
 export function candidateOwnerLedgerIds(ledgers: readonly WalletState["ledgers"][number][], candidate: NativeCardCandidate): readonly string[] {
@@ -200,16 +209,23 @@ export function reversalMatchIndexes(expenses: readonly GeneralExpense[], candid
 export function applyHighConfidenceCardAutomation(state: WalletState, candidates: readonly NativeCardCandidate[]): AutomationBatchResult {
   const ledgers = [...state.ledgers]; const acknowledgedIds = new Set<string>(); const insertedIds: string[] = []; const reversedIds: string[] = []; const pending: NativeCardCandidate[] = [];
   const globallyRecorded = new Set(state.ledgers.flatMap((ledger) => ledger.expenses.map((expense) => expense.id)));
+  const movedExpenseIds = new Set(state.ledgers.flatMap((ledger) => ledger.kind === "general" ? ledger.movedExpenseIds ?? [] : []));
   const appliedReversals = new Set(state.ledgers.flatMap((ledger) => ledger.kind === "general" ? ledger.automationReversalIds : []));
   // Purchases are processed before reversals regardless of notification order,
   // so a delayed or out-of-order cancellation wins within the same batch.
   const orderedCandidates = [...candidates].sort((left, right) => Number(left.eventType === "reversal") - Number(right.eventType === "reversal"));
   for (const candidate of orderedCandidates) {
     const expenseId = automationExpenseId(candidate);
+    if (candidate.eventType !== "reversal" && movedExpenseIds.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
+    // A moved expense now belongs to a shared trip. Never cancel a different
+    // general-ledger expense merely because merchant and amount match it.
+    if (candidate.eventType === "reversal" && (movedExpenseIds.has(expenseId) || movedExpenseIds.has(automationReversalFingerprint(candidate)))) {
+      pending.push(Object.freeze({ ...candidate, confidence: "review" })); continue;
+    }
     // A cancellation tombstones both its own event and the removed purchase.
     // This prevents a stale purchase notification from recreating the charge.
     if (appliedReversals.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
-    if (candidate.eventType === "purchase" && globallyRecorded.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
+    if (candidate.eventType !== "reversal" && globallyRecorded.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
     const owners = ownerIndexes(ledgers, candidate);
     if (candidate.manualOnly) { pending.push(candidate.confidence === "review" ? candidate : Object.freeze({ ...candidate, confidence: "review" })); continue; }
     if (candidate.confidence !== "high" || owners.length !== 1) { pending.push(candidate); continue; }
@@ -246,7 +262,7 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     // A same-day purchase for the same amount at the same merchant can be a
     // legitimate second purchase. Keep fuzzy matches for explicit review and
     // only acknowledge deterministic native IDs automatically.
-    if (likelyExistingExpense(ledger.expenses, candidate)) { pending.push(Object.freeze({ ...candidate, confidence: "review" })); continue; }
+    if (movedExpenseIds.has(automationOriginFingerprint(candidate)) || likelyExistingExpense(ledger.expenses, candidate)) { pending.push(Object.freeze({ ...candidate, confidence: "review" })); continue; }
     const expense = candidateExpense(candidate); globallyRecorded.add(expense.id); insertedIds.push(candidate.id); acknowledgedIds.add(candidate.id);
     ledgers[index] = Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, expense]), updatedAt: new Date().toISOString() });
   }
@@ -258,7 +274,9 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
   const index = state.ledgers.findIndex((ledger) => ledger.id === ledgerId); const ledger = state.ledgers[index];
   if (!ledger || ledger.kind !== "general" || ledger.currency !== candidate.currency) throw new Error("incompatible candidate");
   const expenseId = automationExpenseId(candidate);
+  const movedExpenseIds = new Set(state.ledgers.flatMap((item) => item.kind === "general" ? item.movedExpenseIds ?? [] : []));
   if (candidate.eventType === "reversal") {
+    if (movedExpenseIds.has(expenseId) || movedExpenseIds.has(automationReversalFingerprint(candidate))) throw new Error("moved expense reversal requires travel ledger review");
     if (ledger.automationReversalIds.includes(expenseId) || ledger.automationReversalIds.includes(automationReversalFingerprint(candidate))) return Object.freeze({ state, inserted: false, reversed: false });
     const matches = reversalMatchIndexes(ledger.expenses, candidate);
     if (matches.length !== 1) throw new Error("ambiguous reversal");
@@ -267,6 +285,7 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
     const updated = Object.freeze({ ...ledger, automationReversalIds, expenses: Object.freeze(ledger.expenses.filter((_, expenseIndex) => expenseIndex !== matches[0])), updatedAt: new Date().toISOString() }); const ledgers = [...state.ledgers]; ledgers[index] = updated;
     return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: false, reversed: true });
   }
+  if (movedExpenseIds.has(expenseId)) return Object.freeze({ state, inserted: false, reversed: false });
   if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
   if (state.ledgers.some((item) => item.expenses.some((expense) => expense.id === expenseId))) return Object.freeze({ state, inserted: false, reversed: false });
   const updated = Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate)]), updatedAt: new Date().toISOString() }); const ledgers = [...state.ledgers]; ledgers[index] = updated;

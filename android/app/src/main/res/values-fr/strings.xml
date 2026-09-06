@@ -2,5 +2,5 @@
 <resources>
     <string name="app_name">지갑의 일기</string>
     <string name="title_activity_main">지갑의 일기</string>
-    <string name="card_automation_service">Enregistrement automatique des dépenses par carte</string>
+    <string name="card_automation_service">Paiements et virements à partir des notifications</string>
 </resources>

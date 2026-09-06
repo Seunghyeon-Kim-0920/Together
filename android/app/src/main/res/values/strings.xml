@@ -4,5 +4,5 @@
     <string name="title_activity_main">지갑의 일기</string>
     <string name="package_name">com.seunghyeonkim.walletdiary</string>
     <string name="custom_url_scheme">com.seunghyeonkim.walletdiary</string>
-    <string name="card_automation_service">카드 결제 자동 기록</string>
+    <string name="card_automation_service">알림 기반 결제·이체 기록</string>
 </resources>

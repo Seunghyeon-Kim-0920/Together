@@ -17,6 +17,8 @@ jobs:
           distribution: temurin
           java-version: 21
       - run: npm ci
+      - run: npm run lint
+      - run: npm test
       - run: npm run build
       - run: npx cap sync android
       - name: Restore Android upload key
@@ -31,7 +33,7 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > release/wallet-diary-upload.jks
           printf 'storeFile=../release/wallet-diary-upload.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > release/signing.properties
       - working-directory: android
-        run: ./gradlew assembleRelease bundleRelease
+        run: ./gradlew testReleaseUnitTest assembleRelease bundleRelease
       - uses: actions/upload-artifact@v4
         with:
           name: wallet-diary-android

@@ -33,7 +33,7 @@ button:disabled { cursor: default; opacity: .44; }
 .ledger-screen-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .ledger-screen-heading span { color: var(--jade-dark); font-size: 11px; font-weight: 800; }
 .ledger-screen-heading h2 { margin: 4px 0 0; font-size: 27px; line-height: 1.12; letter-spacing: -.045em; }
-.heading-actions { display: flex; gap: 6px; }
+.heading-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .heading-actions button, .section-heading button { min-height: 38px; display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: 10px; font-weight: 760; }
 .heading-actions svg, .section-heading button svg { width: 16px; }
 .money-summary { display: flex; gap: 9px; overflow-x: auto; scrollbar-width: none; }
@@ -78,6 +78,31 @@ button:disabled { cursor: default; opacity: .44; }
 .expense-list article > b { font-size: 12px; white-space: nowrap; }
 .expense-actions { display: flex; align-items: center; }
 .expense-actions button:first-child { color: var(--jade-dark); }
+.move-expense-button { grid-column: 2 / -1; justify-self: start; display: inline-flex; align-items: center; gap: 6px; min-height: 40px; border: 0; border-radius: 8px; padding: 4px 8px; background: #edf7f2; color: var(--jade-dark); font-size: 12px; font-weight: 700; text-align: left; }
+.move-expense-button svg { width: 16px; height: 16px; flex-shrink: 0; }
+.travel-exchange-panel { padding: 16px; }
+.travel-exchange-panel p { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.exchange-buttons { display: grid; gap: 9px; }
+.exchange-buttons button { margin: 0; min-height: 46px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 12px; white-space: normal; }
+.exchange-buttons svg { width: 18px; height: 18px; flex-shrink: 0; }
+.exchange-expense { display: grid; gap: 7px; padding: 15px; margin-bottom: 16px; border-radius: 14px; background: #edf7f2; overflow-wrap: anywhere; }
+.exchange-expense b { font-size: 24px; color: var(--jade-dark); }
+.exchange-expense small, .exchange-expense span { color: var(--muted); font-size: 12px; }
+.exchange-form h3 { margin: 22px 0 9px; font-size: 16px; }
+.participant-mapping { display: grid; gap: 12px; }
+.participant-mapping label { display: grid; gap: 6px; font-size: 13px; overflow-wrap: anywhere; }
+.participant-mapping select { min-width: 0; max-width: 100%; width: 100%; min-height: 46px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.exchange-counts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.exchange-counts span { padding: 10px; border-radius: 10px; background: #f3f6f5; display: grid; gap: 8px; font-size: 11px; overflow-wrap: anywhere; }
+.exchange-counts b { color: var(--jade-dark); font-size: 23px; }
+.exchange-totals { padding: 8px 0; }
+.exchange-totals h4 { font-size: 13px; margin: 12px 0; }
+.exchange-totals p { display: flex; justify-content: space-between; gap: 12px; margin: 10px 0; font-size: 12px; line-height: 1.5; }
+.exchange-totals span { overflow-wrap: anywhere; min-width: 0; }
+.exchange-totals b { flex-shrink: 0; }
+.exchange-conflicts, .exchange-error { padding: 12px; background: #fff3df; border-radius: 10px; font-size: 12px; line-height: 1.6; }
+.exchange-conflicts p { display: grid; gap: 5px; overflow-wrap: anywhere; }
+.exchange-form > .primary-button { min-height: 48px; white-space: normal; }
 .floating-add { position: fixed; z-index: 12; right: max(18px, calc((100vw - 500px) / 2 + 18px)); bottom: calc(20px + env(safe-area-inset-bottom)); min-height: 52px; display: flex; align-items: center; gap: 7px; padding: 0 17px; border: 0; border-radius: 16px; background: var(--jade); color: #fff; box-shadow: 0 12px 28px rgba(0,127,74,.26); font-size: 12px; font-weight: 850; }
 .floating-add svg { width: 20px; }
 .month-navigation { min-height: 46px; display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; text-align: center; }

@@ -43,10 +43,9 @@ public class PaymentNotificationParserTest {
     }
 
     @Test
-    public void rejectsFailedPendingIncomeTransferOtpAndMultipleAmounts() {
+    public void rejectsFailedPendingIncomeOtpAndMultipleAmounts() {
         assertNull(parse("hr.lunc.client", "Paiement refusé", "-4,20 €", "failed", 1L));
         assertNull(parse("com.revolut.revolut", "Balance update", "+ €12.34", "credit", 2L));
-        assertNull(parse("com.example.bank", "Transfer completed", "€12.34 to Alice", "transfer", 2L));
         assertNull(parse("com.revolut.revolut", "Security code", "OTP 123456 for €1.00", "otp", 3L));
         assertNull(parse("com.revolut.revolut", "Card payment pending", "€12.34 at Lidl", "pending", 3L));
         assertNull(parse("com.revolut.revolut", "Refund failed", "+€12.34 at Lidl", "refund-failed", 3L));
@@ -64,6 +63,99 @@ public class PaymentNotificationParserTest {
         assertNotNull(paymentWithBalance);
         assertEquals(1234L, paymentWithBalance.optLong("minorUnits"));
         assertNotNull(parse("com.revolut.revolut", "Shopping Plaza", "-€12.34", "merchant-word", 5L));
+    }
+
+    @Test
+    public void parsesCompletedOutgoingTransfersAcrossSupportedLanguages() {
+        JSONObject english = parse("com.example.bank", "Transfer completed", "€12.34 sent to Alice", "transfer-en", 110L);
+        JSONObject french = parse("fr.example.bank", "Virement effectué", "12,34 € vers Alice", "transfer-fr", 111L);
+        JSONObject korean = parse("kr.example.bank", "송금 완료", "받는 분 김민지 12,000 KRW", "transfer-ko", 112L, true, "KRW");
+        JSONObject withBalance = parse("com.example.bank", "Transfer completed", "€12.34 to Alice. Remaining balance €500.00", "transfer-balance", 113L);
+
+        assertNotNull(english);
+        assertNotNull(french);
+        assertNotNull(korean);
+        assertNotNull(withBalance);
+        assertEquals("outgoing_transfer", english.optString("eventType"));
+        assertEquals("outgoing_transfer", french.optString("eventType"));
+        assertEquals("outgoing_transfer", korean.optString("eventType"));
+        assertEquals("Alice", english.optString("merchant"));
+        assertEquals("Alice", french.optString("merchant"));
+        assertEquals("김민지", korean.optString("merchant"));
+        assertEquals(1234L, withBalance.optLong("minorUnits"));
+        assertEquals("Alice", withBalance.optString("merchant"));
+    }
+
+    @Test
+    public void parsesExecutedDirectDebitsAcrossSupportedLanguages() {
+        JSONObject english = parse("com.example.bank", "Direct debit completed", "£45.67 creditor EDF", "debit-en", 120L, true, "GBP");
+        JSONObject french = parse("fr.example.bank", "Prélèvement SEPA effectué", "42,00 € créancier EDF", "debit-fr", 121L);
+        JSONObject korean = parse("kr.example.bank", "자동이체 출금 완료", "예금주 통신사 55,000 KRW", "debit-ko", 122L, true, "KRW");
+
+        assertNotNull(english);
+        assertNotNull(french);
+        assertNotNull(korean);
+        assertEquals("direct_debit", english.optString("eventType"));
+        assertEquals("direct_debit", french.optString("eventType"));
+        assertEquals("direct_debit", korean.optString("eventType"));
+        assertEquals("EDF", english.optString("merchant"));
+        assertEquals("EDF", french.optString("merchant"));
+        assertEquals("통신사", korean.optString("merchant"));
+    }
+
+    @Test
+    public void parsesExecutedStandingOrdersAcrossSupportedLanguages() {
+        JSONObject english = parse("com.example.bank", "Standing order executed", "€700.00 to Landlord", "standing-en", 130L);
+        JSONObject french = parse("fr.example.bank", "Virement permanent exécuté", "700,00 € vers Propriétaire", "standing-fr", 131L);
+        JSONObject korean = parse("kr.example.bank", "정기이체 완료", "받는 분 집주인 700,000 KRW", "standing-ko", 132L, true, "KRW");
+
+        assertNotNull(english);
+        assertNotNull(french);
+        assertNotNull(korean);
+        assertEquals("standing_order", english.optString("eventType"));
+        assertEquals("standing_order", french.optString("eventType"));
+        assertEquals("standing_order", korean.optString("eventType"));
+        assertEquals("Landlord", english.optString("merchant"));
+        assertEquals("Propriétaire", french.optString("merchant"));
+        assertEquals("집주인", korean.optString("merchant"));
+    }
+
+    @Test
+    public void rejectsIncomingFutureFailedAndOwnAccountTransfers() {
+        assertNull(parse("com.example.bank", "Transfer received", "€12.34 from Alice", "incoming-en", 140L));
+        assertNull(parse("com.example.bank", "Transfer completed", "€12.34 from Alice", "incoming-from-en", 1401L));
+        assertNull(parse("com.example.bank", "Alice", "Transfer completed €12.34 received from Alice", "incoming-received-from-en", 1402L));
+        assertNull(parse("fr.example.bank", "Virement reçu", "12,34 € de Alice", "incoming-fr", 141L));
+        assertNull(parse("fr.example.bank", "Virement effectué", "12,34 € de Alice", "incoming-de-fr", 1411L));
+        assertNull(parse("fr.example.bank", "Alice", "Virement provenant de Alice : 12,34 €", "incoming-source-fr", 1412L));
+        assertNull(parse("kr.example.bank", "송금 받음", "입금 12,000 KRW", "incoming-ko", 142L, true, "KRW"));
+        assertNull(parse("kr.example.bank", "이체 완료", "김민지로부터 12,000 KRW", "incoming-from-ko", 1421L, true, "KRW"));
+        assertNull(parse("kr.example.bank", "김민지", "송금을 받았습니다 12,000 KRW", "incoming-received-ko", 1422L, true, "KRW"));
+        assertNull(parse("com.example.bank", "Transfer completed", "-€12.34", "ambiguous-transfer-en", 1423L));
+        assertNull(parse("com.example.bank", "Alice", "Transfer completed -€12.34", "ambiguous-title-en", 1424L));
+        assertNull(parse("fr.example.bank", "Virement effectué", "-12,34 €", "ambiguous-transfer-fr", 1425L));
+        assertNull(parse("kr.example.bank", "이체 완료", "-12,000 KRW", "ambiguous-transfer-ko", 1426L, true, "KRW"));
+        assertNull(parse("com.example.bank", "Standing order", "€12.34 scheduled for tomorrow to Alice", "future-en", 143L));
+        assertNull(parse("fr.example.bank", "Virement permanent", "12,34 € prévu pour demain vers Alice", "future-fr", 144L));
+        assertNull(parse("kr.example.bank", "정기이체 출금 예정", "내일 12,000 KRW", "future-ko", 145L, true, "KRW"));
+        assertNull(parse("com.example.bank", "Direct debit created", "-€20.00 creditor EDF", "created-debit", 1451L));
+        assertNull(parse("com.example.bank", "Standing order mandate set up", "-€20.00 to Alice", "mandate-en", 1452L));
+        assertNull(parse("fr.example.bank", "Prélèvement enregistré", "-20,00 € créancier EDF", "registered-fr", 1453L));
+        assertNull(parse("kr.example.bank", "자동이체 등록", "-20,000 KRW 예금주 통신사", "registered-ko", 1454L, true, "KRW"));
+        assertNull(parse("com.example.bank", "Direct debit", "€20.00 creditor EDF", "unsigned-bare-debit", 1455L));
+        assertNull(parse("com.example.bank", "Standing order", "€20.00 to Alice", "unsigned-bare-standing", 1456L));
+        assertNull(parse("com.example.bank", "Transfer pending", "€12.34 to Alice", "pending-transfer", 146L));
+        assertNull(parse("com.example.bank", "Transfer failed", "€12.34 to Alice", "failed-transfer", 147L));
+        assertNull(parse("com.example.bank", "Transfer completed", "€12.34 between your own accounts", "own-en", 148L));
+        assertNull(parse("fr.example.bank", "Virement effectué", "12,34 € entre vos comptes", "own-fr", 149L));
+        assertNull(parse("kr.example.bank", "이체 완료", "내 계좌 간 이체 12,000 KRW", "own-ko", 150L, true, "KRW"));
+        assertNull(parse("com.example.bank", "Transfer cancelled", "€12.34 to Alice", "cancelled-transfer", 151L));
+        assertNull(parse("com.example.bank", "Direct debit returned", "-€20.00 creditor EDF", "returned-debit-en", 152L));
+        assertNull(parse("com.example.bank", "Transfer returned", "-€20.00 to Alice", "returned-transfer-en", 153L));
+        assertNull(parse("fr.example.bank", "Prélèvement rejeté", "-20,00 € créancier EDF", "rejected-debit-fr", 154L));
+        assertNull(parse("fr.example.bank", "Virement retourné", "-20,00 € vers Alice", "returned-transfer-fr", 155L));
+        assertNull(parse("kr.example.bank", "자동이체 반환", "-20,000 KRW 예금주 통신사", "returned-debit-ko", 156L, true, "KRW"));
+        assertNull(parse("kr.example.bank", "송금 반송", "-20,000 KRW 받는 분 김민지", "returned-transfer-ko", 157L, true, "KRW"));
     }
 
     @Test

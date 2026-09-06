@@ -73,6 +73,9 @@ export interface GeneralLedger extends LedgerBase {
   readonly automationSources: readonly AutomationSource[];
   /** Private idempotency tombstones for durably applied cancellation alerts. */
   readonly automationReversalIds: readonly string[];
+  /** Private source expense ids and automation fingerprints retained after a
+   * move, so imports cannot recreate the expense in this general ledger. */
+  readonly movedExpenseIds: readonly string[];
   readonly expenses: readonly GeneralExpense[];
 }
 

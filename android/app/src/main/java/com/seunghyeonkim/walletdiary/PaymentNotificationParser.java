@@ -22,13 +22,46 @@ import org.json.JSONObject;
 
 final class PaymentNotificationParser {
 
-    static final int PARSER_VERSION = 2;
+    static final int PARSER_VERSION = 3;
 
     private static final Pattern ALWAYS_IGNORE = Pattern.compile(
         "(?iu)(\\b(?:declined|failed|rejected|verification|security code|one[ -]?time|otp|pin|pending|processing)\\b|en attente|refus[ée]|[ée]chou[ée]|abgelehnt|fehlgeschlagen|ausstehend|rechazad[oa]|fallid[oa]|pendiente|保留|失败|失敗|拒绝|拒絕|待处理|거절|실패|처리 ?중|승인 ?대기|인증|보안 ?코드|일회용|승인번호|معلّق|مرفوض|فشل|अस्वीकृत)"
     );
     private static final Pattern ALWAYS_NON_PURCHASE = Pattern.compile(
-        "(?iu)(\\b(?:cashback|top[ -]?up|transfer|deposit|cash withdrawal|withdrawal|credit(?![-\\s]+card\\b))\\b|virement|rechargement|retrait|versement|überweisung|transferencia|transferência|depósito|prelievo|bonifico|入金|振込|입금|충전|송금|출금|캐시백|적립|تحويل|إيداع)"
+        "(?iu)(\\b(?:cashback|top[ -]?up|deposit|cash withdrawal|withdrawal|credit(?![-\\s]+card\\b))\\b|rechargement|retrait|versement|depósito|prelievo|入金|입금|충전|캐시백|적립|إيداع)"
+    );
+    private static final Pattern TRANSFER_CONTEXT = Pattern.compile(
+        "(?iuU)(\\b(?:transfer|wire transfer|direct debit|standing order|scheduled payment)\\b|virement|prélèvement|ordre permanent|überweisung|transferencia|transferência|bonifico|송금|이체|자동 ?납부|자동 ?출금|振込|振替)"
+    );
+    private static final Pattern INCOMING_TRANSFER = Pattern.compile(
+        "(?iuU)(\\b(?:incoming transfer|transfer received|received (?:a )?transfer|money received|received (?:money|funds) from|received from|transferred from|credited to (?:your|the) account)\\b|"
+            + "\\btransfer[\\s\\S]{0,100}\\bfrom\\s+(?!(?:your|my|the)\\s+(?:account|card)\\b)[\\p{L}\\p{N}]|"
+            + "virement (?:reçu|crédité|entrant)|virement[\\s\\S]{0,100}\\bde\\s+(?!(?:votre|mon|le)\\s+compte\\b)[\\p{L}]|vous avez reçu|reçu(?:e|s|es)? de|provenant de|émis par|crédité sur (?:votre|le) compte|"
+            + "받은 ?(?:송금|이체)|(?:송금|이체)(?:금)? ?(?:수취|받음)|(?:송금|이체)[\\s\\S]{0,80}(?:로부터|에게서|보낸 ?(?:분|사람)|송금인|입금자)|(?:송금|이체)(?:를|을)? ?받았|입금)"
+    );
+    private static final Pattern OWN_ACCOUNT_TRANSFER = Pattern.compile(
+        "(?iuU)(\\b(?:internal transfer|between (?:your|own) accounts|to (?:your|an) own account|own-account transfer)\\b|virement interne|entre vos (?:propres )?comptes|vers votre propre compte|본인 ?계좌|내 ?계좌(?:로|간)|계좌 ?간 ?이체)"
+    );
+    private static final Pattern NOT_EXECUTED_TRANSFER = Pattern.compile(
+        "(?iuU)(\\b(?:scheduled|created|set[ -]?up|registered|activated|mandate|instruction created|will be (?:sent|debited|transferred)|upcoming|due on|planned for)\\b|programm[ée]|prévu|mandat|mis en place|cré[ée]|enregistr[ée]|activ[ée]|예정|예약|실행 ?전|출금 ?예정|등록|신청|설정|약정)"
+    );
+    private static final Pattern RETURNED_OR_REJECTED_TRANSFER = Pattern.compile(
+        "(?iuU)(\\b(?:returned|return(?:ed)? to sender|rejected|refused|revoked|recalled|bounced|unpaid)\\b|retourn[ée]|rejet[ée]|refus[ée]|révoqu[ée]|rappel[ée]|impay[ée]|반환|반송|송금 ?거절|이체 ?거절|출금 ?거절|자동 ?이체 ?반환|정기 ?이체 ?반환|철회)"
+    );
+    private static final Pattern EXECUTED_DEBIT = Pattern.compile(
+        "(?iuU)(\\b(?:sent|completed|successful|executed|debited|collected|processed|paid)\\b|effectu[ée]|exécut[ée]|débit[ée]|pay[ée]|réussi|émis|envoy[ée]|완료|성공|출금|처리 ?완료|보냄)"
+    );
+    private static final Pattern DIRECT_DEBIT_SIGNAL = Pattern.compile(
+        "(?iuU)(\\bdirect debit(?:\\s+(?:completed|collected|processed|executed|paid|debited|successful))?\\b|prélèvement(?:\\s+(?:sepa))?(?:\\s+(?:effectu[ée]|exécut[ée]|débit[ée]|pay[ée]|réussi))?\\b|자동 ?(?:이체|납부|출금)(?: ?(?:출금|완료|성공|처리 ?완료))?)"
+    );
+    private static final Pattern STANDING_ORDER_SIGNAL = Pattern.compile(
+        "(?iuU)(\\bstanding order(?:\\s+(?:executed|completed|sent|paid|debited|successful))?\\b|virement permanent(?:\\s+(?:effectu[ée]|exécut[ée]|émis|envoy[ée]|débit[ée]|réussi))?\\b|정기 ?이체(?: ?(?:출금|완료|성공|처리 ?완료))?)"
+    );
+    private static final Pattern OUTGOING_TRANSFER_SIGNAL = Pattern.compile(
+        "(?iuU)(\\b(?:(?:bank|money|wire)\\s+)?transfer\\s+(?:sent|made|debited)\\b|\\b(?:you\\s+)?sent\\b|\\btransferred\\s+to\\b|"
+            + "\\b(?:(?:bank|money|wire)\\s+)?transfer\\s+(?:completed|successful|executed)\\b(?=[\\s\\S]{0,160}\\b(?:sent\\s+to|to|recipient|beneficiary|payee)\\b)|"
+            + "virement\\s+(?:émis|envoy[ée]|débit[ée])\\b|virement\\s+(?:effectu[ée]|exécut[ée]|réussi)\\b(?=[\\s\\S]{0,160}(?:\\bvers\\b|bénéficiaire|destinataire))|vous avez (?:envoyé|viré)|"
+            + "(?:송금|이체)(?:금)? ?(?:출금|보냄)|(?:송금|이체)(?:금)? ?(?:완료|성공|처리 ?완료)(?=[\\s\\S]{0,160}(?:받는 ?(?:분|사람)|수취인|예금주|에게 ?(?:송금|이체)|로 ?(?:송금|이체))))"
     );
     private static final Pattern BALANCE_BEFORE_AMOUNT = Pattern.compile(
         "(?iu)(?:(?<!new\\s)\\bbalance\\b|\\b(?:available|current|remaining|account|statement|ending|closing|updated)\\s+balance\\b|\\bbalance\\s+(?:after(?:\\s+(?:payment|purchase|transaction))?|available|remaining|left|now|of\\s+(?:account|card))\\b|\\bavailable\\s+(?:to\\s+spend|funds|credit)\\b|\\bcredit\\s+(?:available|remaining)\\b|\\b(?:nouveau\\s+)?solde(?:\\s+(?:disponible|restant|actuel|du\\s+compte|apr[èe]s(?:\\s+(?:paiement|achat|op[ée]ration))?))?\\b|\\b(?:neuer\\s+)?(?:kontostand|saldo)|\\b(?:verf[üu]gbarer\\s+betrag|verf[üu]gbares\\s+guthaben|restguthaben)\\b|\\b(?:nuevo|novo)\\s+saldo\\b|\\bsaldo(?:\\s+(?:disponible|restante|actual|atual|da\\s+conta|de\\s+la\\s+cuenta|residuo|del\\s+conto))?\\b|(?:결제\\s*후\\s*|거래\\s*후\\s*)?(?:남은\\s*|현재\\s*|계좌\\s*|가용\\s*|출금\\s*가능\\s*|이용\\s*가능\\s*|사용\\s*가능\\s*)?잔액|(?:이용|사용|출금)\\s*가능\\s*(?:금액|한도)|(?:利用可能|口座|現在)?残高|利用可能額|(?:可用|账户|賬戶|当前|當前|剩余|剩餘)?(?:余额|餘額)|可用(?:金额|金額)|الرصيد)(?:\\s*(?:is|are|est|reste|ist|es|[éeè]|now|현재|입니다|은|는|:|：|=|[-–—]))*$"
@@ -67,8 +100,11 @@ final class PaymentNotificationParser {
     private static final Pattern MERCHANT_AFTER = Pattern.compile(
         "(?iu)(?:\\bat\\b|\\bchez\\b|\\bmerchant\\b|\\bcommer[çc]ant\\b|\\b(?:paid|payment)\\s+to\\b|\\b(?:pagado|pago)\\s+(?:a|en)\\b|\\b(?:pago|pagamento)\\s+(?:a|em)\\b|\\bbei\\b|\\bpresso\\b|\\besercente\\b|\\bcomercio\\b|\\bestablecimiento\\b|가맹점|사용처|에서|店舗|加盟店|商户|商戶|商家|لدى|متجر)\\s*[:：-]?\\s*([^\\n;]{2,100})"
     );
+    private static final Pattern COUNTERPARTY_AFTER = Pattern.compile(
+        "(?iuU)(?:\\b(?:sent|transferred)\\s+to\\b|\\b(?:recipient|beneficiary|payee|creditor)\\b|\\b(?:to|vers)\\b|\\b(?:bénéficiaire|destinataire|créancier)\\b|au bénéfice de|받는 ?(?:분|사람)|수취인|예금주)\\s*[:：-]?\\s*([^\\n;]{2,100})"
+    );
     private static final Pattern GENERIC_TITLE = Pattern.compile(
-        "(?iu)(payment|card|purchase|transaction|paid|paiement|carte|achat|zahlung|compra|pago|pagamento|acquisto|결제|카드|승인|지출|支払|購入|決済|消费|付款|交易|شراء|دفعة|भुगतान|pembayaran|thanh toán|ชำระเงิน|refund|reversal|cancel|rembours|annul|환불|취소|退款|返金)"
+        "(?iu)(payment|card|purchase|transaction|paid|paiement|carte|achat|zahlung|compra|pago|pagamento|acquisto|transfer|direct debit|standing order|virement|prélèvement|ordre permanent|송금|이체|자동 ?납부|정기 ?이체|결제|카드|승인|지출|支払|購入|決済|消费|付款|交易|شراء|دفعة|भुगतान|pembayaran|thanh toán|ชำระเงิน|refund|reversal|cancel|rembours|annul|환불|취소|退款|返金)"
     );
     private static final Pattern EMAIL = Pattern.compile("(?iu)[\\p{L}\\p{N}._%+-]+@[\\p{L}\\p{N}.-]+\\.[\\p{L}]{2,}");
     private static final Pattern URL = Pattern.compile("(?iu)\\b(?:https?://|www\\.)\\S+");
@@ -109,31 +145,54 @@ final class PaymentNotificationParser {
         if (combined.isEmpty() || ALWAYS_IGNORE.matcher(combined).find() || ALWAYS_NON_PURCHASE.matcher(combined).find()) return null;
         boolean reversal = REVERSAL.matcher(combined).find();
         if (reversal && NON_TERMINAL_REVERSAL.matcher(combined).find()) return null;
+        boolean transferContext = TRANSFER_CONTEXT.matcher(combined).find();
+        // A received transfer is income, and a transfer between accounts owned
+        // by the same user is not consumption. Future instructions are also not
+        // expenses until the bank reports an executed debit.
+        if (transferContext && (INCOMING_TRANSFER.matcher(combined).find()
+            || OWN_ACCOUNT_TRANSFER.matcher(combined).find()
+            || NOT_EXECUTED_TRANSFER.matcher(combined).find()
+            || RETURNED_OR_REJECTED_TRANSFER.matcher(combined).find())) return null;
+        // The notification-based cancellation matcher was designed for card
+        // purchases. A bank transfer cancellation must not remove an unrelated
+        // expense until an account-data provider supplies a stable linkage.
+        if (reversal && transferContext) return null;
+        String debitEventType = classifyDebitEvent(combined);
+        // Never let an ambiguous transfer fall through the broad signed-payment
+        // fallback. Generic wording such as "Transfer completed" does not prove
+        // whether money was sent or received; an explicit outbound marker is
+        // required before it can become an expense.
+        if (transferContext && debitEventType == null) return null;
         // Refund alerts often also say that money was "credited". A reversal
         // signal must therefore take precedence over the generic income filter.
         boolean paymentSignal = PAYMENT_SIGNAL.matcher(combined).find();
         // Balance fields are classified per amount below. A global rejection
         // here would also discard valid signed-debit alerts from apps such as
         // Swile when the same notification happens to include a balance.
-        if (!reversal && !paymentSignal && MARKETING.matcher(combined).find()) return null;
+        if (!reversal && debitEventType == null && !paymentSignal && MARKETING.matcher(combined).find()) return null;
 
         int bodyStart = body.isEmpty() || !combined.endsWith(body) ? 0 : combined.length() - body.length();
         AmountMatch amount = findSingleAmount(combined, currencyHint, reversal, bodyStart);
         if (amount == null || amount.minorUnits <= 0) return null;
         if (!reversal && DEFINITIVE_BALANCE_TITLE.matcher(safeTitle).matches()) return null;
+        // Some banks use a bare "Direct debit" or "Standing order" title only
+        // after posting the debit. Accept that compact form only when the amount
+        // itself carries an explicit minus sign; unsigned alerts need an
+        // unambiguous completion word.
+        if (debitEventType != null && !amount.explicitDebit && !EXECUTED_DEBIT.matcher(combined).find()) return null;
         // Trusted apps may use a merchant title with only a signed debit in the
         // body (for example Swile). Positive amounts without a payment signal
         // are balance/offer-shaped and must never become automatic expenses.
-        if (!reversal && !paymentSignal && (!explicitlyConfigured || !amount.explicitDebit)) return null;
+        if (!reversal && debitEventType == null && !paymentSignal && (!explicitlyConfigured || !amount.explicitDebit)) return null;
 
-        MerchantMatch merchant = findMerchant(safeTitle, body, sourceName, amount.raw);
+        MerchantMatch merchant = findMerchant(safeTitle, body, sourceName, amount.raw, debitEventType != null);
         if (merchant == null || merchant.value.isEmpty()) return null;
 
         // Newly discovered packages remain review-only until the user registers
         // that exact package. This prevents silent expenses from spoofed alerts.
         String confidence = explicitlyConfigured && !manualOnly && merchant.highConfidence ? "high" : "review";
         try {
-            String eventType = reversal ? "reversal" : "purchase";
+            String eventType = reversal ? "reversal" : debitEventType == null ? "purchase" : debitEventType;
             String eventId = fingerprint(packageName + "|" + notificationKey + "|" + postedAt);
             String queueToken = fingerprint(
                 eventId + "|" + eventType + "|" + amount.currency + "|" + amount.minorUnits + "|" + merchant.value + "|" + confidence + "|" + manualOnly
@@ -156,6 +215,14 @@ final class PaymentNotificationParser {
         } catch (JSONException ignored) {
             return null;
         }
+    }
+
+    private static String classifyDebitEvent(String value) {
+        // More specific recurring forms must win over the generic word
+        // "transfer" that may occur in the same notification.
+        if (STANDING_ORDER_SIGNAL.matcher(value).find()) return "standing_order";
+        if (DIRECT_DEBIT_SIGNAL.matcher(value).find()) return "direct_debit";
+        return OUTGOING_TRANSFER_SIGNAL.matcher(value).find() ? "outgoing_transfer" : null;
     }
 
     private static AmountMatch findSingleAmount(String value, String currencyHint, boolean allowPlus, int bodyStart) {
@@ -241,11 +308,18 @@ final class PaymentNotificationParser {
         }
     }
 
-    private static MerchantMatch findMerchant(String title, String body, String sourceName, String rawAmount) {
+    private static MerchantMatch findMerchant(String title, String body, String sourceName, String rawAmount, boolean allowCounterparty) {
         Matcher labelled = MERCHANT_AFTER.matcher(body);
         if (labelled.find()) {
             String candidate = trimMerchant(labelled.group(1), rawAmount);
             if (!candidate.isEmpty()) return new MerchantMatch(candidate, true);
+        }
+        if (allowCounterparty) {
+            Matcher counterparty = COUNTERPARTY_AFTER.matcher(body);
+            if (counterparty.find()) {
+                String candidate = trimMerchant(counterparty.group(1), rawAmount);
+                if (!candidate.isEmpty()) return new MerchantMatch(candidate, true);
+            }
         }
         if (!title.isEmpty() && !title.equalsIgnoreCase(clean(sourceName)) && !GENERIC_TITLE.matcher(title).find()) {
             String candidate = trimMerchant(title, rawAmount);

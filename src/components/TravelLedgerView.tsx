@@ -1,9 +1,10 @@
-import { BedDouble, Bus, FileDown, Landmark, Pencil, Plus, ReceiptText, Share2, ShoppingBag, Trash2, Utensils, UserPlus, WalletCards } from "lucide-react";
+import { BedDouble, Download, Bus, FileDown, Landmark, Pencil, Plus, ReceiptText, Share2, ShoppingBag, Trash2, Utensils, UserPlus, WalletCards } from "lucide-react";
 import { Capacitor } from "@capacitor/core";
 import { useMemo, useState } from "react";
 import { availableCurrencies, currencyDigits, currencyName, formatMoney, parseMinorUnits } from "../lib/currency";
 import { t, travelCategoryLabel } from "../lib/i18n";
-import { createTravelShareText, shareTravelLedger, safeFilename } from "../lib/share";
+import { exchangeText as x } from "../lib/exchangeI18n";
+import { createTravelShareText, shareTravelLedger, shareTravelLedgerFile, safeFilename } from "../lib/share";
 import type { Locale, Participant, TravelCategory, TravelExpense, TravelLedger } from "../lib/types";
 import { TRAVEL_CATEGORIES } from "../lib/types";
 import { createTravelExpense, defaultDate, newestExpensesFirst, replaceExpenseById, settleTravelExpenses } from "../lib/wallet";
@@ -16,7 +17,7 @@ function CategoryIcon({ category }: { category: TravelCategory }) {
   return <Icon aria-hidden="true" />;
 }
 
-export function TravelLedgerView({ ledger, locale, onChange, onNotify }: { ledger: TravelLedger; locale: Locale; onChange: (ledger: TravelLedger) => void; onNotify: Notify }) {
+export function TravelLedgerView({ ledger, locale, onImport, onChange, onNotify }: { ledger: TravelLedger; locale: Locale; onImport: () => void; onChange: (ledger: TravelLedger) => void; onNotify: Notify }) {
   const [formOpen, setFormOpen] = useState(false); const [expenseToEdit, setExpenseToEdit] = useState<TravelExpense | null>(null); const [participantName, setParticipantName] = useState(""); const [filter, setFilter] = useState<TravelCategory | "all">("all"); const [currencyToAdd, setCurrencyToAdd] = useState("USD"); const [currencyEditorOpen, setCurrencyEditorOpen] = useState(false);
   const participantNames = useMemo(() => new Map(ledger.participants.map((person) => [person.id, person.name])), [ledger.participants]);
   const settlements = useMemo(() => settleTravelExpenses(ledger), [ledger]);
@@ -58,6 +59,7 @@ export function TravelLedgerView({ ledger, locale, onChange, onNotify }: { ledge
       await shareTravelLedger(ledger, createTravelShareText(ledger, locale), previews); onNotify(t(locale, "sharedFileReady"), "success");
     } catch { onNotify(t(locale, "shareFailed"), "error"); }
   };
+  const shareFile = async () => { try { await shareTravelLedgerFile(ledger); onNotify(x(locale, "fileSent"), "success"); } catch { onNotify(t(locale, "shareFailed"), "error"); } };
   const exportPdf = async () => {
     try {
       const pages = [...document.querySelectorAll<HTMLElement>(`#travel-pdf-${CSS.escape(ledger.id)} .pdf-page`)];
@@ -79,7 +81,8 @@ export function TravelLedgerView({ ledger, locale, onChange, onNotify }: { ledge
 
   return (
     <section className="ledger-screen">
-      <div className="ledger-screen-heading"><div><span>{t(locale, "travelLedger")}</span><h2>{ledger.title}</h2></div><div className="heading-actions"><button type="button" onClick={share}><Share2 />{t(locale, "share")}</button><button type="button" onClick={exportPdf}><FileDown />{t(locale, "exportPdf")}</button></div></div>
+      <div className="ledger-screen-heading"><div><span>{t(locale, "travelLedger")}</span><h2>{ledger.title}</h2></div><div className="heading-actions"><button type="button" onClick={share}><Share2 />{x(locale, "shareSummary")}</button><button type="button" onClick={exportPdf}><FileDown />{t(locale, "exportPdf")}</button></div></div>
+      <section className="mobile-panel travel-exchange-panel"><div className="exchange-buttons"><button className="primary-button" type="button" onClick={() => void shareFile()}><Share2 />{x(locale, "shareFile")}</button><button className="wide-secondary" type="button" onClick={onImport}><Download />{x(locale, "receive")}</button></div><p>{x(locale, "shareHelp")}</p></section>
       <div className="money-summary">{totals.map(({ currency, total }) => <article key={currency}><small>{t(locale, "totalSpent")} · {currency}</small><strong>{formatMoney(total, currency, locale)}</strong></article>)}</div>
       <section className="mobile-panel participant-panel"><div className="section-heading"><h3>{t(locale, "participants")}</h3><button type="button" onClick={() => setCurrencyEditorOpen(true)}><WalletCards />{t(locale, "manageCurrencies")}</button></div>
         <div className="add-participant-row"><input value={participantName} maxLength={80} placeholder={t(locale, "participantName")} onChange={(event) => setParticipantName(event.target.value)} /><button type="button" onClick={addParticipant} disabled={!participantName.trim()}><UserPlus />{t(locale, "add")}</button></div>
