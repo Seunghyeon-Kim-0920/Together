@@ -206,8 +206,12 @@ public class PaymentNotificationParserTest {
     }
 
     @Test
-    public void rejectsPaymentWithoutAnExplicitMerchant() {
-        assertNull(parse("com.revolut.revolut", "Card payment", "€12.34 completed", "no-merchant", 6L));
+    public void keepsPaymentWithoutAnExplicitMerchantForRequiredUserReview() {
+        JSONObject draft = parse("com.revolut.revolut", "Card payment", "€12.34 completed", "no-merchant", 6L);
+        assertNotNull(draft);
+        assertEquals("", draft.optString("merchant"));
+        assertEquals(true, draft.optBoolean("requiresMerchant"));
+        assertEquals("review", draft.optString("confidence"));
     }
 
     @Test
@@ -356,6 +360,141 @@ public class PaymentNotificationParserTest {
         assertNotNull(result);
         assertEquals("review", result.optString("confidence"));
         assertEquals(true, result.optBoolean("manualOnly"));
+    }
+
+    @Test
+    public void discoversPreviouslyUnknownCompactDebitAppsWithoutWhitelist() {
+        for (String packageName : new String[] {"hr.lunc.client", "kr.example.newbank", "fr.example.nouvellebanque", "jp.example.bank", "com.somewhere.newcard"}) {
+            JSONObject result = parse(packageName, "Lidl", "-1,24 €", "new-app", 500L, false, "EUR");
+            assertNotNull(packageName, result);
+            assertEquals("review", result.optString("confidence"));
+            assertEquals("Lidl", result.optString("merchant"));
+            assertEquals(124L, result.optLong("minorUnits"));
+        }
+    }
+
+    @Test
+    public void swileAppTitleAndBodyMerchantAreRetainedForReview() {
+        for (String body : new String[] {"Lidl -1,24 €", "Lidl\n-1,24 €", "Lidl\n-1,24 €\nSolde disponible 180,00 €"}) {
+            JSONObject result = PaymentNotificationParser.parse("hr.lunc.client", "Swile", "Swile", body, "", "", 600L, "swile", false, false, "EUR");
+            assertNotNull(body, result);
+            assertEquals("review", result.optString("confidence"));
+            assertEquals("Lidl", result.optString("merchant"));
+            assertEquals(124L, result.optLong("minorUnits"));
+        }
+    }
+
+    @Test
+    public void unknownMerchantIsAnIncompleteDraftNotAGuessedBankName() {
+        JSONObject result = parse("com.any.bank", "Card payment", "€12.34", "no-merchant", 700L, true, "EUR");
+        assertNotNull(result);
+        assertEquals("", result.optString("merchant"));
+        assertEquals(true, result.optBoolean("requiresMerchant"));
+        assertEquals("review", result.optString("confidence"));
+        assertEquals(false, result.has("text"));
+    }
+
+    @Test
+    public void localCurrencyWordsAndWorldwidePaymentFormatsReachReview() {
+        String[][] rows = {
+            {"Card payment", "12.34 Euros at Lidl", "EUR", "1234"},
+            {"카드 결제", "가맹점 스타벅스 12,000원", "KRW", "12000"},
+            {"카드 결제", "가맹점 스타벅스 12,000원 승인번호: 123456", "KRW", "12000"},
+            {"카드 결제", "가맹점 스타벅스 12.34 유로", "EUR", "1234"},
+            {"カード利用", "店舗 東京店 1200円", "JPY", "1200"},
+            {"Kartenzahlung", "12,34 EUR bei Markt", "EUR", "1234"},
+            {"Pago", "12,34 EUR comercio Tienda", "EUR", "1234"},
+            {"刷卡", "商户 商店 12.34 CNY", "CNY", "1234"},
+        };
+        for (String[] row : rows) {
+            JSONObject result = parse("com.unlisted.payment", row[0], row[1], "global", 710L, false, row[2]);
+            assertNotNull(row[0], result);
+            assertEquals(row[2], result.optString("currency"));
+            assertEquals(Long.parseLong(row[3]), result.optLong("minorUnits"));
+            assertEquals("review", result.optString("confidence"));
+        }
+    }
+
+    @Test
+    public void unknownAppsStillRejectBalancesCreditsFailuresAndOffers() {
+        for (String title : new String[] {"Balance", "Solde", "Saldo", "잔액", "残高", "余额", "餘額", "الرصيد"}) {
+            for (boolean trusted : new boolean[] {false, true}) {
+                assertNull(parse("com.unlisted.app", title, "-12,00 €", "bare-balance", 800L, trusted, "EUR"));
+            }
+        }
+        assertNull(parse("com.unlisted.app", "Solde disponible", "-120,00 €", "balance", 800L, false, "EUR"));
+        assertNull(parse("com.unlisted.app", "Lidl", "+12,00 €", "incoming", 801L, false, "EUR"));
+        assertNull(parse("com.unlisted.app", "Paiement refusé", "-12,00 € chez Lidl", "failed", 802L, false, "EUR"));
+        assertNull(parse("com.unlisted.app", "Promotion", "Save -12,00 € at Lidl", "offer", 803L, false, "EUR"));
+        assertNull(parse("com.unlisted.app", "OTP", "123456 for -12,00 €", "otp", 804L, false, "EUR"));
+        assertNull(parse("com.unlisted.app", "Lidl", "12,00 €", "unsigned", 805L, false, "EUR"));
+    }
+
+    @Test
+    public void duplicateCollapsedAndExpandedAmountsRetainDebitEvidence() {
+        for (String[] bodies : new String[][] {
+            {"-12,34 € at Lidl", "Card payment 12,34 € at Lidl"},
+            {"Card payment 12,34 € at Lidl", "-12,34 € at Lidl"},
+            {"Lidl -€12.34", "-12.34 EUR at Lidl"},
+        }) {
+            JSONObject result = PaymentNotificationParser.parse("com.unlisted.bank", "Bank", "Lidl", bodies[0], bodies[1], "", 901L, "same-amount", false, false, "EUR");
+            assertNotNull(result);
+            assertEquals(1234L, result.optLong("minorUnits"));
+            assertEquals("review", result.optString("confidence"));
+        }
+        assertNull(PaymentNotificationParser.parse("com.unlisted.bank", "Bank", "Lidl", "-12,34 € at Lidl", "Card payment 23,45 € at Lidl", "", 901L, "different-amount", false, false, "EUR"));
+        assertNull(PaymentNotificationParser.parse("com.unlisted.bank", "Bank", "Lidl", "-12,34 € at Lidl", "Card payment 12.34 GBP at Lidl", "", 901L, "different-currency", false, false, "EUR"));
+    }
+
+    @Test
+    public void incomingPaymentsAreNotExpensesEvenWithoutTheWordTransfer() {
+        for (String text : new String[] {
+            "Payment received €12.34", "Received a payment €12.34", "You received €12.34 payment",
+            "Paiement reçu 12,34 €", "Vous avez reçu un paiement de 12,34 €", "결제 대금을 받았습니다 12,000원",
+        }) {
+            assertNull(text, parse("com.unlisted.bank", "Alice", text, "incoming-payment", 902L, true, "EUR"));
+        }
+        JSONObject refund = parse("com.unlisted.bank", "Refund received", "Payment received €12.34 at Lidl", "refund-payment", 903L, true, "EUR");
+        assertNotNull(refund);
+        assertEquals("reversal", refund.optString("eventType"));
+    }
+
+    @Test
+    public void availableCreditIsOnlyBalanceMetadataWhileCreditsRemainExcluded() {
+        for (String label : new String[] {"Available credit", "Credit available", "Credit remaining"}) {
+            JSONObject result = parse("com.unlisted.bank", "Card payment", "€12.34 at Lidl. " + label + " €500.00", "credit-balance", 904L, false, "EUR");
+            assertNotNull(label, result);
+            assertEquals(1234L, result.optLong("minorUnits"));
+            assertNull(parse("com.unlisted.bank", "Card payment", label + " €500.00", "only-credit-balance", 904L, false, "EUR"));
+        }
+        assertNull(parse("com.unlisted.bank", "Credit", "€12.34", "income-credit", 905L, false, "EUR"));
+        assertNull(parse("com.unlisted.bank", "Credit received", "-€12.34", "income-credit-signed", 905L, true, "EUR"));
+    }
+
+    @Test
+    public void koreanStandaloneApprovalReachesReviewWithoutTreatingApprovalIdsAsPayments() {
+        JSONObject result = parse("com.unlisted.bank", "KB국민카드", "12,300원 일시불 승인\n가맹점 스타벅스\n잔액 120,000원", "korean-approval", 906L, true, "KRW");
+        assertNotNull(result);
+        assertEquals(12300L, result.optLong("minorUnits"));
+        assertEquals("review", result.optString("confidence"));
+        assertNull(parse("com.unlisted.bank", "KB국민카드", "승인번호 123456\n12,300원", "only-approval-id", 906L, true, "KRW"));
+        assertNull(parse("com.unlisted.bank", "KB국민카드", "승인\n잔액 120,000원", "approval-balance", 906L, true, "KRW"));
+        assertNull(parse("com.unlisted.bank", "KB국민카드", "입금 12,300원 승인", "approval-income", 906L, true, "KRW"));
+    }
+
+    @Test
+    public void queueReceiptIsIndependentOfTrustAndManualOnlyPolicy() {
+        JSONObject unknown = PaymentNotificationParser.parse("com.unlisted.bank", "Bank", "Card payment", "€12.34 at Lidl", "", "", 907L, "policy-change", false, false, "EUR");
+        JSONObject trusted = PaymentNotificationParser.parse("com.unlisted.bank", "Bank", "Card payment", "€12.34 at Lidl", "", "", 907L, "policy-change", true, false, "EUR");
+        JSONObject manual = PaymentNotificationParser.parse("com.unlisted.bank", "Bank", "Card payment", "€12.34 at Lidl", "", "", 907L, "policy-change", true, true, "EUR");
+        assertNotNull(unknown);
+        assertNotNull(trusted);
+        assertNotNull(manual);
+        assertEquals(unknown.optString("queueToken"), trusted.optString("queueToken"));
+        assertEquals(unknown.optString("queueToken"), manual.optString("queueToken"));
+        assertEquals("review", unknown.optString("confidence"));
+        assertEquals("high", trusted.optString("confidence"));
+        assertEquals("review", manual.optString("confidence"));
     }
 
     private static JSONObject parse(String packageName, String title, String text, String key, long time) {

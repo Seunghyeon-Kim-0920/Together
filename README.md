@@ -11,6 +11,8 @@
 - 생활 지출 → 여행 가계부 이동: 원래 금액·화폐·날짜 유지, 결제자와 분담 참가자 선택, 한 번에 저장하며 원본 재가져오기 중복 방지
 - 동행 여행 가계부 합치기: 전체 `.walletdiary` 파일 공유, 참가자 연결과 통화별 금액·정산 미리보기, 동일 기록 중복 방지 및 수정 충돌 표시
 - Android 알림 자동기록: 권한 허용 뒤 새로 게시된 카드 결제, 완료된 보낸 계좌이체, 실제 출금된 자동이체·정기이체를 구분해 기록하고 받은 이체·잔액·예정·실패 및 명시된 본인 계좌 간 이체 알림은 제외
+- 새 결제 앱 발견: 국가·앱 이름 목록 없이 알림을 검사하며, 미등록 앱과 사용처가 불명확한 결제는 검토 후 기록합니다. 모든 앱 감지를 직접 켜야 하며, 모든 언어·알림 형식의 인식을 보장하지 않습니다.
+- 현재 알림 다시 확인: 알림창에 남아 있는 항목만 사용자 요청으로 재검사하고, 처리한 동일 항목의 재등장을 방지합니다. 다른 화폐의 항목도 표시하되 같은 화폐의 가계부에서만 기록합니다.
 - 미연결 Open Banking 개발 기반: 확정 출금 검증, 안정 거래 ID 중복 방지, 내부이체 검토와 취소 후보 생성까지 구현했지만 공급자·백엔드·동의 화면과 아직 연결되지 않음
 - 한국어·영어·프랑스어
 - 로그인 없이 SQLite에 기기 내부 저장
@@ -48,7 +50,7 @@ npm run ios:sync
 ## 배포
 
 - Android/iOS application ID: `com.seunghyeonkim.walletdiary`
-- Android version: `1.4.0` / code `106`
+- Android version: `1.4.1` / code `107`
 - Android min SDK: 24, target SDK: 36
 - iOS 프로젝트: `ios/App/App.xcodeproj`
 - Android APK/AAB: `release/`
@@ -57,4 +59,4 @@ npm run ios:sync
 
 서명된 IPA 생성에는 macOS, Xcode, Apple Developer Team, 배포 인증서와 App Store 프로비저닝 프로파일이 필요합니다.
 
-알림이 전혀 없는 거래를 자동 동기화하려면 은행 앱 화면을 읽는 것이 아니라 사용자가 동의하는 공식 Open Banking 공급자와 보안 백엔드가 필요합니다. 이 연결은 v1.4.0에서 아직 활성화되지 않았으며 공급자 비밀키는 APK에 넣지 않습니다. 설계와 출시 수용 기준은 [`docs/OPEN_BANKING_SETUP.md`](docs/OPEN_BANKING_SETUP.md)에 정리되어 있습니다.
+알림이 전혀 없는 거래를 자동 동기화하려면 은행 앱 화면을 읽는 것이 아니라 사용자가 동의하는 공식 Open Banking 공급자와 보안 백엔드가 필요합니다. 이 연결은 v1.4.1에서 아직 활성화되지 않았으며 공급자 비밀키는 APK에 넣지 않습니다. 설계와 출시 수용 기준은 [`docs/OPEN_BANKING_SETUP.md`](docs/OPEN_BANKING_SETUP.md)에 정리되어 있습니다.

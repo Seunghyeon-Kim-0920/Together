@@ -22,13 +22,17 @@ import org.json.JSONObject;
 
 final class PaymentNotificationParser {
 
-    static final int PARSER_VERSION = 3;
+    static final int PARSER_VERSION = 4;
 
     private static final Pattern ALWAYS_IGNORE = Pattern.compile(
-        "(?iu)(\\b(?:declined|failed|rejected|verification|security code|one[ -]?time|otp|pin|pending|processing)\\b|en attente|refus[ée]|[ée]chou[ée]|abgelehnt|fehlgeschlagen|ausstehend|rechazad[oa]|fallid[oa]|pendiente|保留|失败|失敗|拒绝|拒絕|待处理|거절|실패|처리 ?중|승인 ?대기|인증|보안 ?코드|일회용|승인번호|معلّق|مرفوض|فشل|अस्वीकृत)"
+        "(?iu)(\\b(?:declined|failed|rejected|verification|security code|one[ -]?time|otp|pin|pending|processing)\\b|en attente|refus[ée]|[ée]chou[ée]|abgelehnt|fehlgeschlagen|ausstehend|rechazad[oa]|fallid[oa]|pendiente|保留|失败|失敗|拒绝|拒絕|待处理|거절|실패|처리 ?중|승인 ?대기|인증|보안 ?코드|일회용|معلّق|مرفوض|فشل|अस्वीकृत)"
     );
     private static final Pattern ALWAYS_NON_PURCHASE = Pattern.compile(
         "(?iu)(\\b(?:cashback|top[ -]?up|deposit|cash withdrawal|withdrawal|credit(?![-\\s]+card\\b))\\b|rechargement|retrait|versement|depósito|prelievo|入金|입금|충전|캐시백|적립|إيداع)"
+    );
+    private static final Pattern CREDIT_BALANCE_LABEL = Pattern.compile("(?iuU)\\b(?:available\\s+credit|credit\\s+(?:available|remaining))\\b");
+    private static final Pattern INCOMING_PAYMENT = Pattern.compile(
+        "(?iuU)(\\b(?:incoming (?:payment|money|funds)|(?:payment|money|funds) received|payment credited|received (?:a )?payment|(?:you have|you've|you) received|paid you|credited to (?:your|the) account)\\b|paiement (?:reçu|crédité)|vous avez reçu|(?:결제|대금|송금|이체)(?:금|대금)?(?:을|를)?\\s*(?:받았|받음|수취)|(?:돈|금액)(?:을|를)?\\s*받았|받은 ?(?:돈|결제|송금))"
     );
     private static final Pattern TRANSFER_CONTEXT = Pattern.compile(
         "(?iuU)(\\b(?:transfer|wire transfer|direct debit|standing order|scheduled payment)\\b|virement|prélèvement|ordre permanent|überweisung|transferencia|transferência|bonifico|송금|이체|자동 ?납부|자동 ?출금|振込|振替)"
@@ -73,7 +77,7 @@ final class PaymentNotificationParser {
         "(?iu)^\\s*(?:(?<!new\\s)\\bbalance\\b|\\b(?:available|current|remaining|account|statement|ending|closing)\\s+balance\\b|\\bbalance\\s+(?:available|remaining|left|after(?:\\s+(?:payment|purchase|transaction))?)\\b|\\b(?:solde|saldo|kontostand|guthaben)(?:\\s+(?:disponible|restant|restante|actual|atual|residuo))?\\b|(?:남은\\s*|결제\\s*후\\s*|계좌\\s*|가용\\s*)?잔액|残高|余额|餘額|الرصيد)\\b\\s*$"
     );
     private static final Pattern DEFINITIVE_BALANCE_TITLE = Pattern.compile(
-        "(?iu)^(?:(?:available|current|remaining|account|statement|ending|closing|updated)\\s+balance|balance\\s+(?:update|updated|available|remaining|after\\s+(?:payment|purchase|transaction))|(?:nouveau\\s+)?solde\\s+(?:disponible|restant|actuel)|kontostand|saldo\\s+(?:disponible|restante|actual|atual)|(?:결제\\s*후\\s*|남은\\s*|현재\\s*|계좌\\s*)잔액|利用可能残高|可用余额|可用餘額)$"
+        "(?iu)^(?:balance|solde|saldo|잔액|残高|余额|餘額|الرصيد|(?:available|current|remaining|account|statement|ending|closing|updated)\\s+balance|balance\\s+(?:update|updated|available|remaining|after\\s+(?:payment|purchase|transaction))|(?:nouveau\\s+)?solde\\s+(?:disponible|restant|actuel)|kontostand|saldo\\s+(?:disponible|restante|actual|atual)|(?:결제\\s*후\\s*|남은\\s*|현재\\s*|계좌\\s*)잔액|利用可能残高|可用余额|可用餘額)$"
     );
     private static final Pattern MARKETING = Pattern.compile(
         "(?iu)(\\b(?:weekend offer|special offer|promotion|promo code|save|discount|coupon)\\b|offre|promotion|remise|économisez|angebot|rabatt|oferta|descuento|promoção|desconto|割引|优惠|優惠|할인|쿠폰|프로모션)"
@@ -87,10 +91,11 @@ final class PaymentNotificationParser {
     private static final Pattern PAYMENT_SIGNAL = Pattern.compile(
         "(?iu)(\\b(?:card payment|payment|purchase|paid|spent|card used|card charged|debit card|point of sale|pos transaction|approved|completed)\\b|paiement|achat|carte utilis[ée]e?|dépens[ée]|accept[ée]|zahlung|kartenzahlung|bezahlt|einkauf|compra|pago|pagamento|acquisto|carta usata|결제|카드 ?승인|사용 ?승인|체크카드|신용카드|이용 ?내역|支払|購入|カード利用|決済|消费|消費|付款|刷卡|交易成功|شراء|دفعة|تم الدفع|भुगतान|खरीद|pembayaran|pembelian|thanh toán|giao dịch thẻ|ชำระเงิน|ซื้อ)"
     );
+    private static final Pattern KOREAN_APPROVAL_SIGNAL = Pattern.compile("(?u)(?<![\\p{L}\\p{N}])승인(?![\\p{L}\\p{N}])");
     // Bound the whole match so a code cannot be cut out of an ordinary word
     // such as "carte" (RTE) or "EUROPE" (EUR), while still accepting the
     // lowercase ISO codes used by some banks.
-    private static final String CURRENCY_TOKEN = "(?iu:[A-Z]{3}|US\\$|CA\\$|AU\\$|NZ\\$|HK\\$|S\\$|R\\$|NT\\$|€|£|₩|¥|￥|\\$|₹|₽|₺|₫|฿|₱|₪|₦|₴|₵|₾|₸|₭|₮|؋|₲|₡|zł|Kč|Ft)";
+    private static final String CURRENCY_TOKEN = "(?iu:euros?|유로|원|円|[A-Z]{3}|US\\$|CA\\$|AU\\$|NZ\\$|HK\\$|S\\$|R\\$|NT\\$|€|£|₩|¥|￥|\\$|₹|₽|₺|₫|฿|₱|₪|₦|₴|₵|₾|₸|₭|₮|؋|₲|₡|zł|Kč|Ft)";
     private static final Pattern CURRENCY_BEFORE = Pattern.compile(
         "(?u)(?<![\\p{L}\\p{N}])([+−-]?)[\\p{Zs}\\t]*(" + CURRENCY_TOKEN + ")(?!\\p{L})[\\p{Zs}\\t]*([+−-]?\\(?\\d[\\d\\p{Zs}\\t\\u00a0\\u202f'.,]*\\)?)"
     );
@@ -107,6 +112,11 @@ final class PaymentNotificationParser {
         "(?iu)(payment|card|purchase|transaction|paid|paiement|carte|achat|zahlung|compra|pago|pagamento|acquisto|transfer|direct debit|standing order|virement|prélèvement|ordre permanent|송금|이체|자동 ?납부|정기 ?이체|결제|카드|승인|지출|支払|購入|決済|消费|付款|交易|شراء|دفعة|भुगतान|pembayaran|thanh toán|ชำระเงิน|refund|reversal|cancel|rembours|annul|환불|취소|退款|返金)"
     );
     private static final Pattern EMAIL = Pattern.compile("(?iu)[\\p{L}\\p{N}._%+-]+@[\\p{L}\\p{N}.-]+\\.[\\p{L}]{2,}");
+    // Only short, standalone names may be inferred from an unlabelled body.
+    // Prose, balances and account metadata must never be persisted as a merchant.
+    private static final Pattern BODY_NARRATIVE = Pattern.compile(
+        "(?iuU)(\\b(?:you|your|we|our|from|received|credited|debit|amount|spent|completed|successful|notification|alert|available|remaining|account|balance|solde|saldo|kontostand|votre|vous|nous|montant|effectu[ée]|reçu|d[ée]bit[ée]|b[ée]n[ée]ficiaire|aujourd'hui|yesterday|today|hier|tomorrow)\\b|잔액|금액|계좌|받았|입니다|되었습니다|알림|残高|余额|餘額)"
+    );
     private static final Pattern URL = Pattern.compile("(?iu)\\b(?:https?://|www\\.)\\S+");
     private static final Pattern PHONE = Pattern.compile("(?u)(?<![\\p{L}\\p{N}])\\+?\\d(?:[\\s().-]*\\d){6,}(?![\\p{L}\\p{N}])");
     private static final Pattern IBAN = Pattern.compile("(?iu)\\b[A-Z]{2}\\d{2}(?:[\\s-]?[A-Z0-9]){11,30}\\b");
@@ -142,9 +152,15 @@ final class PaymentNotificationParser {
         String safeTitle = clean(title);
         String body = join(text, bigText, subText);
         String combined = join(safeTitle, body);
-        if (combined.isEmpty() || ALWAYS_IGNORE.matcher(combined).find() || ALWAYS_NON_PURCHASE.matcher(combined).find()) return null;
+        // A credit-limit balance is metadata, not an incoming credit. The
+        // original text is still used for per-amount balance exclusion below.
+        String incomeContext = CREDIT_BALANCE_LABEL.matcher(combined).replaceAll("available funds");
+        if (combined.isEmpty() || ALWAYS_IGNORE.matcher(combined).find() || ALWAYS_NON_PURCHASE.matcher(incomeContext).find()) return null;
         boolean reversal = REVERSAL.matcher(combined).find();
         if (reversal && NON_TERMINAL_REVERSAL.matcher(combined).find()) return null;
+        // Receiving a payment is income even when the alert does not use the
+        // word "transfer". A completed refund remains a reversal candidate.
+        if (!reversal && INCOMING_PAYMENT.matcher(combined).find()) return null;
         boolean transferContext = TRANSFER_CONTEXT.matcher(combined).find();
         // A received transfer is income, and a transfer between accounts owned
         // by the same user is not consumption. Future instructions are also not
@@ -166,6 +182,8 @@ final class PaymentNotificationParser {
         // Refund alerts often also say that money was "credited". A reversal
         // signal must therefore take precedence over the generic income filter.
         boolean paymentSignal = PAYMENT_SIGNAL.matcher(combined).find();
+        boolean approvalSignal = !paymentSignal && KOREAN_APPROVAL_SIGNAL.matcher(combined).find();
+        paymentSignal = paymentSignal || approvalSignal;
         // Balance fields are classified per amount below. A global rejection
         // here would also discard valid signed-debit alerts from apps such as
         // Swile when the same notification happens to include a balance.
@@ -180,29 +198,31 @@ final class PaymentNotificationParser {
         // itself carries an explicit minus sign; unsigned alerts need an
         // unambiguous completion word.
         if (debitEventType != null && !amount.explicitDebit && !EXECUTED_DEBIT.matcher(combined).find()) return null;
-        // Trusted apps may use a merchant title with only a signed debit in the
-        // body (for example Swile). Positive amounts without a payment signal
-        // are balance/offer-shaped and must never become automatic expenses.
-        if (!reversal && debitEventType == null && !paymentSignal && (!explicitlyConfigured || !amount.explicitDebit)) return null;
+        // Compact debit alerts are not restricted to pre-registered apps. The
+        // confidence gate below still requires the user to trust the exact app
+        // before any high-confidence event may be recorded automatically.
+        if (!reversal && debitEventType == null && !paymentSignal && !amount.explicitDebit) return null;
 
         MerchantMatch merchant = findMerchant(safeTitle, body, sourceName, amount.raw, debitEventType != null);
-        if (merchant == null || merchant.value.isEmpty()) return null;
+        boolean requiresMerchant = merchant == null || merchant.value.isEmpty();
+        String merchantValue = requiresMerchant ? "" : merchant.value;
 
         // Newly discovered packages remain review-only until the user registers
         // that exact package. This prevents silent expenses from spoofed alerts.
-        String confidence = explicitlyConfigured && !manualOnly && merchant.highConfidence ? "high" : "review";
+        String confidence = explicitlyConfigured && !manualOnly && !approvalSignal && !requiresMerchant && merchant.highConfidence ? "high" : "review";
         try {
             String eventType = reversal ? "reversal" : debitEventType == null ? "purchase" : debitEventType;
             String eventId = fingerprint(packageName + "|" + notificationKey + "|" + postedAt);
             String queueToken = fingerprint(
-                eventId + "|" + eventType + "|" + amount.currency + "|" + amount.minorUnits + "|" + merchant.value + "|" + confidence + "|" + manualOnly
+                eventId + "|" + eventType + "|" + amount.currency + "|" + amount.minorUnits + "|" + merchantValue + "|" + requiresMerchant
             );
             JSONObject result = new JSONObject();
             result.put("id", eventId);
             result.put("queueToken", queueToken);
             result.put("packageName", packageName);
             result.put("sourceName", clean(sourceName).isEmpty() ? packageName : clean(sourceName));
-            result.put("merchant", merchant.value);
+            result.put("merchant", merchantValue);
+            result.put("requiresMerchant", requiresMerchant);
             result.put("minorUnits", amount.minorUnits);
             result.put("currency", amount.currency);
             result.put("occurredAt", isoTimestamp(postedAt));
@@ -234,16 +254,19 @@ final class PaymentNotificationParser {
             String number = before.group(3);
             AmountMatch candidate = parseAmount(leadingSign.isEmpty() ? number : leadingSign + number, normalizeCurrency(before.group(2), currencyHint), before.group(0), allowPlus);
             if (candidate != null && !isBalanceAmount(value, before.start(), before.end(), bodyStart)) {
-                if (first == null) first = candidate;
-                distinct.add(candidate.currency + "|" + candidate.minorUnits + "|" + candidate.explicitDebit);
+                // Expanded and collapsed versions may repeat one payment with
+                // different signs. Preserve explicit debit evidence, but never
+                // merge different amounts or currencies into a guessed total.
+                if (first == null || !first.explicitDebit && candidate.explicitDebit) first = candidate;
+                distinct.add(candidate.currency + "|" + candidate.minorUnits);
             }
         }
         Matcher after = CURRENCY_AFTER.matcher(value);
         while (after.find()) {
             AmountMatch candidate = parseAmount(after.group(1), normalizeCurrency(after.group(2), currencyHint), after.group(0), allowPlus);
             if (candidate != null && !isBalanceAmount(value, after.start(), after.end(), bodyStart)) {
-                if (first == null) first = candidate;
-                distinct.add(candidate.currency + "|" + candidate.minorUnits + "|" + candidate.explicitDebit);
+                if (first == null || !first.explicitDebit && candidate.explicitDebit) first = candidate;
+                distinct.add(candidate.currency + "|" + candidate.minorUnits);
             }
         }
         return distinct.size() == 1 ? first : null;
@@ -325,6 +348,26 @@ final class PaymentNotificationParser {
             String candidate = trimMerchant(title, rawAmount);
             if (!candidate.isEmpty()) return new MerchantMatch(candidate, true);
         }
+        // A generic/app-name title can be followed by "Lidl -1,24 €" or
+        // separate "Lidl" and "-1,24 €" lines. Do not promote this inferred
+        // name to high confidence, even if the source is trusted.
+        Set<String> candidates = new HashSet<>();
+        String[] lines = body.split("\\n");
+        for (int index = 0; index < lines.length; index++) {
+            String line = clean(lines[index]);
+            boolean besideAmount = line.contains(rawAmount)
+                || index > 0 && clean(lines[index - 1]).equals(rawAmount.trim())
+                || index + 1 < lines.length && clean(lines[index + 1]).equals(rawAmount.trim());
+            if (!besideAmount || GENERIC_TITLE.matcher(line).find() || BODY_NARRATIVE.matcher(line).find()
+                || SENSITIVE_TRAILING_FIELD.matcher(line).find() || EMAIL.matcher(line).find()
+                || URL.matcher(line).find() || PHONE.matcher(line).find() || IBAN.matcher(line).find()) continue;
+            String candidate = trimMerchant(line, rawAmount);
+            if (candidate.isEmpty() || candidate.equalsIgnoreCase(clean(sourceName)) || candidate.length() > 80
+                || !candidate.matches("(?u)[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N} '&’().-]*")
+                || !Pattern.compile("\\p{L}").matcher(candidate).find() || candidate.split("\\s+").length > 8) continue;
+            candidates.add(candidate);
+        }
+        if (candidates.size() == 1) return new MerchantMatch(candidates.iterator().next(), false);
         return null;
     }
 
@@ -350,6 +393,9 @@ final class PaymentNotificationParser {
         if (token == null) return null;
         String value = token.trim();
         String normalizedHint = hint == null ? "" : hint.trim().toUpperCase(Locale.ROOT);
+        if (value.equalsIgnoreCase("euro") || value.equalsIgnoreCase("euros") || value.equals("유로")) return "EUR";
+        if (value.equals("원")) return "KRW";
+        if (value.equals("円")) return "JPY";
         if (value.equalsIgnoreCase("zł")) return "PLN";
         if (value.equalsIgnoreCase("Kč")) return "CZK";
         if (value.equalsIgnoreCase("Ft")) return "HUF";
@@ -409,6 +455,15 @@ final class PaymentNotificationParser {
         } catch (Exception ignored) {
             return Integer.toHexString(value.hashCode());
         }
+    }
+
+    /** Stable receipt identity for older queue versions as well as new events. */
+    static String contentToken(JSONObject event) {
+        if (event == null || event.optString("id").isEmpty() || !event.has("eventType")
+            || !event.has("currency") || !event.has("minorUnits") || !event.has("merchant")) return null;
+        return fingerprint(event.optString("id") + "|" + event.optString("eventType") + "|"
+            + event.optString("currency") + "|" + event.optLong("minorUnits") + "|"
+            + event.optString("merchant") + "|" + event.optBoolean("requiresMerchant", false));
     }
 
     private static String isoTimestamp(long time) {

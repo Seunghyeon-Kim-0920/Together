@@ -28,6 +28,7 @@ final class CardAutomationStore {
 
     private static final String PREFERENCES = "wallet_diary_card_automation";
     private static final String KEY_PENDING = "pending_events";
+    private static final String KEY_ACKNOWLEDGED = "acknowledged_events";
     private static final String KEY_CONFIGURATION = "configuration";
     private static final String KEY_LAST_CAPTURED = "last_captured_at";
     private static final String CHANNEL_ID = "wallet_diary_budget";
@@ -89,6 +90,7 @@ final class CardAutomationStore {
     static synchronized boolean addPending(Context context, JSONObject candidate) {
         String id = candidate.optString("id");
         if (id.isEmpty()) return false;
+        if (containsAcknowledgement(acknowledged(context), candidate)) return false;
         JSONArray pending = pending(context);
         JSONArray next = new JSONArray();
         boolean exists = false;
@@ -129,14 +131,53 @@ final class CardAutomationStore {
         JSONArray current = new JSONArray();
         for (int index = 0; index < events.length(); index++) {
             JSONObject item = events.optJSONObject(index);
-            if (item != null && item.optInt("parserVersion", 0) == PaymentNotificationParser.PARSER_VERSION) current.put(item);
+            if (item != null && item.optInt("parserVersion", 0) >= 3 && item.optInt("parserVersion", 0) <= PaymentNotificationParser.PARSER_VERSION) current.put(item);
         }
         return current;
     }
 
     static synchronized void acknowledge(Context context, JSONArray events) {
-        JSONArray next = removeAcknowledged(pending(context), events);
-        preferences(context).edit().putString(KEY_PENDING, next.toString()).commit();
+        JSONArray current = pending(context);
+        JSONArray next = removeAcknowledged(current, events);
+        JSONArray history = mergeAcknowledgements(acknowledged(context), current, events);
+        preferences(context).edit().putString(KEY_PENDING, next.toString()).putString(KEY_ACKNOWLEDGED, history.toString()).commit();
+    }
+
+    private static JSONArray acknowledged(Context context) {
+        try { return new JSONArray(preferences(context).getString(KEY_ACKNOWLEDGED, "[]")); }
+        catch (JSONException exception) { return new JSONArray(); }
+    }
+
+    static boolean containsAcknowledgement(JSONArray acknowledgements, JSONObject candidate) {
+        String id = candidate.optString("id", "");
+        String token = candidate.isNull("queueToken") ? "" : candidate.optString("queueToken", "");
+        String contentToken = PaymentNotificationParser.contentToken(candidate);
+        for (int index = 0; index < acknowledgements.length(); index++) {
+            JSONObject item = acknowledgements.optJSONObject(index);
+            if (item != null && id.equals(item.optString("id")) && (token.equals(item.optString("queueToken", ""))
+                || contentToken != null && contentToken.equals(item.optString("contentToken", "")))) return true;
+        }
+        return false;
+    }
+
+    static JSONArray mergeAcknowledgements(JSONArray previous, JSONArray current, JSONArray requests) {
+        JSONArray combined = new JSONArray();
+        for (int index = 0; index < previous.length(); index++) if (previous.optJSONObject(index) != null) combined.put(previous.optJSONObject(index));
+        for (int index = 0; index < current.length(); index++) {
+            JSONObject item = current.optJSONObject(index);
+            if (item == null || !containsAcknowledgement(requests, item) || containsAcknowledgement(combined, item)) continue;
+            JSONObject receipt = new JSONObject();
+            try {
+                receipt.put("id", item.optString("id")); receipt.put("queueToken", item.isNull("queueToken") ? "" : item.optString("queueToken", ""));
+                String contentToken = PaymentNotificationParser.contentToken(item);
+                if (contentToken != null) receipt.put("contentToken", contentToken);
+                combined.put(receipt);
+            }
+            catch (JSONException ignored) {}
+        }
+        JSONArray bounded = new JSONArray();
+        for (int index = Math.max(0, combined.length() - MAX_PENDING); index < combined.length(); index++) bounded.put(combined.optJSONObject(index));
+        return bounded;
     }
 
     static JSONArray removeAcknowledged(JSONArray current, JSONArray events) {

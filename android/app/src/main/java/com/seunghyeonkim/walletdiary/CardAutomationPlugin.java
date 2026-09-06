@@ -64,6 +64,14 @@ public final class CardAutomationPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void recheckActiveNotifications(PluginCall call) {
+        if (!NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName())) {
+            call.reject("Notification access is not granted."); return;
+        }
+        getActivity().runOnUiThread(() -> PaymentNotificationListenerService.recheck(getContext(), () -> call.resolve(status()), () -> call.reject("Could not recheck current notifications.")));
+    }
+
+    @PluginMethod
     public void acknowledgeEvents(PluginCall call) {
         JSArray events = call.getArray("events", new JSArray());
         CardAutomationStore.acknowledge(getContext(), events);
@@ -97,6 +105,7 @@ public final class CardAutomationPlugin extends Plugin {
     private JSObject status() {
         JSObject result = new JSObject();
         result.put("supported", true);
+        result.put("listenerConnected", PaymentNotificationListenerService.isListenerConnected());
         result.put(
             "accessGranted",
             NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName())

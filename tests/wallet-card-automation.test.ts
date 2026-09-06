@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyHighConfidenceCardAutomation, automationExpenseId, buildNativeAutomationConfiguration, calculateMonthlyLimitStatus, candidateOwnerLedgerIds, confirmCardCandidate, inferGeneralCategory, parseNativeCandidateBatch, parseNativeCardCandidate, reversalMatchIndexes, type NativeCardCandidate } from "../src/lib/cardAutomation";
+import { applyHighConfidenceCardAutomation, automationExpenseId, buildNativeAutomationConfiguration, calculateMonthlyLimitStatus, candidateOwnerLedgerIds, completeCandidateMerchant, confirmCardCandidate, inferGeneralCategory, parseNativeCandidateBatch, parseNativeCardCandidate, reversalMatchIndexes, visibleCardCandidates, type NativeCardCandidate } from "../src/lib/cardAutomation";
 import type { GeneralLedger, WalletState } from "../src/lib/types";
 import { createLedger, mergeGeneralLedgerMutation, parseWalletStateStrict, replaceExpenseById } from "../src/lib/wallet";
 
@@ -11,6 +11,46 @@ function configuredLedger(): GeneralLedger {
 }
 
 function wallet(ledger = configuredLedger()): WalletState { return Object.freeze({ version: 2, locale: "ko", activeLedgerId: ledger.id, ledgers: Object.freeze([ledger]) }); }
+
+test("new app merchant drafts remain visible and cannot save until user completes them", () => {
+  const draft = parseNativeCardCandidate({ ...candidate, packageName: "hr.lunc.client", sourceName: "Swile", merchant: "", requiresMerchant: true, queueToken: "original-token" });
+  assert.ok(draft);
+  assert.equal(draft.confidence, "review");
+  const current = wallet();
+  const result = applyHighConfidenceCardAutomation(current, [draft]);
+  assert.equal(result.state, current);
+  assert.equal(result.pending.length, 1);
+  assert.deepEqual(result.acknowledgedIds, []);
+  assert.throws(() => confirmCardCandidate(current, current.ledgers[0].id, draft));
+  assert.throws(() => completeCandidateMerchant(draft, "   "));
+  const reviewed = completeCandidateMerchant(draft, "Lidl");
+  assert.equal(reviewed.id, draft.id); assert.equal(reviewed.queueToken, draft.queueToken);
+  const confirmed = confirmCardCandidate(current, current.ledgers[0].id, reviewed);
+  assert.equal(confirmed.inserted, true);
+  assert.equal(confirmed.state.ledgers[0].expenses[0].description, "Lidl");
+  assert.equal(applyHighConfidenceCardAutomation(confirmed.state, [draft]).pending.length, 0);
+});
+
+test("trusted packages cannot auto-save missing merchants or bypass malformed draft validation", () => {
+  const draft = Object.freeze({ ...candidate, merchant: "", requiresMerchant: true });
+  const result = applyHighConfidenceCardAutomation(wallet(), [draft]);
+  assert.equal(result.insertedIds.length, 0);
+  assert.equal(result.pending[0].confidence, "review");
+  assert.equal(parseNativeCardCandidate({ ...draft, requiresMerchant: "yes" }), null);
+  assert.equal(parseNativeCardCandidate({ ...draft, requiresMerchant: false }), null);
+  assert.equal(parseNativeCardCandidate({ ...candidate, occurredOn: "2026-99-99" }), null);
+});
+
+test("other currencies and ambiguous owners do not disappear from review", () => {
+  const first = Object.freeze({ ...configuredLedger(), automationAllApps: true });
+  const second = Object.freeze({ ...createLedger("general", "Other", "EUR"), automationAllApps: true });
+  const foreign = Object.freeze({ ...candidate, id: "kr-payment", packageName: "kr.example.bank", currency: "KRW", confidence: "review" as const });
+  const unknown = Object.freeze({ ...candidate, id: "new-payment", packageName: "com.example.newapp", confidence: "review" as const });
+  assert.deepEqual(visibleCardCandidates([first, second], first.id, [foreign, unknown]), [foreign, unknown]);
+  assert.deepEqual(visibleCardCandidates([first, second], second.id, [foreign, unknown]), [foreign, unknown]);
+  assert.throws(() => confirmCardCandidate(wallet(first), first.id, foreign));
+  assert.deepEqual(visibleCardCandidates([first, second], second.id, [candidate]), [], "explicit owner remains the review destination for matching currency");
+});
 
 test("native candidates are strictly validated and duplicate queue rows collapse", () => {
   assert.deepEqual(parseNativeCardCandidate(candidate), candidate);

@@ -1,9 +1,10 @@
 import { BellRing, Check, Gauge, Globe2, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { automationExpenseId, automationReversalFingerprint, calculateMonthlyLimitStatus, reversalMatchIndexes, type NativeCardCandidate } from "../lib/cardAutomation";
+import { automationExpenseId, automationReversalFingerprint, calculateMonthlyLimitStatus, completeCandidateMerchant, reversalMatchIndexes, type NativeCardCandidate } from "../lib/cardAutomation";
 import { currencyDigits, formatMoney, parseMinorUnits } from "../lib/currency";
 import { t } from "../lib/i18n";
-import type { CardAutomationStatus } from "../lib/nativeCardAutomation";
+import { cardAutomationPlugin, type CardAutomationStatus } from "../lib/nativeCardAutomation";
+import { notificationText as n } from "../lib/notificationI18n";
 import type { AutomationSource, GeneralLedger, Locale } from "../lib/types";
 import { SheetFrame } from "./Sheets";
 
@@ -60,6 +61,15 @@ function MonthlyLimitSheet({ ledger, locale, onClose, onSave, onNotify }: { ledg
 function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh, onOpenAccessSettings, onRequestAlertPermission, onToggleAllPaymentApps, onRegisterSource, onRemoveSource, onConfirm, onDismiss, onClose }: { ledger: GeneralLedger; locale: Locale; status: CardAutomationStatus; pending: readonly NativeCardCandidate[]; busy: boolean; onRefresh: () => void; onOpenAccessSettings: () => void; onRequestAlertPermission: () => void; onToggleAllPaymentApps: (enabled: boolean) => void; onRegisterSource: (source: AutomationSource) => void; onRemoveSource: (packageName: string) => void; onConfirm: (candidate: NativeCardCandidate) => void; onDismiss: (candidate: NativeCardCandidate) => void; onClose: () => void }) {
   const registeredPackages = useMemo(() => new Set(ledger.automationSources.map((source) => source.packageName)), [ledger.automationSources]);
   const [directAppConfirmations, setDirectAppConfirmations] = useState<ReadonlySet<string>>(() => new Set());
+  const [merchantDrafts, setMerchantDrafts] = useState<Readonly<Record<string, string>>>({});
+  const [rechecking, setRechecking] = useState(false);
+  const [recheckError, setRecheckError] = useState(false);
+  const recheck = async () => {
+    setRechecking(true); setRecheckError(false);
+    try { await cardAutomationPlugin.recheckActiveNotifications(); onRefresh(); }
+    catch { setRecheckError(true); }
+    finally { setRechecking(false); }
+  };
   const dateFormatter = useMemo(() => new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }), [locale]);
   const reviewTravelLedgers = () => {
     onClose();
@@ -71,24 +81,31 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh,
   };
 
   return <SheetFrame title={notificationAutomationLabel(locale)} locale={locale} onClose={onClose}>
-    <div className="automation-disclosure"><ShieldCheck /><div><strong>{t(locale, "localProcessing")}</strong><p>{t(locale, "automationDisclosure")}</p><p>{notificationHistoryNotice(locale)}</p></div></div>
+    <div className="automation-disclosure"><ShieldCheck /><div><strong>{t(locale, "localProcessing")}</strong><p>{t(locale, "automationDisclosure")}</p><p>{n(locale, "history")}</p></div></div>
     {!status.supported ? <p className="automation-unsupported">{t(locale, "automationUnsupported")}</p> : <>
       <div className="permission-grid">
         <article><span>{t(locale, "notificationAccess")}</span><b className={status.accessGranted ? "granted" : ""}>{t(locale, status.accessGranted ? "accessGranted" : "accessNotGranted")}</b><button type="button" disabled={busy} onClick={onOpenAccessSettings}>{t(locale, "openNotificationSettings")}</button></article>
         <article><span>{t(locale, "alertPermission")}</span><b className={status.alertPermissionGranted ? "granted" : ""}>{t(locale, status.alertPermissionGranted ? "permissionGranted" : "permissionNotGranted")}</b><button type="button" disabled={busy || status.alertPermissionGranted} onClick={onRequestAlertPermission}>{t(locale, "requestPermission")}</button></article>
       </div>
       <label className="all-apps-toggle"><span><Globe2 /><b>{t(locale, "allPaymentApps")}</b><small>{t(locale, "allPaymentAppsHelp")}</small></span><input type="checkbox" role="switch" checked={ledger.automationAllApps} disabled={busy} onChange={(event) => onToggleAllPaymentApps(event.target.checked)} /></label>
+      {!ledger.automationAllApps ? <p className="reversal-help">{n(locale, "discoveryOff")}</p> : null}
+      {status.accessGranted && status.listenerConnected === false ? <p className="reversal-help" role="status">{n(locale, "disconnected")}</p> : null}
+      <button className="wide-secondary" type="button" disabled={busy || rechecking || !status.accessGranted} onClick={() => void recheck()}><RefreshCw />{n(locale, "recheck")}</button>
+      <p className="sheet-intro">{n(locale, "recheckHelp")}</p>
+      {recheckError ? <p className="exchange-error" role="alert">{n(locale, "recheckError")}</p> : null}
       <div className="automation-section-heading"><h3>{t(locale, "registeredSources")}</h3><button type="button" disabled={busy} onClick={onRefresh}><RefreshCw />{t(locale, "refresh")}</button></div>
       {ledger.automationSources.length ? <div className="automation-source-list">{ledger.automationSources.map((source) => <article key={source.packageName}><div><strong>{source.displayName}</strong><small>{source.packageName}</small></div><button type="button" disabled={busy} onClick={() => onRemoveSource(source.packageName)} aria-label={`${t(locale, "removeCardApp")}: ${source.displayName}`}><Trash2 /></button></article>)}</div> : <p className="automation-empty">{t(locale, "noRegisteredSources")}</p>}
       <div className="automation-section-heading"><h3>{t(locale, "pendingExpenses")}</h3><span>{pending.length.toLocaleString(locale)}</span></div>
-      {pending.length ? <div className="candidate-list">{pending.map((candidate) => { const movedReversal = candidate.eventType === "reversal" && (ledger.movedExpenseIds.includes(automationExpenseId(candidate)) || ledger.movedExpenseIds.includes(automationReversalFingerprint(candidate))); const reversalHandled = candidate.eventType === "reversal" && ledger.automationReversalIds.includes(automationReversalFingerprint(candidate)); const reversalMatches = reversalHandled ? 0 : reversalMatchIndexes(ledger.expenses, candidate).length; const registered = registeredPackages.has(candidate.packageName); const directAppConfirmed = directAppConfirmations.has(candidate.packageName); return <article key={`${candidate.packageName}:${candidate.id}`}>
-        <div className="candidate-heading"><span><strong>{candidate.merchant}</strong><small>{candidate.sourceName} · {dateFormatter.format(new Date(candidate.occurredAt))}</small></span><b>{formatMoney(candidate.minorUnits, candidate.currency, locale)}</b></div>
+      {pending.length ? <div className="candidate-list">{pending.map((nativeCandidate) => { const draftKey = `${nativeCandidate.packageName}:${nativeCandidate.id}:${nativeCandidate.queueToken ?? ""}`; const draft = merchantDrafts[draftKey]?.trim() ?? ""; const candidate = nativeCandidate.requiresMerchant && draft ? completeCandidateMerchant(nativeCandidate, draft) : nativeCandidate; const wrongCurrency = candidate.currency !== ledger.currency; const movedReversal = candidate.eventType === "reversal" && (ledger.movedExpenseIds.includes(automationExpenseId(candidate)) || ledger.movedExpenseIds.includes(automationReversalFingerprint(candidate))); const reversalHandled = candidate.eventType === "reversal" && ledger.automationReversalIds.includes(automationReversalFingerprint(candidate)); const reversalMatches = reversalHandled ? 0 : reversalMatchIndexes(ledger.expenses, candidate).length; const registered = registeredPackages.has(candidate.packageName); const directAppConfirmed = directAppConfirmations.has(candidate.packageName); return <article key={`${candidate.packageName}:${candidate.id}`}>
+        <div className="candidate-heading"><span><strong>{candidate.merchant || n(locale, "merchantUnknown")}</strong><small>{candidate.sourceName} · {dateFormatter.format(new Date(candidate.occurredAt))}</small></span><b>{formatMoney(candidate.minorUnits, candidate.currency, locale)}</b></div>
+        {nativeCandidate.requiresMerchant ? <><p className="reversal-help">{n(locale, "merchantRequired")}</p><label className="field-label">{t(locale, "description")}<input aria-label={n(locale, "merchantUnknown")} value={merchantDrafts[draftKey] ?? ""} maxLength={100} disabled={busy} onChange={(event) => setMerchantDrafts((current) => ({ ...current, [draftKey]: event.target.value }))} /></label></> : null}
+        {wrongCurrency ? <p className="reversal-help">{n(locale, "currencyMismatch").replace("{currency}", candidate.currency)}</p> : null}
         <span className={`confidence-chip ${candidate.confidence}`}>{candidate.eventType === "reversal" ? <><RotateCcw />{t(locale, "cancellationReview")}</> : <>{automationEventTypeLabel(locale, candidate.eventType)} · {candidate.confidence === "high" ? automationConfidenceLabel(locale) : t(locale, "needsReview")}</>}</span>
         {candidate.manualOnly ? <p className="reversal-help">{t(locale, "manualReviewSource")}</p> : null}
-        {!registered && !candidate.manualOnly ? <><label className="direct-source-confirm"><input type="checkbox" checked={directAppConfirmed} disabled={busy} onChange={(event) => setDirectAppConfirmations((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.packageName); else next.delete(candidate.packageName); return next; })} /><span>{t(locale, "confirmDirectPaymentApp")}</span></label><button className="wide-secondary" type="button" disabled={busy || !directAppConfirmed} onClick={() => onRegisterSource(Object.freeze({ packageName: candidate.packageName, displayName: candidate.sourceName, trustedDirectApp: true }))}>{t(locale, "registerSource")}</button></> : null}
+        {!registered && !candidate.manualOnly && !wrongCurrency ? <><label className="direct-source-confirm"><input type="checkbox" checked={directAppConfirmed} disabled={busy} onChange={(event) => setDirectAppConfirmations((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.packageName); else next.delete(candidate.packageName); return next; })} /><span>{t(locale, "confirmDirectPaymentApp")}</span></label><button className="wide-secondary" type="button" disabled={busy || !directAppConfirmed} onClick={() => onRegisterSource(Object.freeze({ packageName: candidate.packageName, displayName: candidate.sourceName, trustedDirectApp: true }))}>{t(locale, "registerSource")}</button></> : null}
         {candidate.eventType === "reversal" && !movedReversal && reversalMatches !== 1 ? <p className="reversal-help">{t(locale, reversalMatches > 1 ? "cancellationAmbiguous" : "cancellationNoMatch")}</p> : null}
         {movedReversal ? <><p className="reversal-help">{movedReversalNotice(locale)}</p><button className="wide-secondary" type="button" disabled={busy} onClick={reviewTravelLedgers}>{reviewTravelLedgersLabel(locale)}</button></> : null}
-        <div className="candidate-actions"><button type="button" disabled={busy} onClick={() => onDismiss(candidate)}><Trash2 />{t(locale, "dismissCandidate")}</button><button className="primary-button" type="button" disabled={busy || movedReversal || (candidate.eventType === "reversal" && reversalMatches !== 1)} onClick={() => onConfirm(candidate)}><Check />{t(locale, candidate.eventType === "reversal" ? "applyCancellation" : "confirmExpense")}</button></div>
+        <div className="candidate-actions"><button type="button" disabled={busy} onClick={() => onDismiss(candidate)}><Trash2 />{t(locale, "dismissCandidate")}</button><button className="primary-button" type="button" disabled={busy || wrongCurrency || candidate.requiresMerchant || movedReversal || (candidate.eventType === "reversal" && reversalMatches !== 1)} onClick={() => onConfirm(candidate)}><Check />{t(locale, candidate.eventType === "reversal" ? "applyCancellation" : "confirmExpense")}</button></div>
       </article>; })}</div> : <p className="automation-empty">{t(locale, "noPendingExpenses")}</p>}
     </>}
   </SheetFrame>;
@@ -110,12 +127,6 @@ function notificationAutomationLabel(locale: Locale): string {
   if (locale === "en") return "Notification-based payment & transfer records";
   if (locale === "fr") return "Paiements et virements à partir des notifications";
   return "알림 기반 결제·이체 자동기록";
-}
-
-function notificationHistoryNotice(locale: Locale): string {
-  if (locale === "en") return "Only new notifications posted after access is granted can be detected; past bank history is not imported.";
-  if (locale === "fr") return "Seules les nouvelles notifications publiées après l’autorisation peuvent être détectées ; l’historique bancaire n’est pas importé.";
-  return "권한을 허용한 뒤 새로 게시된 알림만 감지하며 과거 은행 거래내역은 가져오지 않습니다.";
 }
 
 function automationConfidenceLabel(locale: Locale): string {

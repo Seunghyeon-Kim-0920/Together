@@ -6,7 +6,7 @@ import { LedgerMenuSheet, NewLedgerSheet } from "./components/Sheets";
 import { TravelLedgerView } from "./components/TravelLedgerView";
 import { MoveExpenseSheet, type MoveSelection } from "./components/MoveExpenseSheet";
 import { TravelImportSheet, type TravelImportSelection } from "./components/TravelImportSheet";
-import { applyHighConfidenceCardAutomation, buildNativeAutomationConfiguration, candidateAcknowledgement, candidateOwnerLedgerIds, confirmCardCandidate, parseNativeCandidateBatch, type NativeCardCandidate, type NativeEventAcknowledgement } from "./lib/cardAutomation";
+import { applyHighConfidenceCardAutomation, buildNativeAutomationConfiguration, candidateAcknowledgement, confirmCardCandidate, parseNativeCandidateBatch, visibleCardCandidates, type NativeCardCandidate, type NativeEventAcknowledgement } from "./lib/cardAutomation";
 import { t } from "./lib/i18n";
 import { cardAutomationPlugin, UNSUPPORTED_CARD_AUTOMATION_STATUS, type CardAutomationStatus } from "./lib/nativeCardAutomation";
 import { parseLedgerShareDocument, parseLedgerSharePayload } from "./lib/share";
@@ -310,17 +310,11 @@ export function App() {
     refresh();
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", onVisibility);
-    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", onVisibility); };
+    const interval = window.setInterval(onVisibility, 10_000);
+    return () => { window.clearInterval(interval); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", onVisibility); };
   }, [loaded, refreshCardAutomation]);
 
-  const pendingForActiveLedger = useMemo(() => {
-    if (!activeLedger || activeLedger.kind !== "general") return Object.freeze([]) as readonly NativeCardCandidate[];
-    return Object.freeze(pendingAutomation.filter((candidate) => {
-      if (candidate.currency !== activeLedger.currency) return false;
-      const ownerIds = candidateOwnerLedgerIds(state.ledgers, candidate);
-      return ownerIds.length === 0 || (ownerIds.length === 1 && ownerIds[0] === activeLedger.id);
-    }));
-  }, [activeLedger, pendingAutomation, state.ledgers]);
+  const pendingForActiveLedger = useMemo(() => visibleCardCandidates(state.ledgers, activeLedger?.id ?? null, pendingAutomation), [activeLedger?.id, pendingAutomation, state.ledgers]);
 
   const activeGeneralLedgerId = activeLedger?.kind === "general" ? activeLedger.id : null;
   const registerSourceForActiveLedger = useCallback((source: AutomationSource) => { if (activeGeneralLedgerId) registerAutomationSource(activeGeneralLedgerId, source); }, [activeGeneralLedgerId, registerAutomationSource]);

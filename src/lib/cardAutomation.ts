@@ -32,6 +32,8 @@ export interface NativeCardCandidate {
   readonly eventType: CardCandidateEventType;
   /** Messaging, email, browser, and social aggregators must always be reviewed. */
   readonly manualOnly: boolean;
+  /** A payment amount was detected but a merchant must be supplied by the user. */
+  readonly requiresMerchant?: boolean;
 }
 
 export interface ParsedCandidateBatch {
@@ -76,7 +78,8 @@ function validTimestamp(value: unknown): string | null {
 }
 function validCalendarDate(value: unknown): string | null {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  return new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value ? value : null;
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value ? value : null;
 }
 function localCalendarDate(timestamp: string): string {
   const date = new Date(timestamp);
@@ -85,16 +88,36 @@ function localCalendarDate(timestamp: string): string {
 
 export function parseNativeCardCandidate(value: unknown): NativeCardCandidate | null {
   if (!isRecord(value)) return null;
-  const id = boundedText(value.id, 200); const packageName = boundedText(value.packageName, 200); const sourceName = boundedText(value.sourceName, 80); const merchant = boundedText(value.merchant, 500); const occurredAt = validTimestamp(value.occurredAt); const currency = typeof value.currency === "string" ? value.currency.trim().toUpperCase() : "";
+  const requiresMerchant = value.requiresMerchant === undefined ? false : value.requiresMerchant;
+  const id = boundedText(value.id, 200); const packageName = boundedText(value.packageName, 200); const sourceName = boundedText(value.sourceName, 80); const merchant = requiresMerchant === true && value.merchant === "" ? "" : boundedText(value.merchant, 500); const occurredAt = validTimestamp(value.occurredAt); const currency = typeof value.currency === "string" ? value.currency.trim().toUpperCase() : "";
   // Older native queue entries did not have a content token. Keep those
   // readable while still rejecting malformed non-null tokens.
   const queueToken = value.queueToken === undefined || value.queueToken === null ? null : boundedText(value.queueToken, 200);
   const eventType = value.eventType === undefined ? "purchase" : value.eventType;
   const manualOnly = value.manualOnly === undefined ? false : value.manualOnly;
-  if (!id || (value.queueToken !== undefined && value.queueToken !== null && !queueToken) || !packageName || !PACKAGE_NAME.test(packageName) || !sourceName || !merchant || !occurredAt || !Number.isSafeInteger(value.minorUnits) || (value.minorUnits as number) <= 0 || !/^[A-Z]{3}$/.test(currency) || (value.confidence !== "high" && value.confidence !== "review") || !CARD_CANDIDATE_EVENT_TYPES.includes(eventType as CardCandidateEventType) || typeof manualOnly !== "boolean") return null;
+  if (!id || (value.queueToken !== undefined && value.queueToken !== null && !queueToken) || !packageName || !PACKAGE_NAME.test(packageName) || !sourceName || merchant === null || !occurredAt || !Number.isSafeInteger(value.minorUnits) || (value.minorUnits as number) <= 0 || !/^[A-Z]{3}$/.test(currency) || (value.confidence !== "high" && value.confidence !== "review") || !CARD_CANDIDATE_EVENT_TYPES.includes(eventType as CardCandidateEventType) || typeof manualOnly !== "boolean" || typeof requiresMerchant !== "boolean") return null;
   const occurredOn = value.occurredOn === undefined ? localCalendarDate(occurredAt) : validCalendarDate(value.occurredOn);
   if (!occurredOn) return null;
-  return Object.freeze({ id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, occurredOn, confidence: value.confidence, eventType: eventType as CardCandidateEventType, manualOnly });
+  return Object.freeze({ id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, occurredOn, confidence: requiresMerchant ? "review" : value.confidence, eventType: eventType as CardCandidateEventType, manualOnly, ...(requiresMerchant ? { requiresMerchant: true } : {}) });
+}
+
+export function completeCandidateMerchant(candidate: NativeCardCandidate, merchant: string): NativeCardCandidate {
+  const value = boundedText(merchant, 100);
+  if (!value) throw new Error("merchant required");
+  // Retain the native id/content token so confirmation acknowledges the
+  // original notification, not a synthetic event created by editing a draft.
+  return Object.freeze({ ...candidate, merchant: value, requiresMerchant: false, confidence: "review" });
+}
+
+export function visibleCardCandidates(ledgers: WalletState["ledgers"], activeLedgerId: string | null, candidates: readonly NativeCardCandidate[]): readonly NativeCardCandidate[] {
+  const active = ledgers.find((ledger) => ledger.id === activeLedgerId);
+  if (!active || active.kind !== "general") return Object.freeze([]);
+  return Object.freeze(candidates.filter((candidate) => {
+    const owners = candidateOwnerLedgerIds(ledgers, candidate);
+    // Foreign-currency items remain visible with a blocking explanation. Never
+    // convert their money or silently hide an unresolved bank notification.
+    return candidate.currency !== active.currency || owners.length === 0 || owners.includes(active.id);
+  }));
 }
 
 export function parseNativeCandidateBatch(value: unknown): ParsedCandidateBatch {
@@ -227,7 +250,7 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     if (appliedReversals.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
     if (candidate.eventType !== "reversal" && globallyRecorded.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
     const owners = ownerIndexes(ledgers, candidate);
-    if (candidate.manualOnly) { pending.push(candidate.confidence === "review" ? candidate : Object.freeze({ ...candidate, confidence: "review" })); continue; }
+    if (candidate.manualOnly || candidate.requiresMerchant) { pending.push(candidate.confidence === "review" ? candidate : Object.freeze({ ...candidate, confidence: "review" })); continue; }
     if (candidate.confidence !== "high" || owners.length !== 1) { pending.push(candidate); continue; }
     const index = owners[0]; const ledger = ledgers[index];
     if (ledger.kind !== "general") { pending.push(candidate); continue; }
@@ -271,6 +294,7 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
 }
 
 export function confirmCardCandidate(state: WalletState, ledgerId: string, candidate: NativeCardCandidate): { readonly state: WalletState; readonly inserted: boolean; readonly reversed: boolean } {
+  if (candidate.requiresMerchant || !parseNativeCardCandidate(candidate)) throw new Error("incomplete candidate");
   const index = state.ledgers.findIndex((ledger) => ledger.id === ledgerId); const ledger = state.ledgers[index];
   if (!ledger || ledger.kind !== "general" || ledger.currency !== candidate.currency) throw new Error("incompatible candidate");
   const expenseId = automationExpenseId(candidate);
