@@ -6,16 +6,18 @@ import { LedgerMenuSheet, NewLedgerSheet } from "./components/Sheets";
 import { TravelLedgerView } from "./components/TravelLedgerView";
 import { MoveExpenseSheet, type MoveSelection } from "./components/MoveExpenseSheet";
 import { TravelImportSheet, type TravelImportSelection } from "./components/TravelImportSheet";
+import { DocumentImportSheet, type DocumentImportSelection } from "./components/DocumentImportSheet";
+import { applyStatementImport } from "./lib/statementImport";
+import { documentText } from "./lib/documentI18n";
 import { applyHighConfidenceCardAutomation, buildNativeAutomationConfiguration, candidateAcknowledgement, confirmCardCandidate, parseNativeCandidateBatch, visibleCardCandidates, type NativeCardCandidate, type NativeEventAcknowledgement } from "./lib/cardAutomation";
 import { t } from "./lib/i18n";
 import { cardAutomationPlugin, UNSUPPORTED_CARD_AUTOMATION_STATUS, type CardAutomationStatus } from "./lib/nativeCardAutomation";
-import { parseLedgerShareDocument, parseLedgerSharePayload } from "./lib/share";
 import { exchangeText as x } from "./lib/exchangeI18n";
 import { moveGeneralExpenseToTravel } from "./lib/moveExpense";
 import { previewTravelLedgerMerge } from "./lib/travelExchange";
 import { getWalletRepository } from "./lib/storage";
 import { EMPTY_WALLET_STATE, SUPPORTED_LOCALES, type AutomationSource, type GeneralExpense, type Ledger, type LedgerKind, type Locale, type TravelLedger, type WalletState } from "./lib/types";
-import { createLedger, MAX_AUTOMATION_SOURCES, MAX_LEDGERS, mergeGeneralLedgerMutation, mergeGeneralLedgers, parseWalletStateStrict, replaceLedger } from "./lib/wallet";
+import { createLedger, MAX_AUTOMATION_SOURCES, MAX_LEDGERS, mergeGeneralLedgerMutation, parseWalletStateStrict, replaceLedger } from "./lib/wallet";
 
 type Toast = { readonly id: number; readonly message: string; readonly tone: "success" | "error" | "info" } | null;
 
@@ -31,7 +33,7 @@ export function App() {
   const [moveRequest, setMoveRequest] = useState<{ readonly sourceLedgerId: string; readonly expense: GeneralExpense } | null>(null);
   const [travelImport, setTravelImport] = useState<TravelLedger | null>(null);
   const [exchangeBusy, setExchangeBusy] = useState(false);
-  const importInput = useRef<HTMLInputElement>(null);
+  const [documentImportOpen, setDocumentImportOpen] = useState(false);
   const saveQueue = useRef(Promise.resolve());
   const configureQueue = useRef(Promise.resolve());
   const stateRef = useRef<WalletState>(EMPTY_WALLET_STATE);
@@ -130,25 +132,13 @@ export function App() {
   const deleteLedger = () => {
     if (!menuLedger) return; void commitWithNativeScopeReduction((current) => { const ledgers = current.ledgers.filter((ledger) => ledger.id !== menuLedger.id); return Object.freeze({ ...current, ledgers: Object.freeze(ledgers), activeLedgerId: current.activeLedgerId === menuLedger.id ? ledgers[0]?.id ?? null : current.activeLedgerId }); }); setMenuLedger(null); notify(t(locale, "ledgerDeleted"), "success");
   };
-  const importLedger = async (file: File) => {
-    try {
-      if (file.size > 2_000_000) throw new Error("invalid");
-      const raw = await file.text();
-      const document = parseLedgerShareDocument(raw);
-      if (!document) throw new Error("invalid");
-      if (document.ledger.kind === "travel") { setTravelImport(document.ledger); return; }
-      const ledger = parseLedgerSharePayload(raw); if (!ledger) throw new Error("invalid");
-      const saved = await commit((current) => {
-        const target = ledger.kind === "general" ? current.ledgers.find((candidate) => candidate.kind === "general" && candidate.title === ledger.title && candidate.currency === ledger.currency) : undefined;
-        if (target?.kind === "general" && ledger.kind === "general") {
-          const merged = mergeGeneralLedgers(target, ledger, document.sourceLedgerId);
-          return Object.freeze({ ...current, activeLedgerId: merged.id, ledgers: Object.freeze(current.ledgers.map((candidate) => candidate.id === merged.id ? merged : candidate)) });
-        }
-        if (current.ledgers.length >= MAX_LEDGERS) throw new Error("limit");
-        return Object.freeze({ ...current, activeLedgerId: ledger.id, ledgers: Object.freeze([...current.ledgers, ledger]) });
-      });
-      if (saved) notify(t(locale, "importedLedger"), "success");
-    } catch { notify(t(locale, "invalidFile"), "error"); }
+  const importStatement = async (selection: DocumentImportSelection) => {
+    const imported = await persistWalletMutation((current) => {
+      const result = applyStatementImport(current, selection.rows, selection.target);
+      return { state: result.state, result };
+    });
+    setDocumentImportOpen(false);
+    notify(imported.added ? `${documentText(locale, "saved")} ${imported.added.toLocaleString(locale)}` : documentText(locale, "reviewedDuplicate"), imported.added ? "success" : "info");
   };
 
   const moveExpense = async (selection: MoveSelection) => {
@@ -325,12 +315,13 @@ export function App() {
   if (!loaded) return <main className="mobile-app loading-screen"><WalletCards /><p>{t(locale, "loading")}</p></main>;
   return (
     <main className="mobile-app">
-      <header className="app-header"><h1>지갑의 일기</h1><div className="header-tools"><label className="language-control"><Languages aria-hidden="true" /><span className="sr-only">{t(locale, "language")}</span><select value={locale} onChange={(event) => changeLocale(event.target.value as Locale)}>{SUPPORTED_LOCALES.map((code) => <option value={code} key={code}>{code === "ko" ? "한국어" : code === "en" ? "English" : "Français"}</option>)}</select></label><button className="icon-button" type="button" onClick={() => importInput.current?.click()} aria-label={t(locale, "importLedger")}><Download /></button><input ref={importInput} className="sr-only" type="file" accept=".walletdiary,.json,application/json,application/octet-stream" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importLedger(file); event.currentTarget.value = ""; }} /></div></header>
+      <header className="app-header"><h1>지갑의 일기</h1><div className="header-tools"><label className="language-control"><Languages aria-hidden="true" /><span className="sr-only">{t(locale, "language")}</span><select value={locale} onChange={(event) => changeLocale(event.target.value as Locale)}>{SUPPORTED_LOCALES.map((code) => <option value={code} key={code}>{code === "ko" ? "한국어" : code === "en" ? "English" : "Français"}</option>)}</select></label><button className="icon-button" type="button" onClick={() => setDocumentImportOpen(true)} aria-label={documentText(locale, "title")}><Download /></button></div></header>
       <LedgerTabs ledgers={state.ledgers} activeId={activeLedger?.id ?? null} locale={locale} onSelect={selectLedger} onAdd={() => setNewLedgerOpen(true)} onMenu={setMenuLedger} />
-      {activeLedger ? activeLedger.kind === "travel" ? <TravelLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} onImport={() => importInput.current?.click()} onChange={updateLedger} onNotify={notify} /> : <GeneralLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} automationStatus={automationStatus} pendingAutomation={pendingForActiveLedger} automationBusy={automationBusy} onAutomationRefresh={refreshCardAutomation} onOpenAutomationSettings={openAutomationSettings} onRequestAutomationAlertPermission={requestAutomationAlertPermission} onToggleAllPaymentApps={toggleAllAppsForActiveLedger} onRegisterAutomationSource={registerSourceForActiveLedger} onRemoveAutomationSource={removeSourceFromActiveLedger} onConfirmAutomationExpense={confirmExpenseForActiveLedger} onDismissAutomationCandidate={dismissAutomationCandidate} onMove={(expense) => setMoveRequest({ sourceLedgerId: activeLedger.id, expense })} onChange={updateLedger} onNotify={notify} /> : <section className="empty-app"><WalletCards /><h2>{t(locale, "noLedgers")}</h2><button className="primary-button" type="button" onClick={() => setNewLedgerOpen(true)}><Plus />{t(locale, "newLedger")}</button><p>{t(locale, "storageHelp")}</p></section>}
+      {activeLedger ? activeLedger.kind === "travel" ? <TravelLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} onImport={() => setDocumentImportOpen(true)} onChange={updateLedger} onNotify={notify} /> : <GeneralLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} automationStatus={automationStatus} pendingAutomation={pendingForActiveLedger} automationBusy={automationBusy} onAutomationRefresh={refreshCardAutomation} onOpenAutomationSettings={openAutomationSettings} onRequestAutomationAlertPermission={requestAutomationAlertPermission} onToggleAllPaymentApps={toggleAllAppsForActiveLedger} onRegisterAutomationSource={registerSourceForActiveLedger} onRemoveAutomationSource={removeSourceFromActiveLedger} onConfirmAutomationExpense={confirmExpenseForActiveLedger} onDismissAutomationCandidate={dismissAutomationCandidate} onMove={(expense) => setMoveRequest({ sourceLedgerId: activeLedger.id, expense })} onChange={updateLedger} onNotify={notify} /> : <section className="empty-app"><WalletCards /><h2>{t(locale, "noLedgers")}</h2><button className="primary-button" type="button" onClick={() => setNewLedgerOpen(true)}><Plus />{t(locale, "newLedger")}</button><p>{t(locale, "storageHelp")}</p></section>}
       {newLedgerOpen ? <NewLedgerSheet locale={locale} onClose={() => setNewLedgerOpen(false)} onCreate={addLedger} /> : null}
       {moveRequest ? <MoveExpenseSheet expense={moveRequest.expense} travels={travelLedgers} locale={locale} busy={exchangeBusy} onClose={() => setMoveRequest(null)} onMove={(selection) => void moveExpense(selection)} /> : null}
       {travelImport ? <TravelImportSheet incoming={travelImport} travels={travelLedgers} preferredId={activeLedger?.id ?? null} locale={locale} busy={exchangeBusy} onClose={() => setTravelImport(null)} onConfirm={(selection) => void confirmTravelImport(selection)} /> : null}
+      {documentImportOpen ? <DocumentImportSheet state={state} locale={locale} onClose={() => setDocumentImportOpen(false)} onTravel={(ledger) => { setDocumentImportOpen(false); setTravelImport(ledger); }} onConfirm={importStatement} /> : null}
       {menuLedger ? <LedgerMenuSheet ledger={menuLedger} locale={locale} onClose={() => setMenuLedger(null)} onRename={renameLedger} onDelete={deleteLedger} /> : null}
       {toast ? <div className={`toast ${toast.tone}`} role="status"><span>{toast.message}</span><button type="button" onClick={() => setToast(null)} aria-label={t(locale, "close")}><X /></button></div> : null}
     </main>

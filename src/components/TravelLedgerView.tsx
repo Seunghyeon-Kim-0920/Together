@@ -1,10 +1,10 @@
 import { BedDouble, Download, Bus, FileDown, Landmark, Pencil, Plus, ReceiptText, Share2, ShoppingBag, Trash2, Utensils, UserPlus, WalletCards } from "lucide-react";
-import { Capacitor } from "@capacitor/core";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { availableCurrencies, currencyDigits, currencyName, formatMoney, parseMinorUnits } from "../lib/currency";
 import { t, travelCategoryLabel } from "../lib/i18n";
 import { exchangeText as x } from "../lib/exchangeI18n";
-import { createTravelShareText, shareTravelLedger, shareTravelLedgerFile, safeFilename } from "../lib/share";
+import { documentText as d } from "../lib/documentI18n";
+import { saveLedgerPdf, shareLedgerPdf } from "../lib/ledgerPdf";
 import type { Locale, Participant, TravelCategory, TravelExpense, TravelLedger } from "../lib/types";
 import { TRAVEL_CATEGORIES } from "../lib/types";
 import { createTravelExpense, defaultDate, newestExpensesFirst, replaceExpenseById, settleTravelExpenses } from "../lib/wallet";
@@ -19,6 +19,7 @@ function CategoryIcon({ category }: { category: TravelCategory }) {
 
 export function TravelLedgerView({ ledger, locale, onImport, onChange, onNotify }: { ledger: TravelLedger; locale: Locale; onImport: () => void; onChange: (ledger: TravelLedger) => void; onNotify: Notify }) {
   const [formOpen, setFormOpen] = useState(false); const [expenseToEdit, setExpenseToEdit] = useState<TravelExpense | null>(null); const [participantName, setParticipantName] = useState(""); const [filter, setFilter] = useState<TravelCategory | "all">("all"); const [currencyToAdd, setCurrencyToAdd] = useState("USD"); const [currencyEditorOpen, setCurrencyEditorOpen] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false); const pdfLock = useRef(false);
   const participantNames = useMemo(() => new Map(ledger.participants.map((person) => [person.id, person.name])), [ledger.participants]);
   const settlements = useMemo(() => settleTravelExpenses(ledger), [ledger]);
   const totals = useMemo(() => ledger.currencies.map((currency) => ({ currency, total: ledger.expenses.filter((expense) => expense.currency === currency).reduce((sum, expense) => sum + expense.minorUnits, 0) })), [ledger]);
@@ -41,48 +42,23 @@ export function TravelLedgerView({ ledger, locale, onImport, onChange, onNotify 
     if (currency === ledger.defaultCurrency || ledger.currencies.length === 1 || ledger.expenses.some((expense) => expense.currency === currency)) return;
     update({ currencies: Object.freeze(ledger.currencies.filter((code) => code !== currency)) });
   };
-  const share = async () => {
+  const exportPdf = async (mode: "save" | "share") => {
+    if (pdfLock.current) return;
+    pdfLock.current = true; setPdfBusy(true);
     try {
-      const previews: string[] = [];
-      if (Capacitor.isNativePlatform()) {
-        const pages = [...document.querySelectorAll<HTMLElement>(`#travel-pdf-${CSS.escape(ledger.id)} .pdf-page`)].slice(0, 4);
-        const { default: html2canvas } = await import("html2canvas");
-        const canvases: HTMLCanvasElement[] = [];
-        for (const page of pages) canvases.push(await html2canvas(page, { scale: 1.2, backgroundColor: "#fff" }));
-        if (canvases.length) {
-          const merged = document.createElement("canvas"); merged.width = Math.max(...canvases.map((canvas) => canvas.width)); merged.height = canvases.reduce((height, canvas) => height + canvas.height, 0);
-          const context = merged.getContext("2d"); if (!context) throw new Error("canvas unavailable"); context.fillStyle = "#fff"; context.fillRect(0, 0, merged.width, merged.height);
-          let top = 0; for (const canvas of canvases) { context.drawImage(canvas, 0, top); top += canvas.height; }
-          previews.push(merged.toDataURL("image/jpeg", .9).split(",")[1]);
-        }
-      }
-      await shareTravelLedger(ledger, createTravelShareText(ledger, locale), previews); onNotify(t(locale, "sharedFileReady"), "success");
-    } catch { onNotify(t(locale, "shareFailed"), "error"); }
-  };
-  const shareFile = async () => { try { await shareTravelLedgerFile(ledger); onNotify(x(locale, "fileSent"), "success"); } catch { onNotify(t(locale, "shareFailed"), "error"); } };
-  const exportPdf = async () => {
-    try {
-      const pages = [...document.querySelectorAll<HTMLElement>(`#travel-pdf-${CSS.escape(ledger.id)} .pdf-page`)];
-      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import("html2canvas"), import("jspdf")]);
-      const pdf = new jsPDF({ format: "a4", unit: "mm", compress: true }); const width = pdf.internal.pageSize.getWidth(); const height = pdf.internal.pageSize.getHeight();
-      for (let index = 0; index < pages.length; index += 1) { const canvas = await html2canvas(pages[index], { scale: 1.4, backgroundColor: "#fff" }); if (index) pdf.addPage(); const ratio = Math.min(width / canvas.width, height / canvas.height); pdf.addImage(canvas.toDataURL("image/jpeg", .9), "JPEG", (width - canvas.width * ratio) / 2, 0, canvas.width * ratio, canvas.height * ratio, undefined, "FAST"); }
-      const filename = `${safeFilename(ledger.title)}.pdf`;
-      if (Capacitor.isNativePlatform()) {
-        const [{ Directory, Filesystem }, { Share }] = await Promise.all([import("@capacitor/filesystem"), import("@capacitor/share")]);
-        const data = pdf.output("datauristring").split(",")[1];
-        const written = await Filesystem.writeFile({ path: filename, data, directory: Directory.Cache, recursive: true });
-        await Share.share({ title: ledger.title, files: [written.uri], dialogTitle: t(locale, "exportPdf") });
-      } else {
-        pdf.save(filename);
-      }
-      onNotify(t(locale, "pdfReady"), "success");
-    } catch { onNotify(t(locale, "pdfFailed"), "error"); }
+      if (mode === "share") {
+        const shared = await shareLedgerPdf(ledger, locale);
+        onNotify(d(locale, shared ? "shared" : "downloaded"), "success");
+      } else if (await saveLedgerPdf(ledger, locale)) onNotify(t(locale, "pdfReady"), "success");
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "AbortError")) onNotify(t(locale, mode === "share" ? "shareFailed" : "pdfFailed"), "error");
+    } finally { pdfLock.current = false; setPdfBusy(false); }
   };
 
   return (
     <section className="ledger-screen">
-      <div className="ledger-screen-heading"><div><span>{t(locale, "travelLedger")}</span><h2>{ledger.title}</h2></div><div className="heading-actions"><button type="button" onClick={share}><Share2 />{x(locale, "shareSummary")}</button><button type="button" onClick={exportPdf}><FileDown />{t(locale, "exportPdf")}</button></div></div>
-      <section className="mobile-panel travel-exchange-panel"><div className="exchange-buttons"><button className="primary-button" type="button" onClick={() => void shareFile()}><Share2 />{x(locale, "shareFile")}</button><button className="wide-secondary" type="button" onClick={onImport}><Download />{x(locale, "receive")}</button></div><p>{x(locale, "shareHelp")}</p></section>
+      <div className="ledger-screen-heading"><div><span>{t(locale, "travelLedger")}</span><h2>{ledger.title}</h2></div><div className="heading-actions"><button type="button" disabled={pdfBusy} onClick={() => void exportPdf("save")} title={d(locale, "saveHelp")}><FileDown />{t(locale, "exportPdf")}</button></div></div>
+      <section className="mobile-panel travel-exchange-panel"><div className="exchange-buttons"><button className="primary-button" type="button" disabled={pdfBusy} onClick={() => void exportPdf("share")}><Share2 />{d(locale, "sharePdf")}</button><button className="wide-secondary" type="button" onClick={onImport}><Download />{x(locale, "receive")}</button></div><p>{d(locale, "shareHelp")}</p>{pdfBusy ? <p role="status">{d(locale, "saving")}</p> : null}</section>
       <div className="money-summary">{totals.map(({ currency, total }) => <article key={currency}><small>{t(locale, "totalSpent")} · {currency}</small><strong>{formatMoney(total, currency, locale)}</strong></article>)}</div>
       <section className="mobile-panel participant-panel"><div className="section-heading"><h3>{t(locale, "participants")}</h3><button type="button" onClick={() => setCurrencyEditorOpen(true)}><WalletCards />{t(locale, "manageCurrencies")}</button></div>
         <div className="add-participant-row"><input value={participantName} maxLength={80} placeholder={t(locale, "participantName")} onChange={(event) => setParticipantName(event.target.value)} /><button type="button" onClick={addParticipant} disabled={!participantName.trim()}><UserPlus />{t(locale, "add")}</button></div>
@@ -96,7 +72,6 @@ export function TravelLedgerView({ ledger, locale, onImport, onChange, onNotify 
       <button className="floating-add" type="button" onClick={() => { setExpenseToEdit(null); setFormOpen(true); }} disabled={ledger.participants.length === 0}><Plus />{t(locale, "addExpense")}</button>
       {formOpen ? <TravelExpenseSheet ledger={ledger} locale={locale} expense={expenseToEdit} onClose={() => { setFormOpen(false); setExpenseToEdit(null); }} onSave={(expense) => { update({ expenses: expenseToEdit ? replaceExpenseById(ledger.expenses, expense) : Object.freeze([...ledger.expenses, expense]) }); setFormOpen(false); setExpenseToEdit(null); onNotify(t(locale, expenseToEdit ? "expenseUpdated" : "expenseAdded"), "success"); }} onNotify={onNotify} /> : null}
       {currencyEditorOpen ? <SheetFrame title={t(locale, "manageCurrencies")} locale={locale} onClose={() => setCurrencyEditorOpen(false)}><div className="currency-list">{ledger.currencies.map((currency) => <div key={currency}><span>{currencyName(currency, locale)}</span>{currency !== ledger.defaultCurrency ? <button type="button" onClick={() => removeCurrency(currency)}>{t(locale, "removeCurrency")}</button> : null}</div>)}</div><div className="currency-add-row"><select value={currencyToAdd} onChange={(event) => setCurrencyToAdd(event.target.value)}>{availableCurrencies().map((code) => <option value={code} key={code}>{currencyName(code, locale)}</option>)}</select><button type="button" onClick={addCurrency}>{t(locale, "addCurrency")}</button></div></SheetFrame> : null}
-      <TravelPdfReport ledger={ledger} locale={locale} participantNames={participantNames} />
     </section>
   );
 }
@@ -108,13 +83,3 @@ function TravelExpenseSheet({ ledger, locale, expense, onClose, onSave, onNotify
 }
 
 function minorUnitsInput(minorUnits: number, currency: string): string { const digits = currencyDigits(currency); return (minorUnits / 10 ** digits).toFixed(digits); }
-
-function TravelPdfReport({ ledger, locale, participantNames }: { ledger: TravelLedger; locale: Locale; participantNames: ReadonlyMap<string, string> }) {
-  const sortedExpenses = newestExpensesFirst(ledger.expenses); const chunks: TravelExpense[][] = []; for (let index = 0; index < sortedExpenses.length; index += 16) chunks.push(sortedExpenses.slice(index, index + 16));
-  const totals = ledger.currencies.map((currency) => ({ currency, total: ledger.expenses.filter((expense) => expense.currency === currency).reduce((sum, expense) => sum + expense.minorUnits, 0) }));
-  const settlements = settleTravelExpenses(ledger);
-  return <div className="pdf-report" id={`travel-pdf-${ledger.id}`} aria-hidden="true">
-    <section className="pdf-page pdf-summary-page"><h1>지갑의 일기</h1><h2>{ledger.title}</h2><p>{t(locale, "participants")}: {ledger.participants.map((person) => person.name).join(", ") || "-"}</p><h3>{t(locale, "totalSpent")}</h3><div className="pdf-summary-grid">{totals.map((item) => <strong key={item.currency}>{item.currency}<b>{formatMoney(item.total, item.currency, locale)}</b></strong>)}</div><h3>{t(locale, "settlement")}</h3>{settlements.flatMap((settlement) => settlement.transfers).length ? settlements.flatMap((settlement) => settlement.transfers).map((transfer, index) => <article key={`${transfer.currency}-${index}`}><span>{transfer.currency}</span><strong>{participantNames.get(transfer.from)} → {participantNames.get(transfer.to)}</strong><span /><b>{formatMoney(transfer.minorUnits, transfer.currency, locale)}</b></article>) : <p>{t(locale, "settlementEmpty")}</p>}</section>
-    {chunks.map((expenses, page) => <section className="pdf-page" key={page}><h1>지갑의 일기</h1><h2>{ledger.title}</h2><h3>{t(locale, "recentExpenses")}</h3>{expenses.map((expense) => <article key={expense.id}><span>{expense.occurredOn}</span><strong>{expense.description}</strong><span>{travelCategoryLabel(locale, expense.category)} · {participantNames.get(expense.paidBy)}</span><b>{formatMoney(expense.minorUnits, expense.currency, locale)}</b></article>)}</section>)}
-  </div>;
-}

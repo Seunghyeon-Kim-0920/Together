@@ -1,6 +1,6 @@
 {
   "name": "wallet-diary",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts",
+    "test": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts tests/wallet-document-import.test.ts tests/wallet-document-reader.test.ts tests/wallet-pdf.test.ts",
     "android:sync": "npm run build && cap sync android",
     "ios:sync": "npm run build && cap sync ios",
     "typecheck": "tsc --noEmit",
@@ -24,11 +24,15 @@
     "@capacitor/ios": "^8.0.0",
     "@capacitor/share": "^8.0.0",
     "@capacitor/status-bar": "^8.0.3",
+    "fflate": "0.8.3",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^1.30.0",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "6.3.289",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.0.0",

@@ -1,9 +1,11 @@
-import { ArrowRightLeft, ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { ArrowRightLeft, ChevronLeft, ChevronRight, FileDown, Pencil, Plus, Trash2 } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import type { NativeCardCandidate } from "../lib/cardAutomation";
 import { currencyDigits, formatMoney, parseMinorUnits } from "../lib/currency";
 import { generalCategoryLabel, t } from "../lib/i18n";
 import { exchangeText as x } from "../lib/exchangeI18n";
+import { documentText as d } from "../lib/documentI18n";
+import { saveLedgerPdf } from "../lib/ledgerPdf";
 import { merchantDisplayName, preserveImportedMerchantDescription } from "../lib/merchant";
 import type { CardAutomationStatus } from "../lib/nativeCardAutomation";
 import { addMonths, annualAverageComparison, categoryTotals, monthKey, monthlyTotals, previousMonthComparison, yearlyTotals } from "../lib/statistics";
@@ -19,6 +21,7 @@ export function GeneralLedgerView({ ledger, locale, automationStatus, pendingAut
   const [category, setCategory] = useState<GeneralCategory | "all">("all");
   const [formOpen, setFormOpen] = useState(false);
   const [expenseToEdit, setExpenseToEdit] = useState<GeneralExpense | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false); const pdfLock = useRef(false);
   const year = Number(selectedMonth.slice(0, 4));
   const month = Number(selectedMonth.slice(5, 7));
   const comparison = useMemo(() => previousMonthComparison(ledger.expenses, selectedMonth, category), [ledger.expenses, selectedMonth, category]);
@@ -38,10 +41,18 @@ export function GeneralLedgerView({ ledger, locale, automationStatus, pendingAut
   const annualTotal = bars.reduce((sum, total) => sum + total, 0);
   const update = (expenses: readonly GeneralExpense[]) => onChange(Object.freeze({ ...ledger, expenses: Object.freeze(expenses), updatedAt: new Date().toISOString() }));
   const openNewExpense = () => { setExpenseToEdit(null); setFormOpen(true); };
+  const exportPdf = async () => {
+    if (pdfLock.current) return;
+    pdfLock.current = true; setPdfBusy(true);
+    try { if (await saveLedgerPdf(ledger, locale)) onNotify(t(locale, "pdfReady"), "success"); }
+    catch (error) { if (!(error instanceof Error && error.name === "AbortError")) onNotify(t(locale, "pdfFailed"), "error"); }
+    finally { pdfLock.current = false; setPdfBusy(false); }
+  };
   const comparisonCopy = (percent: number | null) => percent === null ? t(locale, "newSpending") : percent === 0 ? t(locale, "noChange") : `${Math.abs(percent).toLocaleString(locale)}% ${percent > 0 ? t(locale, "moreSpent") : t(locale, "lessSpent")}`;
 
   return <section className="ledger-screen general-ledger">
-    <div className="ledger-screen-heading"><div><span>{t(locale, "generalLedger")}</span><h2>{ledger.title}</h2></div><button className="primary-compact" type="button" onClick={openNewExpense}><Plus />{t(locale, "addExpense")}</button></div>
+    <div className="ledger-screen-heading"><div><span>{t(locale, "generalLedger")}</span><h2>{ledger.title}</h2></div><div className="heading-actions"><button type="button" disabled={pdfBusy} title={d(locale, "saveHelp")} onClick={() => void exportPdf()}><FileDown />{t(locale, "exportPdf")}</button><button className="primary-compact" type="button" onClick={openNewExpense}><Plus />{t(locale, "addExpense")}</button></div></div>
+    {pdfBusy ? <p role="status">{d(locale, "saving")}</p> : null}
     <div className="month-navigation"><button type="button" aria-label={t(locale, "previousMonthButton")} onClick={() => setSelectedMonth(addMonths(selectedMonth, -1))}><ChevronLeft /></button><label><span className="sr-only">{t(locale, "selectMonth")}</span><input type="month" value={selectedMonth} onChange={(event) => { if (event.target.value) setSelectedMonth(event.target.value); }} /></label><button type="button" aria-label={t(locale, "nextMonthButton")} onClick={() => setSelectedMonth(addMonths(selectedMonth, 1))}><ChevronRight /></button></div>
     <section className="month-summary">
       <article><small>{t(locale, "selectedMonthSpending")}</small><strong>{formatMoney(comparison.current, ledger.currency, locale)}</strong></article>
