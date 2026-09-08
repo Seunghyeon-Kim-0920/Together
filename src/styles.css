@@ -312,3 +312,11 @@ button:disabled { cursor: default; opacity: .44; }
   .heading-actions button { width: auto; overflow: visible; white-space: normal; min-height: 44px; }
   .heading-actions svg { flex-shrink: 0; }
 }
+.bank-connection-status { padding: 14px; margin-block: 16px; border: 1px solid #e6ded0; border-radius: 14px; background: #faf7ef; }
+.bank-connection-status p { line-height: 1.6; font-size: 13px; }
+.notification-diagnostics { margin-block: 16px; }
+.notification-diagnostics summary { cursor: pointer; font-weight: 650; }
+.notification-diagnostics ul { padding: 0; list-style: none; }
+.notification-diagnostics li { display: grid; gap: 5px; padding: 10px 0; border-bottom: 1px solid #e6ded0; overflow-wrap: anywhere; }
+.notification-diagnostics span, .notification-diagnostics small { font-size: 12px; }
+.automation-card-body > button { text-align: start; overflow-wrap: anywhere; }

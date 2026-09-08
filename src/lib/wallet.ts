@@ -46,7 +46,7 @@ function parseAutomationSources(value: unknown): readonly AutomationSource[] | n
 function parseAutomationReversalIds(value: unknown): readonly string[] | null {
   if (!Array.isArray(value) || value.length > MAX_EXPENSES_PER_LEDGER) return null;
   const ids = value.map((candidate) => text(candidate, 100));
-  if (ids.some((candidate) => !candidate || !/^card-(?:auto|reversal)-[0-9a-f]{16}$/.test(candidate as string)) || new Set(ids).size !== ids.length) return null;
+  if (ids.some((candidate) => !candidate || !/^card-(?:auto|origin|reversal)-[0-9a-f]{16}$/.test(candidate as string)) || new Set(ids).size !== ids.length) return null;
   return Object.freeze(ids as string[]);
 }
 

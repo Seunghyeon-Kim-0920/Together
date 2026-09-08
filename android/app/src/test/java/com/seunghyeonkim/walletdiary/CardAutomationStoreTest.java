@@ -9,6 +9,35 @@ import org.json.JSONObject;
 public class CardAutomationStoreTest {
 
     @Test
+    public void sourceRemovalDiscoveryOptOutAndFinalLedgerDeletionPurgePendingScope() throws Exception {
+        JSONArray pending = new JSONArray().put(new JSONObject().put("packageName", "bank.first"))
+            .put(new JSONObject().put("packageName", "bank.second")).put(new JSONObject().put("packageName", "wallet.app"));
+        JSONObject discovery = new JSONObject().put("detectAllApps", true);
+        assertEquals(2, CardAutomationStore.retainAllowedEvents(pending, discovery, "wallet.app").length());
+        JSONObject onlyFirst = new JSONObject().put("sources", new JSONArray().put(new JSONObject().put("packageName", "bank.first")));
+        JSONArray retained = CardAutomationStore.retainAllowedEvents(pending, onlyFirst, "wallet.app");
+        assertEquals(1, retained.length());
+        assertEquals("bank.first", retained.getJSONObject(0).getString("packageName"));
+        assertEquals(0, CardAutomationStore.retainAllowedEvents(pending, new JSONObject(), "wallet.app").length());
+    }
+
+    @Test
+    public void scopeRecoveryRunsAfterEnablingDetectionOrTrustButNotEachExpenseSave() throws Exception {
+        JSONObject empty = new JSONObject();
+        JSONObject off = new JSONObject().put("sources", new JSONArray()).put("ledgers", new JSONArray());
+        assertEquals(false, CardAutomationStore.captureScopeChanged(empty, off));
+        JSONObject on = new JSONObject(off.toString()).put("detectAllApps", true);
+        assertEquals(true, CardAutomationStore.captureScopeChanged(off, on));
+        JSONObject trusted = new JSONObject(on.toString()).put("sources", new JSONArray().put(new JSONObject().put("packageName", "co.swile.app").put("currency", "EUR")));
+        assertEquals(true, CardAutomationStore.captureScopeChanged(on, trusted));
+        JSONObject expenseSave = new JSONObject(trusted.toString()).put("ledgers", new JSONArray().put(new JSONObject().put("spentMinor", 1234)));
+        assertEquals(false, CardAutomationStore.captureScopeChanged(trusted, expenseSave));
+        assertEquals(true, CardAutomationStore.captureScopeChanged(trusted, off));
+        JSONObject discoveryCurrency = new JSONObject(on.toString()).put("ledgers", new JSONArray().put(new JSONObject().put("automationAllApps", true).put("currency", "KRW")));
+        assertEquals(true, CardAutomationStore.captureScopeChanged(on, discoveryCurrency));
+    }
+
+    @Test
     public void budgetLevelsMatchTheConfiguredThresholds() {
         assertEquals(0, CardAutomationStore.budgetLevel(79, 100));
         assertEquals(80, CardAutomationStore.budgetLevel(80, 100));

@@ -53,7 +53,7 @@ public class PaymentNotificationParserTest {
         assertNull(parse("com.example.bank", "Balance update", "-€500.00", "negative-balance", 3L));
         assertNull(parse("com.example.bank", "Available balance", "Payment completed. -€500.00", "payment-word-balance", 3L));
         assertNull(parse("com.example.bank", "Weekend offer", "Save €10 at Starbucks", "offer", 3L));
-        assertNull(parse("com.example.bank", "Lidl", "€12.34", "unsigned-minimal", 3L));
+        assertEquals("review", parse("com.example.bank", "Lidl", "€12.34", "unsigned-minimal", 3L).optString("confidence"));
         assertNotNull(parse("com.example.bank", "Lidl", "-€12.34", "signed-minimal", 3L));
         assertNull(parse("com.example.bank", "Transfer cancelled", "€12.34 at Lidl", "transfer-cancel", 3L));
         assertNull(parse("com.example.bank", "Top up reversed", "€12.34 at Lidl", "topup-reverse", 3L));
@@ -427,7 +427,7 @@ public class PaymentNotificationParserTest {
         assertNull(parse("com.unlisted.app", "Paiement refusé", "-12,00 € chez Lidl", "failed", 802L, false, "EUR"));
         assertNull(parse("com.unlisted.app", "Promotion", "Save -12,00 € at Lidl", "offer", 803L, false, "EUR"));
         assertNull(parse("com.unlisted.app", "OTP", "123456 for -12,00 €", "otp", 804L, false, "EUR"));
-        assertNull(parse("com.unlisted.app", "Lidl", "12,00 €", "unsigned", 805L, false, "EUR"));
+        assertNull(PaymentNotificationParser.parse("com.unlisted.app", "Unknown bank", "Unknown bank", "12,00 €", "", "", 805L, "unsigned-no-evidence", false, false, "EUR"));
     }
 
     @Test
@@ -495,6 +495,112 @@ public class PaymentNotificationParserTest {
         assertEquals("review", unknown.optString("confidence"));
         assertEquals("high", trusted.optString("confidence"));
         assertEquals("review", manual.optString("confidence"));
+    }
+
+    @Test
+    public void swileAndUnknownBanksKeepUnsignedCompactPaymentsInReviewEvenWhenTrusted() {
+        for (String source : new String[] {"hr.lunc.client", "fr.swile.app", "kr.unknown.bank", "com.world.newcard"}) {
+            for (boolean configured : new boolean[] {false, true}) {
+                for (String[] row : new String[][] {
+                    {"Lidl", "1,24 €"}, {"Swile", "Lidl 1,24 Euros"},
+                    {"Swile", "1,24 € chez Lidl"}, {"Swile\nLidl", "1,24 €"},
+                    {"Swile", "Lidl\n1,24 €\nSolde disponible 180,00 €"},
+                }) {
+                    JSONObject candidate = PaymentNotificationParser.parse(source, "Swile", row[0], row[1], "", "", 910L, "unsigned-card", configured, false, "EUR");
+                    assertNotNull(source + " " + row[0] + " " + row[1], candidate);
+                    assertEquals("Lidl", candidate.optString("merchant"));
+                    assertEquals(124L, candidate.optLong("minorUnits"));
+                    assertEquals("review", candidate.optString("confidence"));
+                }
+            }
+        }
+        JSONObject paid = PaymentNotificationParser.parse("hr.lunc.client", "Swile", "C'est payé !", "1,24 € chez Lidl", "", "", 911L, "swile-paid", true, false, "EUR");
+        assertNotNull(paid);
+        assertEquals("high", paid.optString("confidence"));
+    }
+
+    @Test
+    public void unsignedDraftsDoNotTurnPricesBalancesIncomeOrFuturePaymentsIntoExpenses() {
+        for (String text : new String[] {"Sale 1,24 €", "Price 1,24 €", "Prix 1,24 €", "Solde 1,24 €", "Payment request 1,24 €", "Upcoming payment 1,24 €", "1,24 € will be charged", "Paiement à venir 1,24 €", "결제 예정 1,24 €", "Payment received 1,24 €", "+1,24 €"}) {
+            assertNull(text, parse("com.unknown.card", "Lidl", text, "not-spending", 912L, true, "EUR"));
+        }
+        assertNull(parse("com.unknown.card", "Lidl", "1,24 € and 5,00 €", "two-transactions", 912L, true, "EUR"));
+        assertNull(parse("com.unknown.card", "Swile\nSolde disponible", "-180,00 €", "expanded-balance", 912L, true, "EUR"));
+        assertNull(parse("com.unknown.card", "Unknown bank\n잔액", "-180,000원", "expanded-balance-ko", 912L, true, "KRW"));
+    }
+
+    @Test
+    public void executedScheduledTransfersAreAcceptedButFutureInstructionsRemainExcluded() {
+        JSONObject english = parse("com.new.bank", "Scheduled payment completed", "€50.00 to Landlord", "scheduled-complete", 913L);
+        JSONObject french = parse("com.new.bank", "Virement programmé exécuté", "50,00 € vers Propriétaire", "programme-execute", 913L);
+        JSONObject korean = parse("com.new.bank", "예약이체 완료", "받는 분 김민지 50,000원", "reservation-complete", 913L, true, "KRW");
+        for (JSONObject candidate : new JSONObject[] {english, french, korean}) {
+            assertNotNull(candidate);
+            assertEquals("standing_order", candidate.optString("eventType"));
+        }
+        assertNull(parse("com.new.bank", "Scheduled payment", "€50.00 to Landlord", "schedule-only", 913L));
+        assertNull(parse("com.new.bank", "Scheduled payment created", "€50.00 to Landlord", "schedule-created", 913L));
+        assertNull(parse("com.new.bank", "예약이체 예정", "받는 분 김민지 50,000원", "reservation-future", 913L, true, "KRW"));
+    }
+
+    @Test
+    public void outgoingTransfersKeepDirectionWhenCompletionFollowsTheAmountOrRecipient() {
+        for (String[] row : new String[][] {
+            {"Transfer", "€50.00 to Alice has been completed"},
+            {"Virement", "de 50,00 € effectué vers Alice"},
+            {"이체", "김민지에게 50,000원 이체 완료"},
+        }) {
+            JSONObject candidate = parse("com.world.bank", row[0], row[1], "flexible-transfer", 914L, false, "EUR");
+            assertNotNull(row[1], candidate);
+            assertEquals("outgoing_transfer", candidate.optString("eventType"));
+            assertEquals("review", candidate.optString("confidence"));
+        }
+        assertNull(parse("com.world.bank", "Transfer", "€50.00 from Alice completed", "flexible-incoming", 914L));
+        assertNull(parse("com.world.bank", "Transfer", "€50.00 to Alice", "not-yet-completed", 914L));
+        assertNotNull(parse("com.world.bank", "Payment completed", "€50.00 at EDF for invoice 123", "paid-invoice", 914L));
+    }
+
+    @Test
+    public void signedTransfersWithARecipientProveOutgoingWithoutACompletionVerb() {
+        for (String[] row : new String[][] {
+            {"Transfer", "- € 12.34 to Alice"}, {"Virement", "-12,34 € vers Alice"},
+            {"이체", "- 12,000원 받는 분 김민지"},
+        }) {
+            JSONObject candidate = parse("com.world.bank", row[0], row[1], "signed-transfer", 914L, false, "EUR");
+            assertNotNull(row[1], candidate);
+            assertEquals("outgoing_transfer", candidate.optString("eventType"));
+        }
+        assertNull(parse("com.world.bank", "Transfer", "- € 12.34 from Alice", "signed-incoming", 914L));
+        assertNull(parse("com.world.bank", "Transfer", "- € 12.34", "no-direction", 914L));
+        assertNull(parse("com.world.bank", "Transfer scheduled", "- € 12.34 to Alice", "signed-future", 914L));
+        assertNull(parse("com.world.bank", "Transfer pending", "- € 12.34 to Alice", "signed-pending", 914L));
+    }
+
+    @Test
+    public void debitMinusSignsSurviveSpacesTabsCurrencyOrderAndFullwidthText() {
+        for (String body : new String[] {"-12,34 €", "- € 12,34", "EUR -12.34", "EUR - 12.34", "- 12,34 €", "−\t12,34\t€", "－１２，３４ €", "﹣ 12,34 €"}) {
+            JSONObject candidate = parse("hr.lunc.client", "Lidl", body, "negative-spacing", 915L, true, "EUR");
+            assertNotNull(body, candidate);
+            assertEquals(body, 1234L, candidate.optLong("minorUnits"));
+            assertEquals(body, "high", candidate.optString("confidence"));
+        }
+        JSONObject won = parse("kr.new.bank", "스타벅스", "−₩12,000", "negative-won", 915L, true, "KRW");
+        assertNotNull(won);
+        assertEquals(12000L, won.optLong("minorUnits"));
+        assertEquals("high", won.optString("confidence"));
+    }
+
+    @Test
+    public void separatedPlusSignsIncomeAndNegativeBalancesNeverBecomePurchases() {
+        for (String body : new String[] {"+ 12,34 €", "EUR + 12.34", "+ € 12,34", "＋ １２，３４ €", "+\t12,34 €", "Payment received - 12,34 €", "Solde disponible - 12,34 €", "Remaining balance EUR - 12.34"}) {
+            assertNull(body, parse("com.unknown.bank", "Lidl", body, "not-negative-expense", 916L, true, "EUR"));
+        }
+        for (String body : new String[] {"- 12,34 € chez Lidl", "EUR - 12.34 at Lidl", "+ 12,34 € chez Lidl"}) {
+            JSONObject reversal = parse("com.unknown.bank", "Paiement annulé", body, "cancellation-spacing", 917L, true, "EUR");
+            assertNotNull(body, reversal);
+            assertEquals("reversal", reversal.optString("eventType"));
+            assertEquals(1234L, reversal.optLong("minorUnits"));
+        }
     }
 
     private static JSONObject parse(String packageName, String title, String text, String key, long time) {

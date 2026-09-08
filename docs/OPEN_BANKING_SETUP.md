@@ -1,8 +1,8 @@
 # Official bank synchronization
 
-## Current status in v1.4.0
+## Current status in v1.5.1
 
-This release contains a tested, read-only transaction validation and preview foundation only. It has no live provider account, backend, OAuth consent UI, background synchronization, or database apply path, so transactions without notifications are not synchronized in v1.4.0. The flow below is the required target architecture, not an active user feature.
+This release contains a tested, read-only transaction validation and preview foundation only. It has no live provider account, backend, OAuth consent UI, background synchronization, or database apply path, so transactions without notifications are not synchronized in v1.5.1. The automation screen now explicitly shows this disconnected state and links to existing statement-file import. Notification recovery and file import do not establish a bank connection. The flow below is the required target architecture, not an active user feature.
 
 Wallet Diary must not read or automate another bank app's private screen or local database. Android isolates each app, and accessibility-based scraping is neither a reliable transaction source nor an acceptable production design for sensitive financial data.
 

@@ -59,6 +59,15 @@ final class PaymentSourcePolicy {
             || category.equals("promo");
     }
 
+    static boolean requiresManualReview(String packageName, String category, boolean explicitlyConfigured) {
+        // A bank may use generic msg/email categories for its own payment
+        // alerts. Unknown packages already receive review confidence, so these
+        // category names must not prevent the user from attesting a direct app.
+        // Independently identified relay packages remain permanently manual.
+        return isKnownAggregatorPackage(packageName) || "social".equals(category)
+            || "recommendation".equals(category) || "promo".equals(category);
+    }
+
     static boolean isHardBlockedApplicationCategory(int category) {
         // PRODUCTIVITY is deliberately not blocked: some official bank/card
         // apps use it, and unknown direct apps already require user attestation.

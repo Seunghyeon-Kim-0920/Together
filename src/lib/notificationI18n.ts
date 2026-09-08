@@ -1,6 +1,9 @@
 import type { Locale } from "./types";
 
 const ko = {
+  identityConflictHelp: "은행 앱이 이전 알림 번호를 다른 금액·사용처로 다시 보냈습니다. 기존 내역을 확인하고, 별도로 결제한 경우에만 새 지출로 기록하세요.",
+  confirmNewTransaction: "기존 내역을 확인했으며 별도로 결제한 새 지출입니다",
+  candidateChanged: "알림이 변경되거나 이미 처리됐습니다. 새로 표시된 내역을 확인해주세요.",
   merchantRequired: "결제 금액은 찾았지만 사용처를 확인하지 못했습니다. 사용처를 입력하고 실제 결제인지 확인한 뒤 기록해주세요.",
   merchantUnknown: "사용처 확인 필요",
   currencyMismatch: "이 내역은 {currency}입니다. 같은 화폐의 일반 가계부를 열거나 새로 만들어 기록해주세요. 임의로 환산하지 않습니다.",
@@ -9,10 +12,21 @@ const ko = {
   recheckHelp: "알림창에 아직 남아 있는 알림만 다시 확인합니다. 삭제된 알림이나 은행 거래내역은 복원하지 못합니다.",
   disconnected: "알림 접근은 허용됐지만 감지 서비스가 연결되지 않았습니다. 다시 확인을 누르거나 Android 설정에서 알림 접근을 껐다 켜주세요.",
   recheckError: "알림을 다시 확인하지 못했습니다. 알림 접근 권한을 확인해주세요.",
-  history: "새 알림과 사용자가 다시 확인한 현재 알림만 처리합니다. 은행의 과거 거래내역을 직접 읽지는 않습니다.",
+  history: "새 알림을 처리하고 앱 복귀·서비스 재연결·감지 설정 변경 시 알림창에 남아 있는 항목을 재확인합니다. 처리한 동일 항목은 중복 기록하지 않습니다.",
+  bankNotConnected: "은행 거래내역 연결: 미연결",
+  bankConnectionHelp: "알림 없는 계좌이체·자동이체·정기결제는 아직 자동 조회되지 않습니다. 지원 은행의 공식 계좌 연동과 본인 인증이 필요합니다. 현재는 은행에서 받은 PDF·엑셀·CSV 내역을 가져와 확인 후 등록할 수 있습니다.",
+  importStatement: "은행·카드 내역 파일 가져오기",
+  recentChecks: "최근 앱별 알림 확인",
+  recentChecksHelp: "최근 20개 앱의 이름·확인 시각·인식 여부만 기기에 보관합니다. ‘결제 후보 인식’은 저장 완료가 아닙니다. 위의 신뢰 앱과 아래의 확인할 내역도 살펴보세요.",
+  recognized: "결제 후보 인식",
+  notRecognized: "최근 알림에서 결제 후보 없음",
+  noChecks: "아직 확인한 알림이 없습니다. 알림 접근과 앱 감지 설정을 확인해주세요.",
 };
 type Key = keyof typeof ko;
 const en: Record<Key, string> = {
+  identityConflictHelp: "The bank app reused a previous notification ID with a different amount or merchant. Check the existing entry and add this only if it is a separate payment.",
+  confirmNewTransaction: "I checked the existing entry; this is a separate new expense",
+  candidateChanged: "This notification changed or was already processed. Please review the refreshed item.",
   merchantRequired: "An amount was detected, but the merchant is missing. Enter the merchant and verify that this is a real payment before saving.",
   merchantUnknown: "Merchant required",
   currencyMismatch: "This item is in {currency}. Open or create a general ledger using that currency to record it. No exchange rate is assumed.",
@@ -21,9 +35,20 @@ const en: Record<Key, string> = {
   recheckHelp: "Only notifications still in the notification shade can be rechecked. Dismissed notifications and bank history cannot be recovered.",
   disconnected: "Notification access is allowed, but the listener is disconnected. Recheck, or turn notification access off and on in Android settings.",
   recheckError: "Could not recheck notifications. Please check notification access permission.",
-  history: "Processes new notifications and current notifications you explicitly recheck. It does not read past bank transactions directly.",
+  history: "Processes new alerts and rechecks visible notifications when the app resumes, the listener reconnects or detection settings change. The same processed item is not recorded twice.",
+  bankNotConnected: "Bank transactions: not connected",
+  bankConnectionHelp: "Transfers, direct debits and recurring payments without notifications are not synced yet. An official supported-bank connection and your authentication are required. For now, import a bank PDF, spreadsheet or CSV and review the entries before saving.",
+  importStatement: "Import a bank or card statement",
+  recentChecks: "Recent notification checks by app",
+  recentChecksHelp: "Only the app name, check time and recognition result for up to 20 apps are stored on this device. A detected candidate is not necessarily saved. Check trusted apps above and review items below.",
+  recognized: "Payment candidate detected",
+  notRecognized: "No payment candidate in the latest alert",
+  noChecks: "No notifications checked yet. Check notification access and app detection settings.",
 };
 const fr: Record<Key, string> = {
+  identityConflictHelp: "L’application bancaire a réutilisé un identifiant de notification avec un autre montant ou commerçant. Vérifiez l’opération existante et ajoutez celle-ci uniquement s’il s’agit d’un paiement distinct.",
+  confirmNewTransaction: "J’ai vérifié l’opération existante ; il s’agit d’une nouvelle dépense distincte",
+  candidateChanged: "Cette notification a changé ou a déjà été traitée. Vérifiez l’opération actualisée.",
   merchantRequired: "Un montant a été détecté, mais le commerçant manque. Saisissez-le et vérifiez qu’il s’agit d’un paiement réel avant d’enregistrer.",
   merchantUnknown: "Commerçant à préciser",
   currencyMismatch: "Cette opération est en {currency}. Ouvrez ou créez un carnet quotidien dans cette devise pour l’enregistrer. Aucune conversion n’est supposée.",
@@ -32,7 +57,15 @@ const fr: Record<Key, string> = {
   recheckHelp: "Seules les notifications encore présentes dans le volet peuvent être revérifiées. Les notifications effacées et l’historique bancaire ne peuvent pas être récupérés.",
   disconnected: "L’accès aux notifications est autorisé, mais le service est déconnecté. Relancez la vérification ou désactivez puis réactivez cet accès dans les paramètres Android.",
   recheckError: "Impossible de revérifier les notifications. Vérifiez l’autorisation d’accès.",
-  history: "Traite les nouvelles notifications et celles encore présentes que vous choisissez de revérifier. Ne lit pas directement l’historique bancaire.",
+  history: "Traite les nouvelles alertes et revérifie celles encore présentes au retour dans l’application, à la reconnexion du service ou après une modification de la détection. Une même opération déjà traitée n’est pas enregistrée deux fois.",
+  bankNotConnected: "Opérations bancaires : non connectées",
+  bankConnectionHelp: "Les virements, prélèvements et paiements récurrents sans notification ne sont pas encore synchronisés. Une connexion officielle à une banque prise en charge et votre authentification sont nécessaires. Pour le moment, importez un relevé PDF, tableur ou CSV et vérifiez les opérations avant de les enregistrer.",
+  importStatement: "Importer un relevé bancaire ou de carte",
+  recentChecks: "Dernières notifications vérifiées par application",
+  recentChecksHelp: "Seuls le nom, l’heure et le résultat de détection de 20 applications au maximum sont conservés sur cet appareil. Une suggestion détectée n’est pas forcément enregistrée. Vérifiez les applications fiables ci-dessus et les opérations ci-dessous.",
+  recognized: "Suggestion de paiement détectée",
+  notRecognized: "Aucune suggestion dans la dernière alerte",
+  noChecks: "Aucune notification vérifiée. Vérifiez l’accès aux notifications et les réglages de détection.",
 };
 const messages = { ko, en, fr };
 export function notificationText(locale: Locale, key: Key): string { return messages[locale][key]; }

@@ -6,6 +6,7 @@ export interface CardAutomationStatus {
   readonly accessGranted: boolean;
   readonly alertPermissionGranted: boolean;
   readonly listenerConnected?: boolean;
+  readonly recentChecks?: readonly { readonly packageName: string; readonly sourceName: string; readonly checkedAt: number; readonly recognized: boolean }[];
 }
 
 interface CardAutomationNativePlugin {
@@ -24,7 +25,13 @@ export const UNSUPPORTED_CARD_AUTOMATION_STATUS: CardAutomationStatus = Object.f
 function normalizeStatus(value: unknown): CardAutomationStatus {
   if (typeof value !== "object" || value === null) return UNSUPPORTED_CARD_AUTOMATION_STATUS;
   const status = value as Record<string, unknown>;
-  return Object.freeze({ supported: status.supported === true, accessGranted: status.accessGranted === true, alertPermissionGranted: status.alertPermissionGranted === true, ...(typeof status.listenerConnected === "boolean" ? { listenerConnected: status.listenerConnected } : {}) });
+  const recentChecks = Array.isArray(status.recentChecks) ? status.recentChecks.slice(0, 20).flatMap((item: unknown) => {
+    if (typeof item !== "object" || item === null) return [];
+    const check = item as Record<string, unknown>;
+    return typeof check.packageName === "string" && typeof check.sourceName === "string" && typeof check.checkedAt === "number" && Number.isSafeInteger(check.checkedAt) && check.checkedAt > 0 && check.checkedAt < 8.64e15 && typeof check.recognized === "boolean"
+      ? [Object.freeze({ packageName: check.packageName.slice(0, 200), sourceName: check.sourceName.slice(0, 80), checkedAt: check.checkedAt, recognized: check.recognized })] : [];
+  }) : [];
+  return Object.freeze({ supported: status.supported === true, accessGranted: status.accessGranted === true, alertPermissionGranted: status.alertPermissionGranted === true, recentChecks: Object.freeze(recentChecks), ...(typeof status.listenerConnected === "boolean" ? { listenerConnected: status.listenerConnected } : {}) });
 }
 function isAndroid(): boolean { return Capacitor.getPlatform() === "android"; }
 

@@ -63,6 +63,7 @@ test("native candidates are strictly validated and duplicate queue rows collapse
   assert.equal(parseNativeCardCandidate({ ...candidate, eventType: "direct_debit" })?.eventType, "direct_debit");
   assert.equal(parseNativeCardCandidate({ ...candidate, eventType: "standing_order" })?.eventType, "standing_order");
   assert.equal(parseNativeCardCandidate({ ...candidate, eventType: undefined })?.eventType, "purchase");
+  assert.equal(parseNativeCardCandidate({ ...candidate, identityConflict: true })?.identityConflict, undefined, "native input cannot set an app-only conflict flag");
   const batch = parseNativeCandidateBatch({ events: [candidate, candidate, { ...candidate, id: "bad", queueToken: "bad-version", currency: "EURO" }] });
   assert.equal(batch.candidates.length, 1);
   assert.deepEqual(batch.rejectedIds, ["bad"]);
@@ -149,6 +150,52 @@ test("an automatically recorded expense stays editable and a replay preserves th
   assert.deepEqual(repost.pending, [{ ...reposted, confidence: "review" }]);
 });
 
+test("a changed revision of the same native id requires explicit add-as-new confirmation", () => {
+  const recorded = applyHighConfidenceCardAutomation(wallet(), [candidate]);
+  const ledger = recorded.state.ledgers[0];
+  if (ledger.kind !== "general") throw new Error("expected general ledger");
+  const original = ledger.expenses[0];
+  const edited = Object.freeze({ ...original, description: "사용자가 고친 상점", category: "shopping" as const, minorUnits: 1199 });
+  const editedLedger = Object.freeze({ ...ledger, expenses: replaceExpenseById(ledger.expenses, edited) });
+  const editedState = wallet(editedLedger);
+  const changed = Object.freeze({ ...candidate, queueToken: "changed-content-token", minorUnits: 1499 });
+
+  const review = applyHighConfidenceCardAutomation(editedState, [changed]);
+  assert.equal(review.state, editedState);
+  assert.deepEqual(review.acknowledgedIds, []);
+  assert.deepEqual(review.pending, [{ ...changed, confidence: "review", identityConflict: true }]);
+  assert.throws(() => confirmCardCandidate(editedState, editedLedger.id, review.pending[0]), /candidate-conflict/);
+
+  const added = confirmCardCandidate(editedState, editedLedger.id, review.pending[0], { asNewTransaction: true });
+  assert.equal(added.inserted, true);
+  if (added.state.ledgers[0].kind !== "general") throw new Error("expected general ledger");
+  assert.deepEqual(added.state.ledgers[0].expenses[0], edited, "the prior user-edited row is untouched");
+  assert.notEqual(added.state.ledgers[0].expenses[1].id, original.id);
+  assert.equal(added.state.ledgers[0].expenses[1].minorUnits, changed.minorUnits);
+  const replay = confirmCardCandidate(added.state, editedLedger.id, review.pending[0], { asNewTransaction: true });
+  assert.equal(replay.state, added.state);
+  assert.equal(replay.inserted, false);
+});
+
+test("moved native identities acknowledge exact replays but review changed revisions", () => {
+  const base = configuredLedger();
+  const recordedLedger = applyHighConfidenceCardAutomation(wallet(base), [candidate]).state.ledgers[0];
+  if (recordedLedger.kind !== "general") throw new Error("expected general ledger");
+  const originalOrigin = recordedLedger.expenses[0].automationFingerprint!;
+  const movedWithOrigin = Object.freeze({ ...base, movedExpenseIds: Object.freeze([automationExpenseId(candidate), originalOrigin]) });
+  const movedState = wallet(movedWithOrigin);
+  assert.deepEqual(applyHighConfidenceCardAutomation(movedState, [candidate]).acknowledgedIds, [candidate.id]);
+
+  const changed = Object.freeze({ ...candidate, queueToken: "moved-revision", merchant: "Another merchant" });
+  const review = applyHighConfidenceCardAutomation(movedState, [changed]);
+  assert.deepEqual(review.acknowledgedIds, []);
+  assert.equal(review.pending[0].identityConflict, true);
+  assert.throws(() => confirmCardCandidate(movedState, movedWithOrigin.id, review.pending[0]), /candidate-conflict/);
+  const added = confirmCardCandidate(movedState, movedWithOrigin.id, review.pending[0], { asNewTransaction: true });
+  assert.equal(added.inserted, true);
+  assert.equal(added.state.ledgers[0].expenses.length, 1);
+});
+
 test("fuzzy manual matches remain pending and user-reviewed candidates can be confirmed", () => {
   const base = configuredLedger();
   const manual = Object.freeze({ id: "manual", description: "LIDL PARIS", category: "food" as const, currency: "EUR", minorUnits: candidate.minorUnits, occurredOn: "2026-08-30" });
@@ -223,10 +270,17 @@ test("an updated notification can reverse a purchase with the same stable event 
   assert.deepEqual(result.reversedIds, [reversal.id]);
   assert.equal(result.state.ledgers[0].expenses.length, 0);
   assert.notEqual(parseWalletStateStrict(result.state), null);
-  assert.equal(result.state.ledgers[0].kind === "general" ? result.state.ledgers[0].automationReversalIds.length : 0, 2);
+  assert.equal(result.state.ledgers[0].kind === "general" ? result.state.ledgers[0].automationReversalIds.length : 0, 3);
   const replay = applyHighConfidenceCardAutomation(result.state, [candidate]);
   assert.equal(replay.state, result.state);
   assert.deepEqual(replay.acknowledgedIds, [candidate.id]);
+  const changed = Object.freeze({ ...candidate, queueToken: "after-reversal-change", minorUnits: candidate.minorUnits + 1 });
+  const changedResult = applyHighConfidenceCardAutomation(result.state, [changed]);
+  assert.deepEqual(changedResult.acknowledgedIds, []);
+  assert.equal(changedResult.pending[0].identityConflict, true);
+  assert.throws(() => confirmCardCandidate(result.state, result.state.ledgers[0].id, changedResult.pending[0]), /candidate-conflict/);
+  assert.equal(confirmCardCandidate(result.state, result.state.ledgers[0].id, changedResult.pending[0], { asNewTransaction: true }).inserted, true);
+  assert.throws(() => confirmCardCandidate(result.state, result.state.ledgers[0].id, reversal, { asNewTransaction: true }), /candidate-conflict/);
 });
 
 test("a cancellation can be confirmed even when the ledger is at its expense limit", () => {

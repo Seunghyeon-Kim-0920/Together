@@ -11,6 +11,7 @@ import { applyStatementImport } from "./lib/statementImport";
 import { documentText } from "./lib/documentI18n";
 import { applyHighConfidenceCardAutomation, buildNativeAutomationConfiguration, candidateAcknowledgement, confirmCardCandidate, parseNativeCandidateBatch, visibleCardCandidates, type NativeCardCandidate, type NativeEventAcknowledgement } from "./lib/cardAutomation";
 import { t } from "./lib/i18n";
+import { notificationText as n } from "./lib/notificationI18n";
 import { cardAutomationPlugin, UNSUPPORTED_CARD_AUTOMATION_STATUS, type CardAutomationStatus } from "./lib/nativeCardAutomation";
 import { exchangeText as x } from "./lib/exchangeI18n";
 import { moveGeneralExpenseToTravel } from "./lib/moveExpense";
@@ -182,6 +183,7 @@ export function App() {
     setAutomationBusy(true);
     const task = (async () => {
       try {
+        await configureQueue.current;
         const status = await cardAutomationPlugin.getStatus();
         setAutomationStatus(status);
         if (!status.supported) { setPendingAutomation(Object.freeze([])); return; }
@@ -214,25 +216,30 @@ export function App() {
     return task;
   }, [notify, persistWalletMutation]);
 
-  const confirmAutomationExpense = useCallback((ledgerId: string, candidate: NativeCardCandidate) => {
+  const confirmAutomationExpense = useCallback((ledgerId: string, candidate: NativeCardCandidate, asNewTransaction = false) => {
     setAutomationBusy(true);
-    void persistWalletMutation((current) => {
-      const confirmed = confirmCardCandidate(current, ledgerId, candidate);
-      return Object.freeze({ state: confirmed.state, result: confirmed });
-    }).then(async (confirmed) => {
+    void (async () => {
+      await refreshPromise.current;
+      await configureQueue.current;
+      const latest = parseNativeCandidateBatch(await cardAutomationPlugin.peekPendingEvents());
+      if (!latest.candidates.some((item) => item.id === candidate.id && item.packageName === candidate.packageName && item.queueToken === candidate.queueToken)) throw new Error("candidate-changed");
+      const confirmed = await persistWalletMutation((current) => {
+        const result = confirmCardCandidate(current, ledgerId, candidate, { asNewTransaction });
+        return Object.freeze({ state: result.state, result });
+      });
       await cardAutomationPlugin.acknowledgeEvents({ events: [candidateAcknowledgement(candidate)] });
-      setPendingAutomation((current) => Object.freeze(current.filter((item) => item.id !== candidate.id || item.packageName !== candidate.packageName)));
+      setPendingAutomation((current) => Object.freeze(current.filter((item) => item.id !== candidate.id || item.packageName !== candidate.packageName || item.queueToken !== candidate.queueToken)));
       if (confirmed.inserted) notify(t(stateRef.current.locale, "expenseAdded"), "success");
       if (confirmed.reversed) notify(t(stateRef.current.locale, "automationCancellationApplied"), "success");
-    }).catch(() => notify(t(stateRef.current.locale, "automationError"), "error")).finally(() => setAutomationBusy(false));
-  }, [notify, persistWalletMutation]);
+    })().catch((error: unknown) => notify(error instanceof Error && error.message === "candidate-changed" ? n(stateRef.current.locale, "candidateChanged") : error instanceof Error && error.message === "candidate-conflict" ? n(stateRef.current.locale, "identityConflictHelp") : t(stateRef.current.locale, "automationError"), "error")).finally(() => { setAutomationBusy(false); void refreshCardAutomation(); });
+  }, [notify, persistWalletMutation, refreshCardAutomation]);
 
   const dismissAutomationCandidate = useCallback((candidate: NativeCardCandidate) => {
     setAutomationBusy(true);
     void cardAutomationPlugin.acknowledgeEvents({ events: [candidateAcknowledgement(candidate)] }).then(() => {
-      setPendingAutomation((current) => Object.freeze(current.filter((item) => item.id !== candidate.id || item.packageName !== candidate.packageName)));
-    }).catch(() => notify(t(stateRef.current.locale, "automationError"), "error")).finally(() => setAutomationBusy(false));
-  }, [notify]);
+      setPendingAutomation((current) => Object.freeze(current.filter((item) => item.id !== candidate.id || item.packageName !== candidate.packageName || item.queueToken !== candidate.queueToken)));
+    }).catch(() => notify(t(stateRef.current.locale, "automationError"), "error")).finally(() => { setAutomationBusy(false); void refreshCardAutomation(); });
+  }, [notify, refreshCardAutomation]);
 
   const registerAutomationSource = useCallback((ledgerId: string, source: AutomationSource) => {
     void commit((wallet) => {
@@ -290,8 +297,12 @@ export function App() {
   useEffect(() => {
     if (!loaded || !cardAutomationPlugin.isAvailable()) return;
     const configuration = buildNativeAutomationConfiguration(state, state.locale);
-    configureQueue.current = configureQueue.current.then(() => cardAutomationPlugin.configure(configuration)).catch(() => notify(t(state.locale, "automationError"), "error"));
-  }, [loaded, notify, state]);
+    const configuring = configureQueue.current.then(() => cardAutomationPlugin.configure(configuration)).catch(() => notify(t(state.locale, "automationError"), "error"));
+    configureQueue.current = configuring;
+    // Keep capture configuration and its recovery pass ahead of the next peek.
+    // Refresh is deliberately outside this promise chain to avoid waiting on itself.
+    void configuring.then(() => refreshCardAutomation());
+  }, [loaded, notify, refreshCardAutomation, state]);
 
   useEffect(() => {
     if (!loaded || !cardAutomationPlugin.isAvailable()) return;
@@ -310,14 +321,14 @@ export function App() {
   const registerSourceForActiveLedger = useCallback((source: AutomationSource) => { if (activeGeneralLedgerId) registerAutomationSource(activeGeneralLedgerId, source); }, [activeGeneralLedgerId, registerAutomationSource]);
   const removeSourceFromActiveLedger = useCallback((packageName: string) => { if (activeGeneralLedgerId) removeAutomationSource(activeGeneralLedgerId, packageName); }, [activeGeneralLedgerId, removeAutomationSource]);
   const toggleAllAppsForActiveLedger = useCallback((enabled: boolean) => { if (activeGeneralLedgerId) toggleAllPaymentApps(activeGeneralLedgerId, enabled); }, [activeGeneralLedgerId, toggleAllPaymentApps]);
-  const confirmExpenseForActiveLedger = useCallback((candidate: NativeCardCandidate) => { if (activeGeneralLedgerId) confirmAutomationExpense(activeGeneralLedgerId, candidate); }, [activeGeneralLedgerId, confirmAutomationExpense]);
+  const confirmExpenseForActiveLedger = useCallback((candidate: NativeCardCandidate, asNewTransaction?: boolean) => { if (activeGeneralLedgerId) confirmAutomationExpense(activeGeneralLedgerId, candidate, asNewTransaction); }, [activeGeneralLedgerId, confirmAutomationExpense]);
 
   if (!loaded) return <main className="mobile-app loading-screen"><WalletCards /><p>{t(locale, "loading")}</p></main>;
   return (
     <main className="mobile-app">
       <header className="app-header"><h1>지갑의 일기</h1><div className="header-tools"><label className="language-control"><Languages aria-hidden="true" /><span className="sr-only">{t(locale, "language")}</span><select value={locale} onChange={(event) => changeLocale(event.target.value as Locale)}>{SUPPORTED_LOCALES.map((code) => <option value={code} key={code}>{code === "ko" ? "한국어" : code === "en" ? "English" : "Français"}</option>)}</select></label><button className="icon-button" type="button" onClick={() => setDocumentImportOpen(true)} aria-label={documentText(locale, "title")}><Download /></button></div></header>
       <LedgerTabs ledgers={state.ledgers} activeId={activeLedger?.id ?? null} locale={locale} onSelect={selectLedger} onAdd={() => setNewLedgerOpen(true)} onMenu={setMenuLedger} />
-      {activeLedger ? activeLedger.kind === "travel" ? <TravelLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} onImport={() => setDocumentImportOpen(true)} onChange={updateLedger} onNotify={notify} /> : <GeneralLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} automationStatus={automationStatus} pendingAutomation={pendingForActiveLedger} automationBusy={automationBusy} onAutomationRefresh={refreshCardAutomation} onOpenAutomationSettings={openAutomationSettings} onRequestAutomationAlertPermission={requestAutomationAlertPermission} onToggleAllPaymentApps={toggleAllAppsForActiveLedger} onRegisterAutomationSource={registerSourceForActiveLedger} onRemoveAutomationSource={removeSourceFromActiveLedger} onConfirmAutomationExpense={confirmExpenseForActiveLedger} onDismissAutomationCandidate={dismissAutomationCandidate} onMove={(expense) => setMoveRequest({ sourceLedgerId: activeLedger.id, expense })} onChange={updateLedger} onNotify={notify} /> : <section className="empty-app"><WalletCards /><h2>{t(locale, "noLedgers")}</h2><button className="primary-button" type="button" onClick={() => setNewLedgerOpen(true)}><Plus />{t(locale, "newLedger")}</button><p>{t(locale, "storageHelp")}</p></section>}
+      {activeLedger ? activeLedger.kind === "travel" ? <TravelLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} onImport={() => setDocumentImportOpen(true)} onChange={updateLedger} onNotify={notify} /> : <GeneralLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} automationStatus={automationStatus} pendingAutomation={pendingForActiveLedger} automationBusy={automationBusy} onImportStatements={() => setDocumentImportOpen(true)} onAutomationRefresh={refreshCardAutomation} onOpenAutomationSettings={openAutomationSettings} onRequestAutomationAlertPermission={requestAutomationAlertPermission} onToggleAllPaymentApps={toggleAllAppsForActiveLedger} onRegisterAutomationSource={registerSourceForActiveLedger} onRemoveAutomationSource={removeSourceFromActiveLedger} onConfirmAutomationExpense={confirmExpenseForActiveLedger} onDismissAutomationCandidate={dismissAutomationCandidate} onMove={(expense) => setMoveRequest({ sourceLedgerId: activeLedger.id, expense })} onChange={updateLedger} onNotify={notify} /> : <section className="empty-app"><WalletCards /><h2>{t(locale, "noLedgers")}</h2><button className="primary-button" type="button" onClick={() => setNewLedgerOpen(true)}><Plus />{t(locale, "newLedger")}</button><p>{t(locale, "storageHelp")}</p></section>}
       {newLedgerOpen ? <NewLedgerSheet locale={locale} onClose={() => setNewLedgerOpen(false)} onCreate={addLedger} /> : null}
       {moveRequest ? <MoveExpenseSheet expense={moveRequest.expense} travels={travelLedgers} locale={locale} busy={exchangeBusy} onClose={() => setMoveRequest(null)} onMove={(selection) => void moveExpense(selection)} /> : null}
       {travelImport ? <TravelImportSheet incoming={travelImport} travels={travelLedgers} preferredId={activeLedger?.id ?? null} locale={locale} busy={exchangeBusy} onClose={() => setTravelImport(null)} onConfirm={(selection) => void confirmTravelImport(selection)} /> : null}

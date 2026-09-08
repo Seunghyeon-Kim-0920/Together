@@ -31,6 +31,7 @@ final class CardAutomationStore {
     private static final String KEY_ACKNOWLEDGED = "acknowledged_events";
     private static final String KEY_CONFIGURATION = "configuration";
     private static final String KEY_LAST_CAPTURED = "last_captured_at";
+    private static final String KEY_RECENT_CHECKS = "recent_checks";
     private static final String CHANNEL_ID = "wallet_diary_budget";
     private static final int MAX_PENDING = 5_000;
     private CardAutomationStore() {}
@@ -119,7 +120,7 @@ final class CardAutomationStore {
     static synchronized JSONArray pending(Context context) {
         try {
             JSONArray stored = new JSONArray(preferences(context).getString(KEY_PENDING, "[]"));
-            JSONArray current = retainCurrentParserEvents(stored);
+            JSONArray current = retainAllowedEvents(retainCurrentParserEvents(stored), configuration(context), context.getPackageName());
             if (current.length() != stored.length()) preferences(context).edit().putString(KEY_PENDING, current.toString()).commit();
             return current;
         } catch (JSONException ignored) {
@@ -134,6 +135,18 @@ final class CardAutomationStore {
             if (item != null && item.optInt("parserVersion", 0) >= 3 && item.optInt("parserVersion", 0) <= PaymentNotificationParser.PARSER_VERSION) current.put(item);
         }
         return current;
+    }
+
+    static JSONArray retainAllowedEvents(JSONArray events, JSONObject configuration, String ownPackage) {
+        JSONArray allowed = new JSONArray();
+        for (int index = 0; index < events.length(); index++) {
+            JSONObject event = events.optJSONObject(index);
+            if (event == null) continue;
+            String packageName = event.optString("packageName");
+            if (!packageName.isEmpty() && !packageName.equals(ownPackage)
+                && (configuration.optBoolean("detectAllApps", false) || isConfiguredSourcePackage(configuration, packageName))) allowed.put(event);
+        }
+        return allowed;
     }
 
     static synchronized void acknowledge(Context context, JSONArray events) {
@@ -212,6 +225,9 @@ final class CardAutomationStore {
             safe.put("detectAllApps", value.optBoolean("detectAllApps", false));
         } catch (JSONException ignored) {}
         preferences(context).edit().putString(KEY_CONFIGURATION, safe.toString()).commit();
+        // Apply opt-out to queued candidates and diagnostics as well as future captures.
+        pending(context);
+        preferences(context).edit().putString(KEY_RECENT_CHECKS, recentChecks(context).toString()).commit();
         JSONArray ledgers = safe.optJSONArray("ledgers");
         if (ledgers == null) return;
         for (int index = 0; index < ledgers.length(); index++) {
@@ -231,6 +247,30 @@ final class CardAutomationStore {
         }
     }
 
+    static boolean captureScopeChanged(JSONObject previous, JSONObject next) {
+        // Revisit still-visible alerts after discovery, source or currency changes,
+        // not on each budget/expense update. The capture gate checks the new scope.
+        return previous.optBoolean("detectAllApps", false) != next.optBoolean("detectAllApps", false)
+            || !captureScope(previous).equals(captureScope(next));
+    }
+
+    private static Set<String> captureScope(JSONObject configuration) {
+        Set<String> scope = new HashSet<>();
+        JSONArray sources = configuration.optJSONArray("sources");
+        if (sources != null) for (int index = 0; index < sources.length(); index++) {
+            JSONObject source = sources.optJSONObject(index);
+            if (source != null) scope.add("source:" + source.optString("packageName") + ":" + source.optString("currency"));
+        }
+        if (configuration.optBoolean("detectAllApps", false)) {
+            JSONArray ledgers = configuration.optJSONArray("ledgers");
+            if (ledgers != null) for (int index = 0; index < ledgers.length(); index++) {
+                JSONObject ledger = ledgers.optJSONObject(index);
+                if (ledger != null && ledger.optBoolean("automationAllApps", false)) scope.add("discover:" + ledger.optString("currency"));
+            }
+        }
+        return scope;
+    }
+
     static synchronized JSONObject configuration(Context context) {
         try {
             return new JSONObject(preferences(context).getString(KEY_CONFIGURATION, "{}"));
@@ -241,6 +281,34 @@ final class CardAutomationStore {
 
     static long lastCapturedAt(Context context) {
         return preferences(context).getLong(KEY_LAST_CAPTURED, 0L);
+    }
+
+    /** Local diagnostics retain only the app and outcome, never notification text or money. */
+    static synchronized void recordCheck(Context context, String packageName, String sourceName, boolean recognized) {
+        if (!isAllowedPackage(context, packageName)) return;
+        JSONArray next = new JSONArray();
+        try {
+            next.put(new JSONObject().put("packageName", packageName).put("sourceName", sourceName)
+                .put("checkedAt", System.currentTimeMillis()).put("recognized", recognized));
+            JSONArray previous = recentChecks(context);
+            for (int index = 0; index < previous.length() && next.length() < 20; index++) {
+                JSONObject item = previous.optJSONObject(index);
+                if (item != null && !packageName.equals(item.optString("packageName"))) next.put(item);
+            }
+            preferences(context).edit().putString(KEY_RECENT_CHECKS, next.toString()).apply();
+        } catch (JSONException ignored) {}
+    }
+
+    static synchronized JSONArray recentChecks(Context context) {
+        JSONArray visible = new JSONArray();
+        try {
+            JSONArray stored = new JSONArray(preferences(context).getString(KEY_RECENT_CHECKS, "[]"));
+            for (int index = 0; index < stored.length() && visible.length() < 20; index++) {
+                JSONObject item = stored.optJSONObject(index);
+                if (item != null && isAllowedPackage(context, item.optString("packageName"))) visible.put(item);
+            }
+        } catch (JSONException ignored) {}
+        return visible;
     }
 
     private static void maybeNotifyBudget(Context context, JSONObject ledger, String month, long spent) {

@@ -26,6 +26,13 @@ import org.json.JSONObject;
 )
 public final class CardAutomationPlugin extends Plugin {
 
+    @Override
+    protected void handleOnResume() {
+        if (NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName())) {
+            PaymentNotificationListenerService.recover(getContext());
+        }
+    }
+
     @PluginMethod
     public void getStatus(PluginCall call) {
         call.resolve(status());
@@ -92,7 +99,15 @@ public final class CardAutomationPlugin extends Plugin {
             call.reject("Invalid automation configuration.", exception);
             return;
         }
+        JSONObject previous = CardAutomationStore.configuration(getContext());
         CardAutomationStore.configure(getContext(), configuration);
+        if (CardAutomationStore.captureScopeChanged(previous, configuration)
+            && NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName())) {
+            // The configuration is already durable. Wait for capture before
+            // the JS queue refresh; a disconnected listener is reported in status.
+            getActivity().runOnUiThread(() -> PaymentNotificationListenerService.recheck(getContext(), () -> call.resolve(), () -> call.resolve()));
+            return;
+        }
         call.resolve();
     }
 
@@ -115,6 +130,7 @@ public final class CardAutomationPlugin extends Plugin {
             Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || getPermissionState("alerts") == PermissionState.GRANTED
         );
         result.put("pendingCount", CardAutomationStore.pending(getContext()).length());
+        result.put("recentChecks", CardAutomationStore.recentChecks(getContext()));
         long lastCapturedAt = CardAutomationStore.lastCapturedAt(getContext());
         if (lastCapturedAt > 0L) result.put("lastCapturedAt", lastCapturedAt);
         return result;

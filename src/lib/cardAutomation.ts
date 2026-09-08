@@ -34,6 +34,8 @@ export interface NativeCardCandidate {
   readonly manualOnly: boolean;
   /** A payment amount was detected but a merchant must be supplied by the user. */
   readonly requiresMerchant?: boolean;
+  /** A reused native notification identity now carries different content. */
+  readonly identityConflict?: boolean;
 }
 
 export interface ParsedCandidateBatch {
@@ -106,7 +108,9 @@ export function completeCandidateMerchant(candidate: NativeCardCandidate, mercha
   if (!value) throw new Error("merchant required");
   // Retain the native id/content token so confirmation acknowledges the
   // original notification, not a synthetic event created by editing a draft.
-  return Object.freeze({ ...candidate, merchant: value, requiresMerchant: false, confidence: "review" });
+  const completed = Object.freeze({ ...candidate, merchant: value, requiresMerchant: false, confidence: "review" as const });
+  completedDraftOrigins.set(completed, automationOriginFingerprint(candidate));
+  return completed;
 }
 
 export function visibleCardCandidates(ledgers: WalletState["ledgers"], activeLedgerId: string | null, candidates: readonly NativeCardCandidate[]): readonly NativeCardCandidate[] {
@@ -152,6 +156,14 @@ export function automationExpenseId(candidate: Pick<NativeCardCandidate, "id" | 
   return `card-auto-${shortFingerprint(`${candidate.packageName}\u0000${candidate.id}`)}`;
 }
 
+function automationRevisionExpenseId(candidate: NativeCardCandidate): string {
+  // A queue token is the native content revision. Legacy candidates without a
+  // token fall back to their content fingerprint, while retaining a separate
+  // domain from the original stable notification id.
+  const revision = candidate.queueToken ?? automationOriginFingerprint(candidate);
+  return `card-auto-${shortFingerprint(`${candidate.packageName}\u0000${candidate.id}\u0000revision\u0000${revision}`)}`;
+}
+
 function shortFingerprint(value: string): string {
   let left = 0x811c9dc5; let right = 0x9e3779b9;
   for (let index = 0; index < value.length; index += 1) { const code = value.charCodeAt(index); left = Math.imul(left ^ code, 0x01000193); right = Math.imul(right ^ code, 0x85ebca6b); right ^= right >>> 13; }
@@ -178,6 +190,7 @@ export function inferGeneralCategory(merchant: string): GeneralCategory {
 
 function merchantFingerprint(value: string): string { return value.normalize("NFKD").toLocaleLowerCase("en").replace(/[\p{Diacritic}\p{Punctuation}\p{Separator}]+/gu, ""); }
 function candidateDate(candidate: NativeCardCandidate): string { return candidate.occurredOn; }
+const completedDraftOrigins = new WeakMap<NativeCardCandidate, string>();
 export function automationOriginFingerprint(candidate: NativeCardCandidate): string {
   // Deliberately excludes the app package: the same physical card payment can
   // be announced by both a wallet and a card-provider app.
@@ -192,9 +205,25 @@ function likelyExistingExpense(expenses: readonly GeneralExpense[], candidate: N
   return expenses.some((expense) => expense.automationFingerprint === origin || (expense.currency === candidate.currency && expense.minorUnits === candidate.minorUnits && expense.occurredOn === occurredOn && merchantFingerprint(expense.description) === merchant));
 }
 
-function candidateExpense(candidate: NativeCardCandidate): GeneralExpense {
+function candidateExpense(candidate: NativeCardCandidate, id = automationExpenseId(candidate)): GeneralExpense {
   const category = candidate.eventType === "outgoing_transfer" ? "other" : inferGeneralCategory(candidate.merchant);
-  return Object.freeze({ id: automationExpenseId(candidate), description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits, occurredOn: candidateDate(candidate), automationFingerprint: automationOriginFingerprint(candidate), automationReversalFingerprint: automationReversalFingerprint(candidate) });
+  // When a user supplies a missing merchant, retain the fingerprint of the
+  // original native draft. A replay of that unchanged alert must remain an
+  // idempotent acknowledgement rather than looking like a changed identity.
+  const automationFingerprint = completedDraftOrigins.get(candidate) ?? automationOriginFingerprint(candidate);
+  return Object.freeze({ id, description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits, occurredOn: candidateDate(candidate), automationFingerprint, automationReversalFingerprint: automationReversalFingerprint(candidate) });
+}
+
+type RecordedIdentity = "none" | "same" | "conflict";
+
+function recordedIdentity(expensesById: ReadonlyMap<string, readonly GeneralExpense[]>, expenseId: string, origin: string): RecordedIdentity {
+  const matches = expensesById.get(expenseId);
+  if (!matches?.length) return "none";
+  return matches.every((expense) => expense.automationFingerprint === origin) ? "same" : "conflict";
+}
+
+function identityConflictCandidate(candidate: NativeCardCandidate): NativeCardCandidate {
+  return Object.freeze({ ...candidate, confidence: "review", identityConflict: true });
 }
 
 export function candidateOwnerLedgerIds(ledgers: readonly WalletState["ledgers"][number][], candidate: NativeCardCandidate): readonly string[] {
@@ -231,7 +260,11 @@ export function reversalMatchIndexes(expenses: readonly GeneralExpense[], candid
 
 export function applyHighConfidenceCardAutomation(state: WalletState, candidates: readonly NativeCardCandidate[]): AutomationBatchResult {
   const ledgers = [...state.ledgers]; const acknowledgedIds = new Set<string>(); const insertedIds: string[] = []; const reversedIds: string[] = []; const pending: NativeCardCandidate[] = [];
-  const globallyRecorded = new Set(state.ledgers.flatMap((ledger) => ledger.expenses.map((expense) => expense.id)));
+  const globallyRecorded = new Map<string, GeneralExpense[]>();
+  for (const ledger of state.ledgers) if (ledger.kind === "general") for (const expense of ledger.expenses) {
+    const matches = globallyRecorded.get(expense.id) ?? [];
+    matches.push(expense); globallyRecorded.set(expense.id, matches);
+  }
   const movedExpenseIds = new Set(state.ledgers.flatMap((ledger) => ledger.kind === "general" ? ledger.movedExpenseIds ?? [] : []));
   const appliedReversals = new Set(state.ledgers.flatMap((ledger) => ledger.kind === "general" ? ledger.automationReversalIds : []));
   // Purchases are processed before reversals regardless of notification order,
@@ -239,7 +272,22 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
   const orderedCandidates = [...candidates].sort((left, right) => Number(left.eventType === "reversal") - Number(right.eventType === "reversal"));
   for (const candidate of orderedCandidates) {
     const expenseId = automationExpenseId(candidate);
-    if (candidate.eventType !== "reversal" && movedExpenseIds.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
+    const origin = automationOriginFingerprint(candidate);
+    if (candidate.eventType !== "reversal") {
+      const revisionId = automationRevisionExpenseId(candidate);
+      const revisionIdentity = recordedIdentity(globallyRecorded, revisionId, origin);
+      if (revisionIdentity === "same" || movedExpenseIds.has(revisionId) && movedExpenseIds.has(origin) || appliedReversals.has(revisionId) && appliedReversals.has(origin)) {
+        acknowledgedIds.add(candidate.id); continue;
+      }
+      if (revisionIdentity === "conflict" || movedExpenseIds.has(revisionId) || appliedReversals.has(revisionId)) {
+        pending.push(identityConflictCandidate(candidate)); continue;
+      }
+    }
+    if (candidate.eventType !== "reversal" && movedExpenseIds.has(expenseId)) {
+      if (movedExpenseIds.has(origin)) acknowledgedIds.add(candidate.id);
+      else pending.push(identityConflictCandidate(candidate));
+      continue;
+    }
     // A moved expense now belongs to a shared trip. Never cancel a different
     // general-ledger expense merely because merchant and amount match it.
     if (candidate.eventType === "reversal" && (movedExpenseIds.has(expenseId) || movedExpenseIds.has(automationReversalFingerprint(candidate)))) {
@@ -247,8 +295,16 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     }
     // A cancellation tombstones both its own event and the removed purchase.
     // This prevents a stale purchase notification from recreating the charge.
-    if (appliedReversals.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
-    if (candidate.eventType !== "reversal" && globallyRecorded.has(expenseId)) { acknowledgedIds.add(candidate.id); continue; }
+    if (candidate.eventType !== "reversal" && appliedReversals.has(expenseId)) {
+      if (appliedReversals.has(origin)) acknowledgedIds.add(candidate.id);
+      else pending.push(identityConflictCandidate(candidate));
+      continue;
+    }
+    if (candidate.eventType !== "reversal") {
+      const identity = recordedIdentity(globallyRecorded, expenseId, origin);
+      if (identity === "same") { acknowledgedIds.add(candidate.id); continue; }
+      if (identity === "conflict") { pending.push(identityConflictCandidate(candidate)); continue; }
+    }
     const owners = ownerIndexes(ledgers, candidate);
     if (candidate.manualOnly || candidate.requiresMerchant) { pending.push(candidate.confidence === "review" ? candidate : Object.freeze({ ...candidate, confidence: "review" })); continue; }
     if (candidate.confidence !== "high" || owners.length !== 1) { pending.push(candidate); continue; }
@@ -276,7 +332,7 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
       const exactMatches = matches.filter((expenseIndex) => ledger.expenses[expenseIndex].id === expenseId);
       if (exactMatches.length !== 1) { pending.push(Object.freeze({ ...candidate, confidence: "review" })); continue; }
       const removed = ledger.expenses[exactMatches[0]];
-      const automationReversalIds = appendReversalIds(ledger.automationReversalIds, [removed.id, expenseId, reversalFingerprint]);
+      const automationReversalIds = appendReversalIds(ledger.automationReversalIds, [removed.id, expenseId, reversalFingerprint, ...(removed.automationFingerprint ? [removed.automationFingerprint] : [])]);
       ledgers[index] = Object.freeze({ ...ledger, automationReversalIds, expenses: Object.freeze(ledger.expenses.filter((_, expenseIndex) => expenseIndex !== exactMatches[0])), updatedAt: new Date().toISOString() });
       globallyRecorded.delete(removed.id); for (const id of automationReversalIds) appliedReversals.add(id); reversedIds.push(candidate.id); acknowledgedIds.add(candidate.id);
       continue;
@@ -286,32 +342,57 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     // legitimate second purchase. Keep fuzzy matches for explicit review and
     // only acknowledge deterministic native IDs automatically.
     if (movedExpenseIds.has(automationOriginFingerprint(candidate)) || likelyExistingExpense(ledger.expenses, candidate)) { pending.push(Object.freeze({ ...candidate, confidence: "review" })); continue; }
-    const expense = candidateExpense(candidate); globallyRecorded.add(expense.id); insertedIds.push(candidate.id); acknowledgedIds.add(candidate.id);
+    const expense = candidateExpense(candidate); globallyRecorded.set(expense.id, [expense]); insertedIds.push(candidate.id); acknowledgedIds.add(candidate.id);
     ledgers[index] = Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, expense]), updatedAt: new Date().toISOString() });
   }
   const nextState = insertedIds.length || reversedIds.length ? Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }) : state;
   return Object.freeze({ state: nextState, acknowledgedIds: Object.freeze([...acknowledgedIds]), insertedIds: Object.freeze(insertedIds), reversedIds: Object.freeze(reversedIds), pending: Object.freeze(pending) });
 }
 
-export function confirmCardCandidate(state: WalletState, ledgerId: string, candidate: NativeCardCandidate): { readonly state: WalletState; readonly inserted: boolean; readonly reversed: boolean } {
+export function confirmCardCandidate(state: WalletState, ledgerId: string, candidate: NativeCardCandidate, options: { readonly asNewTransaction?: boolean } = {}): { readonly state: WalletState; readonly inserted: boolean; readonly reversed: boolean } {
   if (candidate.requiresMerchant || !parseNativeCardCandidate(candidate)) throw new Error("incomplete candidate");
   const index = state.ledgers.findIndex((ledger) => ledger.id === ledgerId); const ledger = state.ledgers[index];
   if (!ledger || ledger.kind !== "general" || ledger.currency !== candidate.currency) throw new Error("incompatible candidate");
   const expenseId = automationExpenseId(candidate);
   const movedExpenseIds = new Set(state.ledgers.flatMap((item) => item.kind === "general" ? item.movedExpenseIds ?? [] : []));
+  const appliedReversals = new Set(state.ledgers.flatMap((item) => item.kind === "general" ? item.automationReversalIds : []));
+  const recorded = new Map<string, GeneralExpense[]>();
+  for (const item of state.ledgers) if (item.kind === "general") for (const expense of item.expenses) {
+    const matches = recorded.get(expense.id) ?? [];
+    matches.push(expense); recorded.set(expense.id, matches);
+  }
   if (candidate.eventType === "reversal") {
+    if (options.asNewTransaction) throw new Error("candidate-conflict");
     if (movedExpenseIds.has(expenseId) || movedExpenseIds.has(automationReversalFingerprint(candidate))) throw new Error("moved expense reversal requires travel ledger review");
     if (ledger.automationReversalIds.includes(expenseId) || ledger.automationReversalIds.includes(automationReversalFingerprint(candidate))) return Object.freeze({ state, inserted: false, reversed: false });
     const matches = reversalMatchIndexes(ledger.expenses, candidate);
     if (matches.length !== 1) throw new Error("ambiguous reversal");
     const removed = ledger.expenses[matches[0]];
-    const automationReversalIds = appendReversalIds(ledger.automationReversalIds, [removed.id, expenseId, automationReversalFingerprint(candidate)]);
+    const automationReversalIds = appendReversalIds(ledger.automationReversalIds, [removed.id, expenseId, automationReversalFingerprint(candidate), ...(removed.automationFingerprint ? [removed.automationFingerprint] : [])]);
     const updated = Object.freeze({ ...ledger, automationReversalIds, expenses: Object.freeze(ledger.expenses.filter((_, expenseIndex) => expenseIndex !== matches[0])), updatedAt: new Date().toISOString() }); const ledgers = [...state.ledgers]; ledgers[index] = updated;
     return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: false, reversed: true });
   }
-  if (movedExpenseIds.has(expenseId)) return Object.freeze({ state, inserted: false, reversed: false });
+  const origin = automationOriginFingerprint(candidate);
+  const identity = recordedIdentity(recorded, expenseId, origin);
+  const movedIdentity = movedExpenseIds.has(expenseId) ? movedExpenseIds.has(origin) ? "same" : "conflict" : "none";
+  const reversedIdentity = appliedReversals.has(expenseId) ? appliedReversals.has(origin) ? "same" : "conflict" : "none";
+  const hasIdentityConflict = identity === "conflict" || movedIdentity === "conflict" || reversedIdentity === "conflict";
+  const hasKnownIdentity = identity === "same" || movedIdentity === "same" || reversedIdentity === "same";
+  if ((candidate.identityConflict || hasIdentityConflict) && !options.asNewTransaction) throw new Error("candidate-conflict");
+  if (options.asNewTransaction) {
+    // Never trust a caller-supplied flag by itself: the latest durable state
+    // must still contain a conflicting use of the stable notification id.
+    if (!hasIdentityConflict) throw new Error("candidate-conflict");
+    const revisionId = automationRevisionExpenseId(candidate);
+    const revisionIdentity = recordedIdentity(recorded, revisionId, origin);
+    if (revisionIdentity === "same" || movedExpenseIds.has(revisionId) && movedExpenseIds.has(origin) || appliedReversals.has(revisionId) && appliedReversals.has(origin)) return Object.freeze({ state, inserted: false, reversed: false });
+    if (revisionIdentity === "conflict" || movedExpenseIds.has(revisionId) || appliedReversals.has(revisionId)) throw new Error("candidate-conflict");
+    if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
+    const updated = Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, revisionId)]), updatedAt: new Date().toISOString() }); const ledgers = [...state.ledgers]; ledgers[index] = updated;
+    return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: true, reversed: false });
+  }
+  if (hasKnownIdentity) return Object.freeze({ state, inserted: false, reversed: false });
   if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
-  if (state.ledgers.some((item) => item.expenses.some((expense) => expense.id === expenseId))) return Object.freeze({ state, inserted: false, reversed: false });
   const updated = Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate)]), updatedAt: new Date().toISOString() }); const ledgers = [...state.ledgers]; ledgers[index] = updated;
   return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: true, reversed: false });
 }
