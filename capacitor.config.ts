@@ -4,7 +4,7 @@ const config: CapacitorConfig = {
   appId: "com.seunghyeonkim.walletdiary",
   appName: "지갑의 일기",
   webDir: "dist",
-  backgroundColor: "#ffffff",
+  backgroundColor: "#F7F8FC",
 };
 
 export default config;

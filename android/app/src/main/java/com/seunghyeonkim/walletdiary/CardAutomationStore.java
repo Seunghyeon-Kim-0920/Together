@@ -32,9 +32,53 @@ final class CardAutomationStore {
     private static final String KEY_CONFIGURATION = "configuration";
     private static final String KEY_LAST_CAPTURED = "last_captured_at";
     private static final String KEY_RECENT_CHECKS = "recent_checks";
+    private static final String KEY_LISTENER_DIAGNOSTICS = "listener_diagnostics";
     private static final String CHANNEL_ID = "wallet_diary_budget";
     private static final int MAX_PENDING = 5_000;
     private CardAutomationStore() {}
+
+    static synchronized boolean hasCaptureScope(Context context) {
+        return hasCaptureScope(configuration(context));
+    }
+
+    static boolean hasCaptureScope(JSONObject configuration) {
+        JSONArray sources = configuration.optJSONArray("sources");
+        if (sources != null) for (int index = 0; index < sources.length(); index++) {
+            JSONObject source = sources.optJSONObject(index);
+            if (source != null && !source.optString("packageName").isEmpty()) return true;
+        }
+        JSONArray ledgers = configuration.optJSONArray("ledgers");
+        if (configuration.optBoolean("detectAllApps", false) && ledgers != null) {
+            for (int index = 0; index < ledgers.length(); index++) {
+                JSONObject ledger = ledgers.optJSONObject(index);
+                if (ledger != null && ledger.optBoolean("automationAllApps", false)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** Operational timestamps and fixed codes only; no money, merchant or notification content. */
+    static synchronized void recordListenerDiagnostic(Context context, String event) {
+        JSONObject diagnostics = listenerDiagnostics(context);
+        try {
+            long now = System.currentTimeMillis();
+            if ("connected".equals(event)) {
+                diagnostics.put("lastListenerConnectedAt", now);
+                diagnostics.remove("lastRecoveryError");
+            } else if ("disconnected".equals(event)) diagnostics.put("lastListenerDisconnectedAt", now);
+            else if ("recovery_requested".equals(event)) diagnostics.put("lastRecoveryRequestedAt", now);
+            else if ("rebind_failed".equals(event) || "scan_failed".equals(event) || "processing_failed".equals(event)) {
+                diagnostics.put("lastRecoveryError", event);
+                if ("processing_failed".equals(event)) diagnostics.put("lastProcessingFailureAt", now);
+            } else return;
+            preferences(context).edit().putString(KEY_LISTENER_DIAGNOSTICS, diagnostics.toString()).apply();
+        } catch (JSONException ignored) {}
+    }
+
+    static synchronized JSONObject listenerDiagnostics(Context context) {
+        try { return new JSONObject(preferences(context).getString(KEY_LISTENER_DIAGNOSTICS, "{}")); }
+        catch (JSONException ignored) { return new JSONObject(); }
+    }
 
     static synchronized boolean isAllowedPackage(Context context, String packageName) {
         if (packageName == null || packageName.equals(context.getPackageName())) return false;

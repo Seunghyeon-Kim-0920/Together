@@ -27,6 +27,11 @@ import org.json.JSONObject;
 public final class CardAutomationPlugin extends Plugin {
 
     @Override
+    public void load() {
+        PaymentNotificationListenerService.recover(getContext());
+    }
+
+    @Override
     protected void handleOnResume() {
         if (NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName())) {
             PaymentNotificationListenerService.recover(getContext());
@@ -35,6 +40,8 @@ public final class CardAutomationPlugin extends Plugin {
 
     @PluginMethod
     public void getStatus(PluginCall call) {
+        // Polling status must not restart an exhausted reconnection loop.
+        // Lifecycle, configuration changes and explicit recheck trigger recovery.
         call.resolve(status());
     }
 
@@ -103,10 +110,9 @@ public final class CardAutomationPlugin extends Plugin {
         CardAutomationStore.configure(getContext(), configuration);
         if (CardAutomationStore.captureScopeChanged(previous, configuration)
             && NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName())) {
-            // The configuration is already durable. Wait for capture before
-            // the JS queue refresh; a disconnected listener is reported in status.
-            getActivity().runOnUiThread(() -> PaymentNotificationListenerService.recheck(getContext(), () -> call.resolve(), () -> call.resolve()));
-            return;
+            // Queue synchronization must not wait up to 15 seconds for Android
+            // to reconnect. Configuration is durable; reconciliation is separate.
+            getActivity().runOnUiThread(() -> PaymentNotificationListenerService.recover(getContext()));
         }
         call.resolve();
     }
@@ -131,6 +137,10 @@ public final class CardAutomationPlugin extends Plugin {
         );
         result.put("pendingCount", CardAutomationStore.pending(getContext()).length());
         result.put("recentChecks", CardAutomationStore.recentChecks(getContext()));
+        JSONObject diagnostics = CardAutomationStore.listenerDiagnostics(getContext());
+        String[] timestamps = {"lastListenerConnectedAt", "lastListenerDisconnectedAt", "lastRecoveryRequestedAt", "lastProcessingFailureAt"};
+        for (String key : timestamps) if (diagnostics.optLong(key, 0L) > 0L) result.put(key, diagnostics.optLong(key));
+        if (diagnostics.has("lastRecoveryError")) result.put("lastRecoveryError", diagnostics.optString("lastRecoveryError"));
         long lastCapturedAt = CardAutomationStore.lastCapturedAt(getContext());
         if (lastCapturedAt > 0L) result.put("lastCapturedAt", lastCapturedAt);
         return result;

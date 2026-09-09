@@ -18,7 +18,12 @@ final class NotificationTextContent {
             if (length + line.length() + 1 > 2000) continue;
             distinct.add(line); length += line.length() + 1;
         }
-        return String.join("\n", distinct);
+        StringBuilder result = new StringBuilder();
+        for (String line : distinct) {
+            if (result.length() > 0) result.append('\n');
+            result.append(line);
+        }
+        return result.toString();
     }
 
     static String expandedBody(CharSequence bigText, CharSequence[] lines, CharSequence infoText) {

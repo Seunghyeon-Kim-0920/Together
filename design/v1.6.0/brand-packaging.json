@@ -1,0 +1,490 @@
+{
+  "source": "design/v1.6.0/brand-symbol.png",
+  "sourceSha256": "1cc14600173f83b9b8c4c51a4a843c03eeefd9294596b668eab1f78af87d422a",
+  "background": "#F7F8FC",
+  "operation": "Proportional resizing, centered padding, and platform circle masks only; original artwork is unchanged.",
+  "adaptive": {
+    "canvasDp": 108,
+    "safeRadiusDp": 33,
+    "measuredSilhouetteRadiusDp": 30.821,
+    "xmlExtraInset": false
+  },
+  "outputs": [
+    {
+      "path": "resources/icon.png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": false,
+      "bytes": 811308
+    },
+    {
+      "path": "design/v1.6.0/store-icon-512.png",
+      "width": 512,
+      "height": 512,
+      "alpha": false,
+      "bytes": 228692
+    },
+    {
+      "path": "public/brand/wallet-diary-mark.png",
+      "width": 256,
+      "height": 256,
+      "alpha": false,
+      "bytes": 60198
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png",
+      "width": 1024,
+      "height": 1024,
+      "alpha": false,
+      "bytes": 811308
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-ldpi/ic_launcher.png",
+      "width": 36,
+      "height": 36,
+      "alpha": false,
+      "bytes": 2019
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-ldpi/ic_launcher_round.png",
+      "width": 36,
+      "height": 36,
+      "alpha": true,
+      "bytes": 2422
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-ldpi/ic_launcher_background.png",
+      "width": 81,
+      "height": 81,
+      "alpha": false,
+      "bytes": 184
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-ldpi/ic_launcher_foreground.png",
+      "width": 81,
+      "height": 81,
+      "alpha": true,
+      "bytes": 6052
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-mdpi/ic_launcher.png",
+      "width": 48,
+      "height": 48,
+      "alpha": false,
+      "bytes": 3225
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png",
+      "width": 48,
+      "height": 48,
+      "alpha": true,
+      "bytes": 3739
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-mdpi/ic_launcher_background.png",
+      "width": 108,
+      "height": 108,
+      "alpha": false,
+      "bytes": 237
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png",
+      "width": 108,
+      "height": 108,
+      "alpha": true,
+      "bytes": 9776
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-hdpi/ic_launcher.png",
+      "width": 72,
+      "height": 72,
+      "alpha": false,
+      "bytes": 5882
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png",
+      "width": 72,
+      "height": 72,
+      "alpha": true,
+      "bytes": 6697
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-hdpi/ic_launcher_background.png",
+      "width": 162,
+      "height": 162,
+      "alpha": false,
+      "bytes": 345
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png",
+      "width": 162,
+      "height": 162,
+      "alpha": true,
+      "bytes": 18873
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xhdpi/ic_launcher.png",
+      "width": 96,
+      "height": 96,
+      "alpha": false,
+      "bytes": 10818
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png",
+      "width": 96,
+      "height": 96,
+      "alpha": true,
+      "bytes": 11633
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xhdpi/ic_launcher_background.png",
+      "width": 216,
+      "height": 216,
+      "alpha": false,
+      "bytes": 489
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png",
+      "width": 216,
+      "height": 216,
+      "alpha": true,
+      "bytes": 28971
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png",
+      "width": 144,
+      "height": 144,
+      "alpha": false,
+      "bytes": 20407
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png",
+      "width": 144,
+      "height": 144,
+      "alpha": true,
+      "bytes": 21580
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher_background.png",
+      "width": 324,
+      "height": 324,
+      "alpha": false,
+      "bytes": 783
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png",
+      "width": 324,
+      "height": 324,
+      "alpha": true,
+      "bytes": 66868
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+      "width": 192,
+      "height": 192,
+      "alpha": false,
+      "bytes": 33137
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png",
+      "width": 192,
+      "height": 192,
+      "alpha": true,
+      "bytes": 34387
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_background.png",
+      "width": 432,
+      "height": 432,
+      "alpha": false,
+      "bytes": 1194
+    },
+    {
+      "path": "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png",
+      "width": 432,
+      "height": 432,
+      "alpha": true,
+      "bytes": 117634
+    },
+    {
+      "path": "resources/splash.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "android/app/src/main/res/drawable/splash.png",
+      "width": 320,
+      "height": 480,
+      "alpha": true,
+      "bytes": 38279
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-hdpi/splash.png",
+      "width": 800,
+      "height": 480,
+      "alpha": true,
+      "bytes": 89680
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-ldpi/splash.png",
+      "width": 320,
+      "height": 240,
+      "alpha": true,
+      "bytes": 23520
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-mdpi/splash.png",
+      "width": 480,
+      "height": 320,
+      "alpha": true,
+      "bytes": 38865
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-night-hdpi/splash.png",
+      "width": 800,
+      "height": 480,
+      "alpha": true,
+      "bytes": 89680
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-night-ldpi/splash.png",
+      "width": 320,
+      "height": 240,
+      "alpha": true,
+      "bytes": 23520
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-night-mdpi/splash.png",
+      "width": 480,
+      "height": 320,
+      "alpha": true,
+      "bytes": 38865
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-night-xhdpi/splash.png",
+      "width": 1280,
+      "height": 720,
+      "alpha": true,
+      "bytes": 197314
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-night-xxhdpi/splash.png",
+      "width": 1600,
+      "height": 960,
+      "alpha": true,
+      "bytes": 342539
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-night-xxxhdpi/splash.png",
+      "width": 1920,
+      "height": 1280,
+      "alpha": true,
+      "bytes": 575728
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-xhdpi/splash.png",
+      "width": 1280,
+      "height": 720,
+      "alpha": true,
+      "bytes": 197314
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-xxhdpi/splash.png",
+      "width": 1600,
+      "height": 960,
+      "alpha": true,
+      "bytes": 342539
+    },
+    {
+      "path": "android/app/src/main/res/drawable-land-xxxhdpi/splash.png",
+      "width": 1920,
+      "height": 1280,
+      "alpha": true,
+      "bytes": 575728
+    },
+    {
+      "path": "android/app/src/main/res/drawable-night/splash.png",
+      "width": 320,
+      "height": 240,
+      "alpha": true,
+      "bytes": 23520
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-hdpi/splash.png",
+      "width": 480,
+      "height": 800,
+      "alpha": true,
+      "bytes": 87024
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-ldpi/splash.png",
+      "width": 240,
+      "height": 320,
+      "alpha": true,
+      "bytes": 23293
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-mdpi/splash.png",
+      "width": 320,
+      "height": 480,
+      "alpha": true,
+      "bytes": 38279
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-night-hdpi/splash.png",
+      "width": 480,
+      "height": 800,
+      "alpha": true,
+      "bytes": 87024
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-night-ldpi/splash.png",
+      "width": 240,
+      "height": 320,
+      "alpha": true,
+      "bytes": 23293
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-night-mdpi/splash.png",
+      "width": 320,
+      "height": 480,
+      "alpha": true,
+      "bytes": 38279
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-night-xhdpi/splash.png",
+      "width": 720,
+      "height": 1280,
+      "alpha": true,
+      "bytes": 190129
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-night-xxhdpi/splash.png",
+      "width": 960,
+      "height": 1600,
+      "alpha": true,
+      "bytes": 327028
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-night-xxxhdpi/splash.png",
+      "width": 1280,
+      "height": 1920,
+      "alpha": true,
+      "bytes": 556826
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-xhdpi/splash.png",
+      "width": 720,
+      "height": 1280,
+      "alpha": true,
+      "bytes": 190129
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-xxhdpi/splash.png",
+      "width": 960,
+      "height": 1600,
+      "alpha": true,
+      "bytes": 327028
+    },
+    {
+      "path": "android/app/src/main/res/drawable-port-xxxhdpi/splash.png",
+      "width": 1280,
+      "height": 1920,
+      "alpha": true,
+      "bytes": 556826
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/Default@1x~universal~anyany-dark.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/Default@1x~universal~anyany.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/Default@2x~universal~anyany-dark.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/Default@2x~universal~anyany.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/Default@3x~universal~anyany-dark.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/Default@3x~universal~anyany.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-1.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732-2.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732.png",
+      "width": 2732,
+      "height": 2732,
+      "alpha": true,
+      "bytes": 964084
+    },
+    {
+      "path": "design/v1.6.0/icon-48.png",
+      "width": 48,
+      "height": 48,
+      "alpha": false,
+      "bytes": 3225
+    },
+    {
+      "path": "design/v1.6.0/icon-adaptive-round-48.png",
+      "width": 48,
+      "height": 48,
+      "alpha": true,
+      "bytes": 4307
+    },
+    {
+      "path": "design/v1.6.0/icon-96.png",
+      "width": 96,
+      "height": 96,
+      "alpha": false,
+      "bytes": 10818
+    },
+    {
+      "path": "design/v1.6.0/icon-adaptive-round-96.png",
+      "width": 96,
+      "height": 96,
+      "alpha": true,
+      "bytes": 13680
+    }
+  ]
+}

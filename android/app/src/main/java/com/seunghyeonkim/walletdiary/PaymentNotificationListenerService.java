@@ -16,6 +16,7 @@ import android.provider.Telephony;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -30,10 +31,14 @@ public final class PaymentNotificationListenerService extends NotificationListen
     private static volatile WeakReference<PaymentNotificationListenerService> connected = new WeakReference<>(null);
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     private static final List<PendingRecheck> pendingRechecks = new ArrayList<>();
+    // Accessed only on the main looper. The application context does not retain an Activity.
+    private static Runnable recoveryTask;
 
     @Override
     public void onListenerConnected() {
         super.onListenerConnected(); connected = new WeakReference<>(this);
+        cancelRecovery();
+        CardAutomationStore.recordListenerDiagnostic(this, "connected");
         final List<PendingRecheck> waiting;
         synchronized (pendingRechecks) { waiting = new ArrayList<>(pendingRechecks); }
         // Android may reconnect after an app update or a period of suspension.
@@ -46,28 +51,61 @@ public final class PaymentNotificationListenerService extends NotificationListen
     public void onListenerDisconnected() {
         if (connected.get() == this) connected.clear();
         super.onListenerDisconnected();
+        CardAutomationStore.recordListenerDiagnostic(this, "disconnected");
+        recover(getApplicationContext());
     }
 
     static boolean isListenerConnected() { return connected.get() != null; }
 
     /** Recover still-visible missed alerts after resume or consent expansion. */
     static void recover(Context context) {
-        PaymentNotificationListenerService service = connected.get();
-        if (service != null) { service.captureActive(() -> {}, () -> {}); return; }
-        try { requestRebind(new ComponentName(context, PaymentNotificationListenerService.class)); }
-        catch (Exception ignored) { /* Status UI reports the disconnected listener. */ }
+        Context application = context.getApplicationContext();
+        Runnable action = () -> {
+            if (!hasConsentedAccess(application)) { cancelRecovery(); return; }
+            PaymentNotificationListenerService service = connected.get();
+            if (service != null) { cancelRecovery(); service.captureActive(() -> {}, () -> {}); return; }
+            if (recoveryTask != null) return;
+            recoveryTask = new Runnable() {
+                private int attempt;
+                @Override public void run() {
+                    if (!NotificationRecoveryPolicy.shouldRecover(hasConsentedAccess(application), true, isListenerConnected())) {
+                        cancelRecovery(); return;
+                    }
+                    CardAutomationStore.recordListenerDiagnostic(application, "recovery_requested");
+                    try { requestRebind(new ComponentName(application, PaymentNotificationListenerService.class)); }
+                    catch (RuntimeException ignored) { CardAutomationStore.recordListenerDiagnostic(application, "rebind_failed"); }
+                    long delay = NotificationRecoveryPolicy.delayForAttempt(++attempt);
+                    if (delay >= 0L) mainHandler.postDelayed(this, delay);
+                    else recoveryTask = null;
+                }
+            };
+            // Make the first request before a package-replaced receiver returns.
+            recoveryTask.run();
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) action.run(); else mainHandler.post(action);
+    }
+
+    private static boolean hasConsentedAccess(Context context) {
+        return NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.getPackageName())
+            && CardAutomationStore.hasCaptureScope(context);
+    }
+
+    private static void cancelRecovery() {
+        if (recoveryTask != null) mainHandler.removeCallbacks(recoveryTask);
+        recoveryTask = null;
     }
 
     static void recheck(Context context, Runnable complete, Runnable failure) {
+        if (!hasConsentedAccess(context)) { cancelRecovery(); failure.run(); return; }
         PendingRecheck request = new PendingRecheck(complete, failure);
         synchronized (pendingRechecks) { pendingRechecks.add(request); }
-        mainHandler.postDelayed(request.timeout, 15_000L);
+        // The last bounded rebind attempt occurs after 21 seconds.
+        mainHandler.postDelayed(request.timeout, 30_000L);
         PaymentNotificationListenerService service = connected.get();
         if (service == null) {
             // Requesting a bind is not a completed scan. Resolve when Android
             // actually reconnects and its queued capture has finished.
-            try { requestRebind(new ComponentName(context, PaymentNotificationListenerService.class)); }
-            catch (Exception exception) { request.finish(false); }
+            recover(context);
             return;
         }
         service.captureActive(() -> request.finish(true), () -> request.finish(false));
@@ -76,11 +114,16 @@ public final class PaymentNotificationListenerService extends NotificationListen
     private void captureActive(Runnable complete, Runnable failure) {
         try {
             StatusBarNotification[] active = getActiveNotifications();
-            if (active != null) for (int index = 0; index < Math.min(active.length, 500); index++) onNotificationPosted(active[index]);
+            if (active == null) {
+                CardAutomationStore.recordListenerDiagnostic(this, "scan_failed"); failure.run(); return;
+            }
+            for (int index = 0; index < Math.min(active.length, 500); index++) onNotificationPosted(active[index]);
             // Resolve only after all of the requested capture tasks, so the UI
             // refresh reads the completed queue, not a race with the executor.
             executor.execute(complete);
-        } catch (Exception exception) { failure.run(); }
+        } catch (Exception exception) {
+            CardAutomationStore.recordListenerDiagnostic(this, "scan_failed"); failure.run();
+        }
     }
 
     private static final class PendingRecheck {
@@ -136,7 +179,12 @@ public final class PaymentNotificationListenerService extends NotificationListen
             // A MessagingStyle notification can contain a conversation history.
             // Read only its latest current message, never historic messages or
             // sender metadata. Relayed applications remain manual-only.
-            NotificationCompat.MessagingStyle style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(notification);
+            NotificationCompat.MessagingStyle style = null;
+            try { style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(notification); }
+            catch (RuntimeException ignored) {
+                // Some OEM/app extras are not a valid MessagingStyle bundle.
+                // Keep the standard title/body instead of discarding the payment.
+            }
             if (style != null) {
                 // Conversation titles usually identify the sender, not the merchant.
                 title = "";
@@ -168,7 +216,14 @@ public final class PaymentNotificationListenerService extends NotificationListen
             // The atomic store-side check closes a final race with opt-out,
             // source removal, or ledger deletion after parsing.
             if (candidate != null) CardAutomationStore.addPendingIfAllowed(getApplicationContext(), packageName, candidate);
-            } catch (RuntimeException ignored) { /* Malformed third-party extras must not stop subsequent notifications. */ }
+            } catch (RuntimeException ignored) {
+                CardAutomationStore.recordListenerDiagnostic(getApplicationContext(), "processing_failed");
+            } catch (LinkageError incompatibleRuntime) {
+                // A parser class-initialization/API incompatibility must not
+                // kill the whole process and repeatedly unbind this listener.
+                // Keep the notification untouched and expose a content-free error.
+                CardAutomationStore.recordListenerDiagnostic(getApplicationContext(), "processing_failed");
+            }
         }); } catch (RejectedExecutionException ignored) { /* Service is shutting down; do not crash Android's callback. */ }
     }
 
@@ -188,9 +243,14 @@ public final class PaymentNotificationListenerService extends NotificationListen
 
     @Override
     public void onDestroy() {
-        if (connected.get() == this) connected.clear();
+        boolean wasConnected = connected.get() == this;
+        if (wasConnected) connected.clear();
         executor.shutdown();
         super.onDestroy();
+        if (wasConnected) {
+            CardAutomationStore.recordListenerDiagnostic(getApplicationContext(), "disconnected");
+            recover(getApplicationContext());
+        }
     }
 
     @SuppressWarnings("deprecation")

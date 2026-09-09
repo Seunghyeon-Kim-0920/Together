@@ -1,9 +1,10 @@
-import { BellRing, Check, Gauge, Globe2, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, ChevronRight, Gauge, Globe2, ReceiptText, RefreshCw, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { automationExpenseId, automationReversalFingerprint, calculateMonthlyLimitStatus, completeCandidateMerchant, reversalMatchIndexes, type NativeCardCandidate } from "../lib/cardAutomation";
 import { currencyDigits, formatMoney, parseMinorUnits } from "../lib/currency";
+import { designText as ux } from "../lib/designI18n";
 import { t } from "../lib/i18n";
-import { cardAutomationPlugin, type CardAutomationStatus } from "../lib/nativeCardAutomation";
+import { cardAutomationConnectionState, cardAutomationPlugin, type CardAutomationStatus } from "../lib/nativeCardAutomation";
 import { notificationText as n } from "../lib/notificationI18n";
 import type { AutomationSource, GeneralLedger, Locale } from "../lib/types";
 import { SheetFrame } from "./Sheets";
@@ -15,6 +16,8 @@ export function GeneralLedgerAutomation({ ledger, locale, selectedMonth, status,
   const [automationOpen, setAutomationOpen] = useState(false);
   const limit = useMemo(() => calculateMonthlyLimitStatus(ledger, selectedMonth), [ledger, selectedMonth]);
   const progress = Math.min(limit.percent ?? 0, 100);
+  const connection = cardAutomationConnectionState(status);
+  const captureConfigured = ledger.automationAllApps || ledger.automationSources.length > 0;
 
   const saveLimit = (monthlyLimitMinor: number | null) => {
     onChange(Object.freeze({ ...ledger, monthlyLimitMinor, updatedAt: new Date().toISOString() }));
@@ -23,22 +26,25 @@ export function GeneralLedgerAutomation({ ledger, locale, selectedMonth, status,
   };
 
   return <>
-    <section className={`mobile-panel limit-card limit-${limit.state}`}>
-      <div className="section-heading"><h3><Gauge aria-hidden="true" />{t(locale, "monthlyLimit")}</h3><button type="button" onClick={() => setLimitOpen(true)}><Settings />{t(locale, "setMonthlyLimit")}</button></div>
-      {limit.limitMinor === null ? <p className="ledger-empty">{t(locale, "monthlyLimitUnset")}</p> : <div className="limit-card-body">
-        <div><span>{t(locale, "monthlyLimitSpent")}</span><strong>{formatMoney(limit.spentMinor, ledger.currency, locale)}</strong><small>{Math.round(limit.percent ?? 0).toLocaleString(locale)}%</small></div>
-        <div className="limit-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)}><i style={{ width: `${progress}%` }} /></div>
-        <p><span>{limit.remainingMinor !== null && limit.remainingMinor >= 0 ? t(locale, "monthlyLimitRemaining") : t(locale, "monthlyLimitExceeded")}</span><b>{formatMoney(Math.abs(limit.remainingMinor ?? 0), ledger.currency, locale)}</b></p>
+    <section className={`mobile-panel limit-card budget-summary limit-${limit.state}`}>
+      <button className="summary-setting-row" type="button" onClick={() => setLimitOpen(true)} aria-label={t(locale, "setMonthlyLimit")}>
+        <span className="summary-setting-icon"><Gauge aria-hidden="true" /></span>
+        <span className="summary-setting-copy"><strong>{ux(locale, "selectedMonthBudget")}</strong>{limit.limitMinor === null ? <small>{ux(locale, "budgetNotSet")}</small> : null}</span>
+        <ChevronRight className="summary-setting-arrow" aria-hidden="true" />
+      </button>
+      {limit.limitMinor !== null ? <div className="budget-summary-values">
+        <p><strong>{formatMoney(Math.abs(limit.remainingMinor ?? 0), ledger.currency, locale)} <span>{t(locale, limit.remainingMinor !== null && limit.remainingMinor >= 0 ? "monthlyLimitRemaining" : "monthlyLimitExceeded")}</span></strong><small>{formatMoney(limit.limitMinor, ledger.currency, locale)}</small></p>
+        <div className="limit-progress" role="progressbar" aria-label={t(locale, "monthlyLimitSpent")} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)} aria-valuetext={`${formatMoney(limit.spentMinor, ledger.currency, locale)} · ${Math.round(limit.percent ?? 0).toLocaleString(locale)}%`}><i style={{ width: `${progress}%` }} /></div>
+        <p><small>{t(locale, "monthlyLimitSpent")} {formatMoney(limit.spentMinor, ledger.currency, locale)}</small><small>{Math.round(limit.percent ?? 0).toLocaleString(locale)}%</small></p>
         {limit.state === "near" ? <em>{t(locale, "monthlyLimitNear")}</em> : null}
-      </div>}
+      </div> : null}
     </section>
-    <section className="mobile-panel automation-card">
-      <div className="section-heading"><h3><BellRing aria-hidden="true" />{notificationAutomationLabel(locale)}</h3><button type="button" onClick={() => setAutomationOpen(true)}><Settings />{t(locale, "edit")}</button></div>
-      <div className="automation-card-body">
-        <span className={status.accessGranted ? "status-chip granted" : "status-chip"}>{status.accessGranted ? <Check /> : <BellRing />}{t(locale, status.accessGranted ? "accessGranted" : "accessNotGranted")}</span>
-        <span>{ledger.automationAllApps ? t(locale, "allPaymentAppsOn") : `${ledger.automationSources.length.toLocaleString(locale)} ${t(locale, "registeredSources")}`}</span>
-        {pending.length ? <button type="button" onClick={() => setAutomationOpen(true)}><b>{pending.length.toLocaleString(locale)} {t(locale, "pendingExpenses")}</b></button> : null}
-      </div>
+    <section className="mobile-panel automation-card automation-summary">
+      <button className="summary-setting-row" type="button" onClick={() => setAutomationOpen(true)}>
+        <span className="summary-setting-icon"><ReceiptText aria-hidden="true" /></span>
+        <span className="summary-setting-copy"><strong>{ux(locale, "automationTitle")}</strong>{connection === "disconnected" ? <small className="automation-connection-warning">{n(locale, "listenerDisconnected")}</small> : connection === "unknown" ? <small>{n(locale, "listenerUnknown")}</small> : connection === "connected" && !captureConfigured ? <small>{n(locale, "captureNotConfigured")}</small> : null}{pending.length ? <span className="pending-count">{ux(locale, "automationReview")}: {pending.length.toLocaleString(locale)}</span> : connection === "disconnected" || connection === "unknown" || connection === "connected" && !captureConfigured ? null : <small>{!status.supported ? t(locale, "automationUnsupported") : status.accessGranted ? t(locale, "noPendingExpenses") : `${t(locale, "notificationAccess")} · ${t(locale, "accessNotGranted")}`}</small>}</span>
+        <ChevronRight className="summary-setting-arrow" aria-hidden="true" />
+      </button>
     </section>
     {limitOpen ? <MonthlyLimitSheet ledger={ledger} locale={locale} onClose={() => setLimitOpen(false)} onSave={saveLimit} onNotify={onNotify} /> : null}
     {automationOpen ? <CardAutomationSheet ledger={ledger} locale={locale} status={status} pending={pending} busy={busy} onImportStatements={onImportStatements} onRefresh={onRefresh} onOpenAccessSettings={onOpenAccessSettings} onRequestAlertPermission={onRequestAlertPermission} onToggleAllPaymentApps={onToggleAllPaymentApps} onRegisterSource={onRegisterSource} onRemoveSource={onRemoveSource} onConfirm={onConfirm} onDismiss={onDismiss} onClose={() => setAutomationOpen(false)} /> : null}
@@ -65,11 +71,14 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onImportSt
   const [merchantDrafts, setMerchantDrafts] = useState<Readonly<Record<string, string>>>({});
   const [rechecking, setRechecking] = useState(false);
   const [recheckError, setRecheckError] = useState(false);
+  const connection = cardAutomationConnectionState(status);
+  const captureConfigured = ledger.automationAllApps || ledger.automationSources.length > 0;
   const recheck = async () => {
+    if (rechecking) return;
     setRechecking(true); setRecheckError(false);
-    try { await cardAutomationPlugin.recheckActiveNotifications(); onRefresh(); }
+    try { await cardAutomationPlugin.recheckActiveNotifications(); }
     catch { setRecheckError(true); }
-    finally { setRechecking(false); }
+    finally { setRechecking(false); onRefresh(); }
   };
   const dateFormatter = useMemo(() => new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }), [locale]);
   const reviewTravelLedgers = () => {
@@ -82,6 +91,14 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onImportSt
   };
 
   return <SheetFrame title={notificationAutomationLabel(locale)} locale={locale} onClose={onClose}>
+    {status.supported ? <section className={`automation-connection-panel connection-${connection}`} aria-label={n(locale, "listenerTitle")}>
+      <strong>{n(locale, "listenerTitle")}</strong>
+      <p className={connection === "connected" ? "granted" : "automation-connection-warning"} role="status">{connection === "access-required" ? `${t(locale, "notificationAccess")} · ${t(locale, "accessNotGranted")}` : n(locale, connection === "disconnected" ? "listenerDisconnected" : connection === "connected" ? "listenerConnected" : "listenerUnknown")}</p>
+      {connection === "disconnected" ? <p>{n(locale, "disconnected")}</p> : null}
+      {!captureConfigured ? <p className="automation-connection-warning">{n(locale, "captureSetupHelp")}</p> : null}
+      {status.accessGranted ? <><button className={connection === "connected" ? "wide-secondary" : "primary-button"} type="button" disabled={busy || rechecking} onClick={() => void recheck()}><RefreshCw aria-hidden="true" />{n(locale, rechecking ? "reconnecting" : connection === "connected" ? "recheck" : "reconnect")}</button><p className="sheet-intro">{n(locale, "recheckHelp")}</p></> : <button className="primary-button" type="button" disabled={busy} onClick={onOpenAccessSettings}>{t(locale, "openNotificationSettings")}</button>}
+      {recheckError ? <p className="exchange-error" role="alert">{n(locale, "recheckError")}</p> : null}
+    </section> : null}
     <div className="automation-disclosure"><ShieldCheck /><div><strong>{t(locale, "localProcessing")}</strong><p>{t(locale, "automationDisclosure")}</p><p>{n(locale, "history")}</p></div></div>
     <div className="bank-connection-status"><strong>{n(locale, "bankNotConnected")}</strong><p>{n(locale, "bankConnectionHelp")}</p><button className="wide-secondary" type="button" onClick={() => { onClose(); onImportStatements(); }}>{n(locale, "importStatement")}</button></div>
     {!status.supported ? <p className="automation-unsupported">{t(locale, "automationUnsupported")}</p> : <>
@@ -91,11 +108,9 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onImportSt
       </div>
       <label className="all-apps-toggle"><span><Globe2 /><b>{t(locale, "allPaymentApps")}</b><small>{t(locale, "allPaymentAppsHelp")}</small></span><input type="checkbox" role="switch" checked={ledger.automationAllApps} disabled={busy} onChange={(event) => onToggleAllPaymentApps(event.target.checked)} /></label>
       {!ledger.automationAllApps ? <p className="reversal-help">{n(locale, "discoveryOff")}</p> : null}
-      {status.accessGranted && status.listenerConnected === false ? <p className="reversal-help" role="status">{n(locale, "disconnected")}</p> : null}
-      <button className="wide-secondary" type="button" disabled={busy || rechecking || !status.accessGranted} onClick={() => void recheck()}><RefreshCw />{n(locale, "recheck")}</button>
-      <p className="sheet-intro">{n(locale, "recheckHelp")}</p>
-      {recheckError ? <p className="exchange-error" role="alert">{n(locale, "recheckError")}</p> : null}
-      <details className="notification-diagnostics"><summary>{n(locale, "recentChecks")}</summary><p className="sheet-intro">{n(locale, "recentChecksHelp")}</p>{status.recentChecks?.length ? <ul>{status.recentChecks.map((check) => <li key={check.packageName}><strong>{check.sourceName}</strong><span>{n(locale, check.recognized ? "recognized" : "notRecognized")}</span><small>{dateFormatter.format(new Date(check.checkedAt))}</small></li>)}</ul> : <p className="automation-empty">{n(locale, "noChecks")}</p>}</details>
+      <details className="notification-diagnostics"><summary>{n(locale, "recentChecks")}</summary><p className="sheet-intro">{n(locale, "recentChecksHelp")}</p>{status.lastRecoveryError ? <p className="exchange-error">{n(locale, "recoveryFailed")}</p> : null}<ul>{([
+        ["lastListenerConnectedAt", "lastConnected"], ["lastListenerDisconnectedAt", "lastDisconnected"], ["lastRecoveryRequestedAt", "lastRecovery"], ["lastProcessingFailureAt", "lastProcessingFailure"],
+      ] as const).map(([field, label]) => status[field] ? <li key={field}><strong>{n(locale, label)}</strong><small>{dateFormatter.format(new Date(status[field]))}</small></li> : null)}</ul>{status.recentChecks?.length ? <ul>{status.recentChecks.map((check) => <li key={check.packageName}><strong>{check.sourceName}</strong><span>{n(locale, check.recognized ? "recognized" : "notRecognized")}</span><small>{dateFormatter.format(new Date(check.checkedAt))}</small></li>)}</ul> : <p className="automation-empty">{n(locale, "noChecks")}</p>}</details>
       <div className="automation-section-heading"><h3>{t(locale, "registeredSources")}</h3><button type="button" disabled={busy} onClick={onRefresh}><RefreshCw />{t(locale, "refresh")}</button></div>
       {ledger.automationSources.length ? <div className="automation-source-list">{ledger.automationSources.map((source) => <article key={source.packageName}><div><strong>{source.displayName}</strong><small>{source.packageName}</small></div><button type="button" disabled={busy} onClick={() => onRemoveSource(source.packageName)} aria-label={`${t(locale, "removeCardApp")}: ${source.displayName}`}><Trash2 /></button></article>)}</div> : <p className="automation-empty">{t(locale, "noRegisteredSources")}</p>}
       <div className="automation-section-heading"><h3>{t(locale, "pendingExpenses")}</h3><span>{pending.length.toLocaleString(locale)}</span></div>

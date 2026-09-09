@@ -1,10 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { cardAutomationConnectionState, normalizeCardAutomationStatus, withNativeReadDeadline } from "../src/lib/nativeCardAutomation";
 import { applyHighConfidenceCardAutomation, automationExpenseId, buildNativeAutomationConfiguration, calculateMonthlyLimitStatus, candidateOwnerLedgerIds, completeCandidateMerchant, confirmCardCandidate, inferGeneralCategory, parseNativeCandidateBatch, parseNativeCardCandidate, reversalMatchIndexes, visibleCardCandidates, type NativeCardCandidate } from "../src/lib/cardAutomation";
 import type { GeneralLedger, WalletState } from "../src/lib/types";
 import { createLedger, mergeGeneralLedgerMutation, parseWalletStateStrict, replaceExpenseById } from "../src/lib/wallet";
 
 const candidate: NativeCardCandidate = Object.freeze({ id: "native-1", queueToken: null, packageName: "com.revolut.revolut", sourceName: "Revolut", merchant: "Lidl Paris", minorUnits: 1299, currency: "EUR", occurredAt: "2026-08-30T10:15:00+02:00", occurredOn: "2026-08-30", confidence: "high", eventType: "purchase", manualOnly: false });
+
+test("notification permission is distinct from a connected detection service", () => {
+  const allowed = { supported: true, accessGranted: true, alertPermissionGranted: true };
+  assert.equal(cardAutomationConnectionState({ ...allowed, listenerConnected: false }), "disconnected");
+  assert.equal(cardAutomationConnectionState({ ...allowed, listenerConnected: true }), "connected");
+  assert.equal(cardAutomationConnectionState(allowed), "unknown");
+  assert.equal(cardAutomationConnectionState({ ...allowed, accessGranted: false, listenerConnected: true }), "access-required");
+  assert.equal(cardAutomationConnectionState({ ...allowed, supported: false }), "unsupported");
+});
+
+test("connection diagnostics retain only bounded valid timestamps and known errors", () => {
+  const clean = normalizeCardAutomationStatus({ supported: true, accessGranted: true, listenerConnected: false, lastListenerConnectedAt: 1789000000000, lastProcessingFailureAt: -1, lastRecoveryRequestedAt: Infinity, lastRecoveryError: "processing_failed", secretText: "not retained" });
+  assert.equal(clean.lastListenerConnectedAt, 1789000000000);
+  assert.equal(clean.lastProcessingFailureAt, undefined);
+  assert.equal(clean.lastRecoveryRequestedAt, undefined);
+  assert.equal(clean.lastRecoveryError, "processing_failed");
+  assert.equal("secretText" in clean, false);
+  assert.equal(normalizeCardAutomationStatus({ lastRecoveryError: "private exception text" }).lastRecoveryError, undefined);
+});
+
+test("hung native reads time out without swallowing native errors or successes", async () => {
+  assert.equal(await withNativeReadDeadline(Promise.resolve(3), 100), 3);
+  await assert.rejects(withNativeReadDeadline(Promise.reject(new Error("native failure")), 100), /native failure/);
+  await assert.rejects(withNativeReadDeadline(new Promise(() => {}), 10), /native-read-timeout/);
+});
 
 function configuredLedger(): GeneralLedger {
   return Object.freeze({ ...createLedger("general", "생활", "EUR"), monthlyLimitMinor: 50_000, automationSources: Object.freeze([{ packageName: candidate.packageName, displayName: candidate.sourceName, trustedDirectApp: true as const }]) });

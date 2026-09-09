@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#3555D5</color>
+    <color name="colorPrimaryDark">#2945AE</color>
+    <color name="colorAccent">#3555D5</color>
+    <color name="wallet_paper">#F7F8FC</color>
+    <!-- Android 7 cannot display dark navigation buttons on a light bar. -->
+    <color name="wallet_navigation">#17233B</color>
+</resources>

@@ -1,4 +1,4 @@
-import { EllipsisVertical, Home, Plane, Plus } from "lucide-react";
+import { EllipsisVertical, NotebookText, Plane, Plus } from "lucide-react";
 import type { Ledger, Locale } from "../lib/types";
 import { t } from "../lib/i18n";
 
@@ -9,7 +9,7 @@ export function LedgerTabs({ ledgers, activeId, locale, onSelect, onAdd, onMenu 
   return (
     <nav id="wallet-ledger-tabs" className="ledger-tabs" tabIndex={-1} aria-label={t(locale, "ledgers")}>
       {ledgers.map((ledger) => {
-        const Icon = ledger.kind === "travel" ? Plane : Home;
+        const Icon = ledger.kind === "travel" ? Plane : NotebookText;
         return (
           <div className={ledger.id === activeId ? "ledger-tab selected" : "ledger-tab"} key={ledger.id}>
             <button className="ledger-tab-main" type="button" onClick={() => onSelect(ledger.id)} aria-current={ledger.id === activeId ? "page" : undefined}>

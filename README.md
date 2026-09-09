@@ -39,6 +39,8 @@ Android 동기화:
 npm run android:sync
 ```
 
+Android 알림 인식 코드를 바꿀 때는 JVM 테스트만으로 확인을 끝내지 마세요. release Java 클래스 컴파일 후 [native ICU 정규식 검사](scripts/NOTIFICATION-REGEX-CHECK.md)를 실행하고 실제 기기에서 감지 서비스 연결을 확인해야 합니다. 디자인 기준은 [v1.6.0 디자인 문서](design/v1.6.0/DESIGN.md), 최종 검증 범위는 [릴리스 기록](release/README.md)에 있습니다.
+
 iOS 동기화는 macOS와 Xcode가 필요합니다.
 
 ```bash
@@ -58,7 +60,7 @@ npm run ios:sync
 ## 배포
 
 - Android/iOS application ID: `com.seunghyeonkim.walletdiary`
-- Android version: `1.5.1` / code `109`
+- Android version: `1.6.0` / code `110`
 - Android min SDK: 24, target SDK: 36
 - iOS 프로젝트: `ios/App/App.xcodeproj`
 - Android APK/AAB: `release/`
@@ -67,4 +69,4 @@ npm run ios:sync
 
 서명된 IPA 생성에는 macOS, Xcode, Apple Developer Team, 배포 인증서와 App Store 프로비저닝 프로파일이 필요합니다.
 
-알림이 전혀 없는 거래를 자동 동기화하려면 사용자가 동의하는 공식 Open Banking 공급자와 보안 백엔드가 필요합니다. 이 연결은 v1.5.1에서도 아직 활성화되지 않았으며 공급자 비밀키는 APK에 넣지 않습니다. 앱에 미연결 상태와 명세서 가져오기를 표시합니다. 파일 가져오기는 은행 자동 동기화가 아닙니다. 설계와 출시 수용 기준은 [`docs/OPEN_BANKING_SETUP.md`](docs/OPEN_BANKING_SETUP.md)에 정리되어 있습니다.
+알림이 전혀 없는 거래를 자동 동기화하려면 사용자가 동의하는 공식 Open Banking 공급자와 보안 백엔드가 필요합니다. 이 연결은 v1.6.0에서도 아직 활성화되지 않았으며 공급자 비밀키는 APK에 넣지 않습니다. 앱에 미연결 상태와 명세서 가져오기를 표시합니다. 파일 가져오기는 은행 자동 동기화가 아닙니다. 설계와 출시 수용 기준은 [`docs/OPEN_BANKING_SETUP.md`](docs/OPEN_BANKING_SETUP.md)에 정리되어 있습니다.
