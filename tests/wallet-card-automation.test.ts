@@ -263,7 +263,7 @@ test("monthly limit status and native configuration use the current calendar mon
   assert.equal(calculateMonthlyLimitStatus(Object.freeze({ ...ledger, monthlyLimitMinor: 40_000 }), "2026-08").state, "reached");
   assert.equal(calculateMonthlyLimitStatus(Object.freeze({ ...ledger, monthlyLimitMinor: null }), "2026-08").state, "unset");
   const config = buildNativeAutomationConfiguration(wallet(ledger), "fr", new Date(2026, 7, 30));
-  assert.deepEqual(config.ledgers[0], { ledgerId: ledger.id, title: ledger.title, currency: "EUR", monthlyLimitMinor: 50_000, spentMinor: 40_000, locale: "fr", automationAllApps: false });
+  assert.deepEqual(config.ledgers[0], { ledgerId: ledger.id, title: ledger.title, currency: "EUR", monthlyLimitMinor: 50_000, spentMinor: 40_000, month: "2026-08", locale: "fr", automationAllApps: false });
   assert.deepEqual(config.sources, [{ packageName: candidate.packageName, ledgerId: ledger.id, currency: "EUR" }]);
   assert.equal(config.detectAllApps, false);
 });

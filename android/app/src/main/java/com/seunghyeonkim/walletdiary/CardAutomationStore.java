@@ -20,6 +20,7 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.function.BooleanSupplier;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -287,7 +288,7 @@ final class CardAutomationStore {
             // Only the canonical amount that the React app has durably saved is
             // eligible for a limit alert. Captured candidates may still be a
             // duplicate, require review, or fail to save.
-            maybeNotifyBudget(context, ledger, month, spent);
+            if (month.equals(ledger.optString("month"))) maybeNotifyBudget(context, ledger, month, spent);
         }
     }
 
@@ -363,15 +364,48 @@ final class CardAutomationStore {
         if (level == 0) return;
         String alertKey = "budget_alert::" + ledgerId + "::" + month;
         int prior = preferences(context).getInt(alertKey, 0);
-        if (prior >= level) return;
-        preferences(context).edit().putInt(alertKey, level).commit();
-        showBudgetNotification(context, ledger, spent, limit, level);
+        int delivered = deliverBudgetLevel(prior, level, () -> showBudgetNotification(context, ledger, spent, limit, level));
+        if (delivered > prior) preferences(context).edit().putInt(alertKey, delivered).commit();
     }
 
-    private static void showBudgetNotification(Context context, JSONObject ledger, long spent, long limit, int level) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return;
+    /** A blocked/failed delivery must remain retryable after the user enables alerts. */
+    static int deliverBudgetLevel(int prior, int level, BooleanSupplier delivery) {
+        if (level <= prior || level <= 0) return prior;
+        try { return delivery.getAsBoolean() ? level : prior; }
+        catch (RuntimeException unavailable) { return prior; }
+    }
+
+    static synchronized void retryBudgetAlerts(Context context) {
+        JSONArray ledgers = configuration(context).optJSONArray("ledgers");
+        if (ledgers == null) return;
+        String month = monthKey(System.currentTimeMillis());
+        for (int index = 0; index < ledgers.length(); index++) {
+            JSONObject ledger = ledgers.optJSONObject(index);
+            if (ledger != null && month.equals(ledger.optString("month"))) {
+                maybeNotifyBudget(context, ledger, month, ledger.optLong("spentMinor", 0L));
+            }
+        }
+    }
+
+    static boolean areBudgetAlertsEnabled(Context context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return false;
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            if (manager == null) return false;
+            NotificationChannel channel = manager.getNotificationChannel(CHANNEL_ID);
+            if (channel != null && channel.getImportance() == NotificationManager.IMPORTANCE_NONE) return false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && channel != null && channel.getGroup() != null) {
+                android.app.NotificationChannelGroup group = manager.getNotificationChannelGroup(channel.getGroup());
+                if (group != null && group.isBlocked()) return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean showBudgetNotification(Context context, JSONObject ledger, long spent, long limit, int level) {
+        if (!areBudgetAlertsEnabled(context)) return false;
         NotificationManagerCompat manager = NotificationManagerCompat.from(context);
-        if (!manager.areNotificationsEnabled()) return;
         String locale = ledger.optString("locale", "ko");
         createChannel(context, locale);
         String currency = ledger.optString("currency", "EUR");
@@ -379,14 +413,14 @@ final class CardAutomationStore {
         String title;
         String body;
         if ("fr".equals(locale)) {
-            title = level >= 100 ? "Plafond mensuel dépassé" : "Vous approchez de votre plafond mensuel";
-            body = level >= 100 ? "Vous avez dépassé le plafond de " + formatMoney(spent - limit, currency, Locale.FRANCE) + "." : "Il vous reste " + formatMoney(remaining, currency, Locale.FRANCE) + ".";
+            title = spent == limit ? "Plafond mensuel atteint" : level >= 100 ? "Plafond mensuel dépassé" : "Vous approchez de votre plafond mensuel";
+            body = spent == limit ? "Vous avez utilisé la totalité de votre plafond mensuel." : level >= 100 ? "Vous avez dépassé le plafond de " + formatMoney(spent - limit, currency, Locale.FRANCE) + "." : "Il vous reste " + formatMoney(remaining, currency, Locale.FRANCE) + ".";
         } else if ("en".equals(locale)) {
-            title = level >= 100 ? "Monthly limit exceeded" : "You are nearing your monthly limit";
-            body = level >= 100 ? "You are over by " + formatMoney(spent - limit, currency, Locale.US) + "." : formatMoney(remaining, currency, Locale.US) + " remains.";
+            title = spent == limit ? "Monthly limit reached" : level >= 100 ? "Monthly limit exceeded" : "You are nearing your monthly limit";
+            body = spent == limit ? "You have used your full monthly limit." : level >= 100 ? "You are over by " + formatMoney(spent - limit, currency, Locale.US) + "." : formatMoney(remaining, currency, Locale.US) + " remains.";
         } else {
-            title = level >= 100 ? "월 소비 한도를 넘었어요" : "월 소비 한도에 가까워졌어요";
-            body = level >= 100 ? formatMoney(spent - limit, currency, Locale.KOREA) + " 초과했어요." : formatMoney(remaining, currency, Locale.KOREA) + " 남았어요.";
+            title = spent == limit ? "월 소비 한도에 도달했어요" : level >= 100 ? "월 소비 한도를 넘었어요" : "월 소비 한도에 가까워졌어요";
+            body = spent == limit ? "설정한 월 소비 한도를 모두 사용했어요." : level >= 100 ? formatMoney(spent - limit, currency, Locale.KOREA) + " 초과했어요." : formatMoney(remaining, currency, Locale.KOREA) + " 남았어요.";
         }
         Intent intent = new Intent(context, MainActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -401,6 +435,7 @@ final class CardAutomationStore {
             .setContentIntent(pendingIntent)
             .setAutoCancel(true);
         manager.notify((ledger.optString("ledgerId") + monthKey(System.currentTimeMillis())).hashCode(), builder.build());
+        return true;
     }
 
     private static void createChannel(Context context, String locale) {

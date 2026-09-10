@@ -136,11 +136,12 @@ export function App() {
   };
   const importStatement = async (selection: DocumentImportSelection) => {
     const imported = await persistWalletMutation((current) => {
-      const result = applyStatementImport(current, selection.rows, selection.target);
+      const result = applyStatementImport(current, selection.rows, selection.target, selection.adjustments);
       return { state: result.state, result };
     });
     setDocumentImportOpen(false);
-    notify(imported.added ? `${documentText(locale, "saved")} ${imported.added.toLocaleString(locale)}` : documentText(locale, "reviewedDuplicate"), imported.added ? "success" : "info");
+    const changed = imported.added + imported.adjusted + imported.removed;
+    notify(changed ? `${documentText(locale, "saved")} ${changed.toLocaleString(locale)}` : documentText(locale, "reviewedDuplicate"), changed ? "success" : "info");
   };
 
   const moveExpense = async (selection: MoveSelection) => {

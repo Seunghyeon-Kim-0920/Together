@@ -54,6 +54,14 @@ public class CardAutomationStoreTest {
     }
 
     @Test
+    public void blockedBudgetDeliveryRemainsRetryable() {
+        assertEquals(0, CardAutomationStore.deliverBudgetLevel(0, 80, () -> false));
+        assertEquals(80, CardAutomationStore.deliverBudgetLevel(0, 80, () -> true));
+        assertEquals(80, CardAutomationStore.deliverBudgetLevel(80, 90, () -> false));
+        assertEquals(90, CardAutomationStore.deliverBudgetLevel(80, 90, () -> true));
+    }
+
+    @Test
     public void staleAcknowledgementCannotDeleteUpdatedReversal() throws Exception {
         JSONArray current = new JSONArray().put(new JSONObject().put("id", "stable-id").put("queueToken", "reversal-token"));
         JSONArray stalePurchaseAck = new JSONArray().put(new JSONObject().put("id", "stable-id").put("queueToken", "purchase-token"));

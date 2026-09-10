@@ -132,6 +132,33 @@ test("refunds reconcile only one unambiguous same-file payment; unmatched refund
   assert.ok(ambiguous.rows.every((item) => !item.selected && item.reviewReasons.includes("refund_unmatched")), "ambiguous refunds need review before original payments are added");
 });
 
+test("refund-only statements offer a confirmed adjustment to the saved expense and replay safely", () => {
+  const payment = preview([["2026-09-01", "Lidl", "-20.00", "EUR", "payment", "completed", "pay-saved", ""]]);
+  const initial = applyStatementImport(EMPTY_WALLET_STATE, payment.rows, { kind: "new-general", title: "생활" });
+  const ledger = initial.state.ledgers[0];
+  const refund = previewExpenseDocument(document([
+    ["Date", "Description", "Amount", "Currency", "Type", "Status", "Transaction ID", "Related Transaction ID"],
+    ["2026-09-03", "Refund Lidl", "5.00", "EUR", "refund", "completed", "refund-later", "pay-saved"],
+  ]), {}, initial.state);
+  assert.equal(refund.rows.length, 0);
+  assert.equal(refund.adjustments.length, 1);
+  assert.equal(refund.adjustments[0].targetExpenseId, ledger.expenses[0].id);
+  assert.equal(refund.adjustments[0].selected, true);
+  const applied = applyStatementImport(initial.state, [], { kind: "existing", ledgerId: ledger.id }, refund.adjustments);
+  assert.equal(applied.adjusted, 1);
+  assert.equal(applied.state.ledgers[0].expenses[0].minorUnits, 1500);
+  const originalReplay = applyStatementImport(applied.state, payment.rows, { kind: "existing", ledgerId: ledger.id });
+  assert.equal(originalReplay.added, 0, "a fully/partly refunded source identity stays acknowledged on replay");
+  const repeated = previewExpenseDocument(document([
+    ["Date", "Description", "Amount", "Currency", "Type", "Status", "Transaction ID", "Related Transaction ID"],
+    ["2026-09-03", "Refund Lidl", "5.00", "EUR", "refund", "completed", "refund-later", "pay-saved"],
+  ]), {}, applied.state);
+  assert.equal(repeated.adjustments.length, 0);
+  const again = applyStatementImport(applied.state, [], { kind: "existing", ledgerId: ledger.id }, refund.adjustments);
+  assert.equal(again.adjusted, 0);
+  assert.equal(again.state.ledgers[0].expenses[0].minorUnits, 1500);
+});
+
 test("cancelled source identities remove their same-file original and conflicting identities are quarantined", () => {
   const cancelled = preview([
     ["2026-09-01", "Shop", "-20", "EUR", "payment", "completed", "same", ""],

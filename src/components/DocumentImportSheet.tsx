@@ -6,9 +6,9 @@ import { documentText as d } from "../lib/documentI18n";
 import { readExpenseDocument, type ReadDocument } from "../lib/documentReader";
 import { generalCategoryLabel, t } from "../lib/i18n";
 import { GENERAL_CATEGORIES, type Locale, type TravelLedger, type WalletState } from "../lib/types";
-import { previewExpenseDocument, validateStatementImportRow, type StatementColumnMapping, type StatementImportOptions, type StatementImportRow, type StatementImportTarget } from "../lib/statementImport";
+import { previewExpenseDocument, validateStatementImportRow, type StatementColumnMapping, type StatementImportAdjustment, type StatementImportOptions, type StatementImportRow, type StatementImportTarget } from "../lib/statementImport";
 
-export interface DocumentImportSelection { rows: StatementImportRow[]; target: StatementImportTarget; }
+export interface DocumentImportSelection { rows: StatementImportRow[]; target: StatementImportTarget; adjustments: StatementImportAdjustment[]; }
 interface Props { state: WalletState; locale: Locale; onClose: () => void; onTravel: (ledger: TravelLedger) => void; onConfirm: (selection: DocumentImportSelection) => Promise<void>; }
 const currencyCodes = availableCurrencies();
 export function DocumentImportSheet({ state, locale, onClose, onTravel, onConfirm }: Props) {
@@ -52,22 +52,24 @@ export function DocumentImportSheet({ state, locale, onClose, onTravel, onConfir
 function DocumentReview({ source, state, locale, options, onOptions, onConfirm }: { source: ReadDocument; state: WalletState; locale: Locale; options: StatementImportOptions; onOptions: (options: StatementImportOptions) => void; onConfirm: Props['onConfirm'] }) {
   const preview = useMemo(() => previewExpenseDocument(source, options, state), [source, options, state]);
   const [rows, setRows] = useState<StatementImportRow[]>(() => preview.rows.map((row) => ({ ...row })));
+  const [adjustments, setAdjustments] = useState<StatementImportAdjustment[]>(() => preview.adjustments.map((adjustment) => ({ ...adjustment })));
   const [targetId, setTargetId] = useState(state.activeLedgerId ?? "new");
   const [title, setTitle] = useState((source.ledger?.ledger.title ?? source.name.replace(/\.[^.]+$/, "")).slice(0, 70));
   const [payer, setPayer] = useState(""); const [people, setPeople] = useState<string[]>([]);
   const [page, setPage] = useState(0); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
   const target = state.ledgers.find((ledger) => ledger.id === targetId);
   const selected = rows.filter((row) => row.selected);
+  const selectedAdjustments = adjustments.filter((adjustment) => adjustment.selected);
   const totals = new Map<string, number>(); selected.forEach((row) => totals.set(row.currency, (totals.get(row.currency) ?? 0) + row.minorUnits));
   const dates = selected.map((row) => row.occurredOn).sort();
   const invalid = selected.some((row) => !validateStatementImportRow(row));
   const wrongCurrency = target?.kind === "general" && selected.some((row) => row.currency !== target.currency);
-  const badTarget = targetId === "new" ? !title.trim() : !target || target.kind === "travel" && (!payer || !people.length);
-  const canSave = selected.length > 0 && !invalid && !wrongCurrency && !badTarget && [...totals.values()].every(Number.isSafeInteger);
+  const badTarget = selected.length > 0 && (targetId === "new" ? !title.trim() : !target || target.kind === "travel" && (!payer || !people.length));
+  const canSave = (selected.length > 0 || selectedAdjustments.length > 0) && !invalid && !wrongCurrency && !badTarget && [...totals.values()].every(Number.isSafeInteger);
   const update = (id: string, patch: Partial<StatementImportRow>) => setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
   const confirm = async () => {
     if (busy || !canSave) return; setBusy(true); setError("");
-    try { await onConfirm({ rows: selected, target: targetId === "new" ? { kind: "new-general", title } : { kind: "existing", ledgerId: targetId, paidBy: payer, participantIds: people } }); }
+    try { await onConfirm({ rows: selected, target: targetId === "new" ? { kind: "new-general", title } : { kind: "existing", ledgerId: targetId, paidBy: payer, participantIds: people }, adjustments: selectedAdjustments }); }
     catch { setError(d(locale, "saveFailed")); } finally { setBusy(false); }
   };
   const mapping = options.mapping ?? preview.mapping;
@@ -90,6 +92,7 @@ function DocumentReview({ source, state, locale, options, onOptions, onConfirm }
     <h3>{d(locale, "rows")} · {rows.length}</h3><p className="sheet-intro">{d(locale, "incomplete")}</p>
     <div className="document-buttons"><button type="button" disabled={busy} onClick={() => setRows((current) => current.map((row) => ({ ...row, selected: validateStatementImportRow(row) && !row.reviewReasons.some((reason) => ["duplicate", "ambiguous_direction", "cancelled", "refund_unmatched", "conflicting_duplicate"].includes(reason)) })))}>{d(locale, "selectAll")}</button><button type="button" disabled={busy} onClick={() => setRows((current) => current.map((row) => ({ ...row, selected: false })))}>{d(locale, "selectNone")}</button></div>
     {!rows.length && <p className="document-notice">{d(locale, "empty")}</p>}
+    {adjustments.length > 0 && <section className="document-adjustments"><h3>{d(locale, "adjustments")} · {adjustments.length}</h3><p className="sheet-intro">{d(locale, "adjustmentHelp")}</p>{adjustments.map((adjustment) => <label className="document-adjustment" key={adjustment.id}><input type="checkbox" disabled={busy} checked={adjustment.selected} onChange={(event) => setAdjustments((current) => current.map((item) => item.id === adjustment.id ? { ...item, selected: event.target.checked } : item))} /><span><strong>{adjustment.description}</strong><small>{adjustment.occurredOn} · {formatMoney(adjustment.minorUnits, adjustment.currency, locale)} · {adjustment.kind === "cancelled" ? d(locale, "cancelled") : d(locale, "refund")}</small></span></label>)}</section>}
     <div className="document-rows">{visibleRows.map((row) => <ExpenseReviewRow key={row.id} row={row} locale={locale} disabled={busy} onChange={(patch) => update(row.id, patch)} />)}</div>
     {rows.length > 20 && <div className="document-pagination"><button type="button" disabled={page === 0} onClick={() => setPage((value) => value - 1)} aria-label={d(locale, "previousPage")}><ChevronLeft /></button><span>{page + 1} / {Math.ceil(rows.length / 20)}</span><button type="button" disabled={(page + 1) * 20 >= rows.length} onClick={() => setPage((value) => value + 1)} aria-label={d(locale, "nextPage")}><ChevronRight /></button></div>}
     <button type="button" className="wide-secondary" disabled={busy || rows.length >= 5000} onClick={() => { setRows((current) => [...current, { id: "document-manual-" + crypto.randomUUID(), sourceRow: -1, raw: [], description: "", occurredOn: "", currency: options.defaultCurrency ?? "EUR", minorUnits: 0, category: "other", reviewReasons: [], selected: false }]); setPage(Math.floor(rows.length / 20)); }}><Plus />{d(locale, "addRow")}</button>

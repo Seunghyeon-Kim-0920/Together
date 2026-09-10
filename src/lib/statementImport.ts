@@ -48,6 +48,20 @@ export interface StatementImportRow {
   readonly sourceOccurrence?: number;
 }
 export interface StatementImportIssue { readonly sourceRow: number; readonly reason: StatementIssueReason; readonly raw: readonly string[]; }
+export interface StatementImportAdjustment {
+  readonly id: string;
+  readonly sourceRow: number;
+  readonly kind: "refund" | "cancelled";
+  readonly description: string;
+  readonly occurredOn: string;
+  readonly currency: string;
+  readonly minorUnits: number;
+  readonly raw: readonly string[];
+  readonly targetLedgerId: string;
+  readonly targetExpenseId: string;
+  readonly expectedMinorUnits: number;
+  readonly selected: boolean;
+}
 export interface StatementCurrencyTotal { readonly currency: string; readonly minorUnits: string; readonly count: number; }
 export interface StatementImportPreview {
   readonly rows: readonly StatementImportRow[];
@@ -60,9 +74,10 @@ export interface StatementImportPreview {
   readonly dateRange: { readonly from: string; readonly to: string } | null;
   readonly currencyTotals: readonly StatementCurrencyTotal[];
   readonly receivedCount: number;
+  readonly adjustments: readonly StatementImportAdjustment[];
 }
 export type StatementImportTarget = { readonly kind: "existing"; readonly ledgerId: string; readonly paidBy?: string; readonly participantIds?: readonly string[] } | { readonly kind: "new-general"; readonly title: string };
-export interface StatementImportResult { readonly state: WalletState; readonly added: number; readonly duplicates: number; readonly ledgerIds: readonly string[]; }
+export interface StatementImportResult { readonly state: WalletState; readonly added: number; readonly duplicates: number; readonly adjusted: number; readonly removed: number; readonly ledgerIds: readonly string[]; }
 
 const MAX_SOURCE_ROWS = 20_000;
 const FAILED = /(?:\b(?:declined|failed|rejected|échoué|echec|échec|refusé)\b|승인\s*거절|결제\s*실패|처리\s*불가)/iu;
@@ -208,6 +223,7 @@ function semanticKey(row: Pick<StatementImportRow, "description" | "occurredOn" 
 function existingIndex(state?: WalletState): { ids: Set<string>; signatures: Map<string, number>; weakSignatures: Map<string, number> } {
   const ids = new Set<string>(); const signatures = new Map<string, number>(); const weakSignatures = new Map<string, number>();
   for (const ledger of state?.ledgers ?? []) {
+    for (const receipt of ledger.statementImportHistory ?? []) { ids.add(receipt.id); ids.add(receipt.expenseId); }
     for (const expense of ledger.expenses) {
       ids.add(expense.id); ids.add(publicExpenseId(ledger.id, expense.id));
       if (ledger.kind === "general") { const general = expense as GeneralExpense; if (general.automationFingerprint) ids.add(general.automationFingerprint); }
@@ -285,12 +301,31 @@ function textTable(text: string): { name: string; rows: readonly string[][] } {
   return { name: "text", rows };
 }
 
-function completePreview(rowsInput: readonly StatementImportRow[], excluded: StatementImportIssue[], issues: StatementImportIssue[], mapping: StatementColumnMapping, headers: readonly string[], tableIndex: number, headerRow: number, receivedCount: number, state?: WalletState): StatementImportPreview {
+function completePreview(rowsInput: readonly StatementImportRow[], excluded: StatementImportIssue[], issues: StatementImportIssue[], mapping: StatementColumnMapping, headers: readonly string[], tableIndex: number, headerRow: number, receivedCount: number, state?: WalletState, adjustments: readonly StatementImportAdjustment[] = []): StatementImportPreview {
   const rows = markExistingDuplicates(rowsInput, state); const dates = rows.filter((row) => validateStatementImportRow(row)).map((row) => row.occurredOn).sort();
   const totals = new Map<string, { amount: bigint; count: number }>();
   for (const row of rows) if (row.selected && validateStatementImportRow(row)) { const total = totals.get(row.currency) ?? { amount: 0n, count: 0 }; total.amount += BigInt(row.minorUnits); total.count += 1; totals.set(row.currency, total); }
   if ([...totals.values()].some((total) => total.amount > BigInt(Number.MAX_SAFE_INTEGER))) issues.push(issue(0, "total_overflow", []));
-  return Object.freeze({ rows: Object.freeze(rows), excluded: Object.freeze(excluded), issues: Object.freeze(issues), mapping, headers: Object.freeze([...headers]), tableIndex, headerRow, receivedCount, dateRange: dates.length ? Object.freeze({ from: dates[0], to: dates[dates.length - 1] }) : null, currencyTotals: Object.freeze([...totals].sort(([a], [b]) => a.localeCompare(b)).map(([currency, total]) => Object.freeze({ currency, minorUnits: total.amount.toString(), count: total.count }))) });
+  return Object.freeze({ rows: Object.freeze(rows), excluded: Object.freeze(excluded), issues: Object.freeze(issues), mapping, headers: Object.freeze([...headers]), tableIndex, headerRow, receivedCount, adjustments: Object.freeze(adjustments.map((adjustment) => Object.freeze({ ...adjustment, raw: Object.freeze([...adjustment.raw]) }))), dateRange: dates.length ? Object.freeze({ from: dates[0], to: dates[dates.length - 1] }) : null, currencyTotals: Object.freeze([...totals].sort(([a], [b]) => a.localeCompare(b)).map(([currency, total]) => Object.freeze({ currency, minorUnits: total.amount.toString(), count: total.count }))) });
+}
+
+function existingAdjustmentHistory(state?: WalletState): Set<string> {
+  return new Set((state?.ledgers ?? []).flatMap((ledger) => (ledger.statementImportHistory ?? []).filter((receipt) => receipt.kind === "adjustment").map((receipt) => receipt.id)));
+}
+
+function savedRefundCandidates(state: WalletState | undefined, reversal: ParsedSourceRow): { ledgerId: string; expenseId: string; minorUnits: number }[] {
+  if (!state || !validateStatementImportRow(reversal.row)) return [];
+  const cleanDescription = merchantKey(reversal.row.description.replace(REFUND, "").replace(CANCELLED, "").trim());
+  const candidates: { ledgerId: string; expenseId: string; minorUnits: number }[] = [];
+  for (const ledger of state.ledgers) {
+    if (ledger.kind !== "general") continue;
+    for (const expense of ledger.expenses) {
+      const merchant = merchantKey(merchantDisplayName(expense.description, expense.id));
+      if (expense.currency !== reversal.row.currency || merchant !== cleanDescription || expense.occurredOn > reversal.row.occurredOn) continue;
+      if (reversal.kind === "cancelled" ? expense.minorUnits === reversal.row.minorUnits : expense.minorUnits >= reversal.row.minorUnits) candidates.push({ ledgerId: ledger.id, expenseId: expense.id, minorUnits: expense.minorUnits });
+    }
+  }
+  return candidates;
 }
 
 export function previewExpenseDocument(document: ReadExpenseDocument, options: StatementImportOptions = {}, existingState?: WalletState): StatementImportPreview {
@@ -351,7 +386,7 @@ export function previewExpenseDocument(document: ReadExpenseDocument, options: S
   }
   const expenses = parsed.filter((entry) => entry.kind === "expense" && !conflicts.has(JSON.stringify([entry.transactionId, entry.row.currency])));
   for (const entry of parsed) if (entry.kind === "expense" && conflicts.has(JSON.stringify([entry.transactionId, entry.row.currency]))) excluded.push(issue(entry.row.sourceRow, "conflicting_duplicate", entry.row.raw));
-  const adjustments = new Set<string>();
+  const adjustments = new Set<string>(); const savedAdjustments: StatementImportAdjustment[] = []; const appliedAdjustmentIds = existingAdjustmentHistory(existingState);
   for (const reversal of parsed.filter((entry) => entry.kind !== "expense")) {
     const reversalKey = JSON.stringify([reversal.transactionId || null, reversal.row.id, reversal.kind]);
     if (adjustments.has(reversalKey)) { excluded.push(issue(reversal.row.sourceRow, "duplicate", reversal.row.raw)); continue; }
@@ -361,6 +396,12 @@ export function previewExpenseDocument(document: ReadExpenseDocument, options: S
     const matching = expenses.filter((entry) => entry.row.minorUnits > 0 && entry.row.currency === reversal.row.currency && (targetId ? entry.transactionId === targetId : merchantKey(entry.row.description.replace(REFUND, "").replace(CANCELLED, "").trim()) === merchantKey(reversal.row.description.replace(REFUND, "").replace(CANCELLED, "").trim()) && entry.row.occurredOn && reversal.row.occurredOn && entry.row.occurredOn <= reversal.row.occurredOn && (reversal.kind === "cancelled" ? entry.row.minorUnits === reversal.row.minorUnits : entry.row.minorUnits >= reversal.row.minorUnits)));
     if (matching.length !== 1 || !Number.isSafeInteger(reversal.row.minorUnits) || reversal.row.minorUnits <= 0 || matching[0].row.minorUnits < reversal.row.minorUnits) {
       for (const match of matching) match.row = Object.freeze({ ...match.row, selected: false, reviewReasons: Object.freeze([...match.row.reviewReasons, reversal.kind === "cancelled" ? "cancelled" as const : "refund_unmatched" as const]) });
+      const candidates = savedRefundCandidates(existingState, reversal);
+      if (candidates.length === 1 && !appliedAdjustmentIds.has(`statement-adjustment-${fingerprint(JSON.stringify([reversal.row.id, reversal.kind, reversal.row.occurredOn, reversal.row.minorUnits]))}`)) {
+        const candidate = candidates[0]; const adjustmentId = `statement-adjustment-${fingerprint(JSON.stringify([reversal.row.id, reversal.kind, reversal.row.occurredOn, reversal.row.minorUnits]))}`;
+        savedAdjustments.push(Object.freeze({ id: adjustmentId, sourceRow: reversal.row.sourceRow, kind: reversal.kind === "cancelled" ? "cancelled" : "refund", description: reversal.row.description, occurredOn: reversal.row.occurredOn, currency: reversal.row.currency, minorUnits: reversal.row.minorUnits, raw: reversal.row.raw, targetLedgerId: candidate.ledgerId, targetExpenseId: candidate.expenseId, expectedMinorUnits: candidate.minorUnits, selected: true }));
+        excluded.push(issue(reversal.row.sourceRow, "refund_adjusted", reversal.row.raw)); continue;
+      }
       excluded.push(issue(reversal.row.sourceRow, reversal.kind === "cancelled" ? "cancelled" : "refund_unmatched", reversal.row.raw)); continue;
     }
     const match = matching[0]; const remaining = reversal.kind === "cancelled" ? 0 : match.row.minorUnits - reversal.row.minorUnits;
@@ -370,7 +411,7 @@ export function previewExpenseDocument(document: ReadExpenseDocument, options: S
   const rows: StatementImportRow[] = [];
   for (const entry of expenses) { if (!entry.row.minorUnits && entry.row.reviewReasons.includes("refund_adjusted")) excluded.push(issue(entry.row.sourceRow, "refunded", entry.row.raw)); else rows.push(entry.row); }
   if (!rows.length && !excluded.length) issues.push(issue(0, "no_rows", []));
-  return completePreview(rows, excluded, issues, mapping, headers, tableIndex, headerRow, sourceRows.length, existingState);
+  return completePreview(rows, excluded, issues, mapping, headers, tableIndex, headerRow, sourceRows.length, existingState, savedAdjustments);
 }
 
 /** Review reasons are informational after a user edits a row. Fields are
@@ -381,7 +422,7 @@ export function validateStatementImportRow(row: StatementImportRow): boolean {
 
 /** Call only after the user confirms the selected preview. Validation and
  * capacity checks complete before a new immutable state is returned. */
-export function applyStatementImport(state: WalletState, rows: readonly StatementImportRow[], target: StatementImportTarget): StatementImportResult {
+export function applyStatementImport(state: WalletState, rows: readonly StatementImportRow[], target: StatementImportTarget, adjustments: readonly StatementImportAdjustment[] = []): StatementImportResult {
   if (!parseWalletStateStrict(state)) throw new Error("invalid_state");
   if (rows.length > MAX_SOURCE_ROWS || rows.some((row) => !validateStatementImportRow(row))) throw new Error("invalid_rows");
   const known = existingIndex(state); const consumed = new Map<string, number>(); const accepted: StatementImportRow[] = []; let duplicates = 0;
@@ -391,21 +432,41 @@ export function applyStatementImport(state: WalletState, rows: readonly Statemen
     if (known.ids.has(row.id) || used < (signatures.get(signature) ?? 0)) { duplicates += 1; continue; }
     known.ids.add(row.id); accepted.push(row);
   }
-  if (!accepted.length) return Object.freeze({ state, added: 0, duplicates, ledgerIds: Object.freeze([]) });
-  const ledgers: Ledger[] = [...state.ledgers]; const ledgerIds: string[] = [];
+  if (adjustments.some((adjustment) => !adjustment.id.startsWith("statement-adjustment-") || !/^statement-adjustment-[0-9a-f]{16}$/u.test(adjustment.id) || !adjustment.targetLedgerId || !adjustment.targetExpenseId || !validateStatementImportRow({ id: adjustment.id, sourceRow: adjustment.sourceRow, description: adjustment.description, occurredOn: adjustment.occurredOn, currency: adjustment.currency, minorUnits: adjustment.minorUnits, category: "other", reviewReasons: [], raw: adjustment.raw, selected: true }))) throw new Error("invalid_adjustments");
+  const ledgers: Ledger[] = [...state.ledgers]; let adjusted = 0; let removed = 0; const adjustmentIds = new Set<string>();
+  for (const adjustment of adjustments.filter((item) => item.selected)) {
+    if (adjustmentIds.has(adjustment.id)) continue; adjustmentIds.add(adjustment.id);
+    const ledgerIndex = ledgers.findIndex((ledger) => ledger.id === adjustment.targetLedgerId); const ledger = ledgerIndex >= 0 ? ledgers[ledgerIndex] : null;
+    if (!ledger || ledger.kind !== "general") throw new Error("adjustment_ledger");
+    const history = ledger.statementImportHistory ?? []; if (history.some((receipt) => receipt.kind === "adjustment" && receipt.id === adjustment.id)) continue;
+    const expenseIndex = ledger.expenses.findIndex((expense) => expense.id === adjustment.targetExpenseId); const expense = expenseIndex >= 0 ? ledger.expenses[expenseIndex] : null;
+    if (!expense || expense.currency !== adjustment.currency || expense.minorUnits !== adjustment.expectedMinorUnits || expense.minorUnits < adjustment.minorUnits) throw new Error("adjustment_changed");
+    const nextHistory = [...history, Object.freeze({ kind: "adjustment" as const, id: adjustment.id, expenseId: expense.id })];
+    const remaining = adjustment.kind === "cancelled" ? 0 : expense.minorUnits - adjustment.minorUnits;
+    const nextExpenses = remaining ? [...ledger.expenses.slice(0, expenseIndex), Object.freeze({ ...expense, minorUnits: remaining }), ...ledger.expenses.slice(expenseIndex + 1)] : [...ledger.expenses.slice(0, expenseIndex), ...ledger.expenses.slice(expenseIndex + 1)];
+    ledgers[ledgerIndex] = { ...ledger, expenses: nextExpenses, statementImportHistory: nextHistory, updatedAt: new Date().toISOString() };
+    if (remaining) adjusted += 1; else removed += 1;
+  }
+  if (!accepted.length && !adjusted && !removed) return Object.freeze({ state, added: 0, duplicates, adjusted: 0, removed: 0, ledgerIds: Object.freeze([]) });
+  const ledgerIds: string[] = [];
+  if (!accepted.length) {
+    const result = parseWalletStateStrict({ ...state, ledgers });
+    if (!result) throw new Error("invalid_import");
+    return Object.freeze({ state: result, added: 0, duplicates, adjusted, removed, ledgerIds: Object.freeze([...new Set(adjustments.filter((adjustment) => adjustment.selected).map((adjustment) => adjustment.targetLedgerId))]) });
+  }
   if (target.kind === "existing") {
     const index = ledgers.findIndex((ledger) => ledger.id === target.ledgerId); if (index < 0) throw new Error("missing_ledger");
     const ledger = ledgers[index];
     if (ledger.expenses.length + accepted.length > MAX_EXPENSES_PER_LEDGER) throw new Error("expense_limit");
     if (ledger.kind === "general") {
       if (accepted.some((row) => row.currency !== ledger.currency)) throw new Error("currency_mismatch");
-      ledgers[index] = { ...ledger, expenses: [...ledger.expenses, ...accepted.map(toGeneralExpense)], updatedAt: new Date().toISOString() };
+      const imported = accepted.map(toGeneralExpense); ledgers[index] = { ...ledger, expenses: [...ledger.expenses, ...imported], statementImportHistory: [...(ledger.statementImportHistory ?? []), ...imported.map((expense) => Object.freeze({ kind: "payment" as const, id: expense.id, expenseId: expense.id }))], updatedAt: new Date().toISOString() };
     } else {
       const participantIds = target.participantIds ?? []; const allowed = new Set(ledger.participants.map((person) => person.id));
       if (!target.paidBy || !allowed.has(target.paidBy) || !participantIds.length || participantIds.some((id) => !allowed.has(id)) || new Set(participantIds).size !== participantIds.length) throw new Error("participants_required");
       const paidBy = target.paidBy; const currencies = [...new Set([...ledger.currencies, ...accepted.map((row) => row.currency)])];
       if (currencies.length > 20) throw new Error("currency_limit");
-      ledgers[index] = { ...ledger, currencies, expenses: [...ledger.expenses, ...accepted.map((row) => ({ ...toGeneralExpense(row), category: TRAVEL_CATEGORIES.includes(row.category as never) ? row.category as (typeof TRAVEL_CATEGORIES)[number] : "other" as const, paidBy, shares: splitEvenly(row.minorUnits, participantIds) }))], updatedAt: new Date().toISOString() };
+      const imported = accepted.map((row) => ({ ...toGeneralExpense(row), category: TRAVEL_CATEGORIES.includes(row.category as never) ? row.category as (typeof TRAVEL_CATEGORIES)[number] : "other" as const, paidBy, shares: splitEvenly(row.minorUnits, participantIds) })); ledgers[index] = { ...ledger, currencies, expenses: [...ledger.expenses, ...imported], statementImportHistory: [...(ledger.statementImportHistory ?? []), ...imported.map((expense) => Object.freeze({ kind: "payment" as const, id: expense.id, expenseId: expense.id }))], updatedAt: new Date().toISOString() };
     }
     ledgerIds.push(ledger.id);
   } else {
@@ -415,7 +476,7 @@ export function applyStatementImport(state: WalletState, rows: readonly Statemen
     for (const currency of currencies) {
       const currencyRows = accepted.filter((row) => row.currency === currency); if (currencyRows.length > MAX_EXPENSES_PER_LEDGER) throw new Error("expense_limit");
       const title = currencies.length > 1 ? `${target.title.trim().slice(0, 74)} · ${currency}` : target.title.trim();
-      const ledger = createLedger("general", title, currency); ledgers.push({ ...ledger, expenses: currencyRows.map(toGeneralExpense) }); ledgerIds.push(ledger.id);
+      const ledger = createLedger("general", title, currency); const imported = currencyRows.map(toGeneralExpense); ledgers.push({ ...ledger, expenses: imported, statementImportHistory: imported.map((expense) => Object.freeze({ kind: "payment" as const, id: expense.id, expenseId: expense.id })) }); ledgerIds.push(ledger.id);
     }
   }
   // Totals must remain exactly representable by existing statistics code.
@@ -426,6 +487,6 @@ export function applyStatementImport(state: WalletState, rows: readonly Statemen
   }
   const result = parseWalletStateStrict({ ...state, ledgers, activeLedgerId: ledgerIds[0] ?? state.activeLedgerId });
   if (!result) throw new Error("invalid_import");
-  return Object.freeze({ state: result, added: accepted.length, duplicates, ledgerIds: Object.freeze(ledgerIds) });
+  return Object.freeze({ state: result, added: accepted.length, duplicates, adjusted, removed, ledgerIds: Object.freeze(ledgerIds) });
 }
 function toGeneralExpense(row: StatementImportRow): GeneralExpense { return Object.freeze({ id: row.id, description: row.description.trim(), category: row.category, occurredOn: row.occurredOn, currency: row.currency, minorUnits: row.minorUnits }); }

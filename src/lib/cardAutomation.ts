@@ -66,7 +66,7 @@ export interface MonthlyLimitStatus {
 }
 
 export interface NativeAutomationConfiguration {
-  readonly ledgers: readonly { readonly ledgerId: string; readonly title: string; readonly currency: string; readonly monthlyLimitMinor: number | null; readonly spentMinor: number; readonly locale: Locale; readonly automationAllApps: boolean }[];
+  readonly ledgers: readonly { readonly ledgerId: string; readonly title: string; readonly currency: string; readonly monthlyLimitMinor: number | null; readonly spentMinor: number; readonly month: string; readonly locale: Locale; readonly automationAllApps: boolean }[];
   readonly sources: readonly { readonly packageName: string; readonly ledgerId: string; readonly currency: string }[];
   readonly detectAllApps: boolean;
 }
@@ -413,7 +413,7 @@ export function buildNativeAutomationConfiguration(state: WalletState, locale: L
     ownerCount.set(key, (ownerCount.get(key) ?? 0) + 1);
   }
   return Object.freeze({
-    ledgers: Object.freeze(generalLedgers.map((ledger) => Object.freeze({ ledgerId: ledger.id, title: ledger.title, currency: ledger.currency, monthlyLimitMinor: ledger.monthlyLimitMinor, spentMinor: monthTotal(ledger.expenses, currentMonth), locale, automationAllApps: ledger.automationAllApps }))),
+    ledgers: Object.freeze(generalLedgers.map((ledger) => Object.freeze({ ledgerId: ledger.id, title: ledger.title, currency: ledger.currency, monthlyLimitMinor: ledger.monthlyLimitMinor, spentMinor: monthTotal(ledger.expenses, currentMonth), month: currentMonth, locale, automationAllApps: ledger.automationAllApps }))),
     // Ambiguous package assignments are never sent to native code: assigning
     // a purchase to the first ledger would silently corrupt another ledger.
     sources: Object.freeze(generalLedgers.flatMap((ledger) => ledger.automationSources.filter((source) => ownerCount.get(`${source.packageName}\u0000${ledger.currency}`) === 1).map((source: AutomationSource) => Object.freeze({ packageName: source.packageName, ledgerId: ledger.id, currency: ledger.currency })))),

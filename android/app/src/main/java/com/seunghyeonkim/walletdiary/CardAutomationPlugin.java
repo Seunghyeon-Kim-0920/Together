@@ -29,6 +29,7 @@ public final class CardAutomationPlugin extends Plugin {
     @Override
     public void load() {
         PaymentNotificationListenerService.recover(getContext());
+        CardAutomationStore.retryBudgetAlerts(getContext());
     }
 
     @Override
@@ -36,6 +37,7 @@ public final class CardAutomationPlugin extends Plugin {
         if (NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName())) {
             PaymentNotificationListenerService.recover(getContext());
         }
+        CardAutomationStore.retryBudgetAlerts(getContext());
     }
 
     @PluginMethod
@@ -59,6 +61,14 @@ public final class CardAutomationPlugin extends Plugin {
     @PluginMethod
     public void requestAlertPermission(PluginCall call) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || getPermissionState("alerts") == PermissionState.GRANTED) {
+            if (!CardAutomationStore.areBudgetAlertsEnabled(getContext())) {
+                try {
+                    Intent settings = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                    settings.putExtra(Settings.EXTRA_APP_PACKAGE, getContext().getPackageName());
+                    getActivity().startActivity(settings);
+                } catch (Exception ignored) {}
+            }
+            CardAutomationStore.retryBudgetAlerts(getContext());
             call.resolve(status());
             return;
         }
@@ -67,6 +77,7 @@ public final class CardAutomationPlugin extends Plugin {
 
     @PermissionCallback
     private void alertPermissionCallback(PluginCall call) {
+        CardAutomationStore.retryBudgetAlerts(getContext());
         call.resolve(status());
     }
 
@@ -108,6 +119,7 @@ public final class CardAutomationPlugin extends Plugin {
         }
         JSONObject previous = CardAutomationStore.configuration(getContext());
         CardAutomationStore.configure(getContext(), configuration);
+        CardAutomationStore.retryBudgetAlerts(getContext());
         if (CardAutomationStore.captureScopeChanged(previous, configuration)
             && NotificationManagerCompat.getEnabledListenerPackages(getContext()).contains(getContext().getPackageName())) {
             // Queue synchronization must not wait up to 15 seconds for Android
@@ -133,7 +145,7 @@ public final class CardAutomationPlugin extends Plugin {
         );
         result.put(
             "alertPermissionGranted",
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || getPermissionState("alerts") == PermissionState.GRANTED
+            CardAutomationStore.areBudgetAlertsEnabled(getContext())
         );
         result.put("pendingCount", CardAutomationStore.pending(getContext()).length());
         result.put("recentChecks", CardAutomationStore.recentChecks(getContext()));

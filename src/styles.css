@@ -298,6 +298,12 @@ button:disabled { cursor: default; opacity: .44; }
 .document-keep input { height: 20px; width: 20px; accent-color: var(--jade); }
 .document-keep span { margin-left: auto; color: var(--muted); font-size: 11px; }
 .document-row-note { color: #8a641b; font-size: 11px; margin: 10px 0 2px; }
+.document-adjustments { margin: 16px 0; padding: 14px; border: 1px solid #e6c77c; border-radius: 15px; background: #fffaf0; }
+.document-adjustments h3 { margin-top: 0; }
+.document-adjustment { display: flex; align-items: flex-start; gap: 10px; padding: 11px 0; border-top: 1px solid #f0dfb4; font-size: 13px; }
+.document-adjustment input { width: 20px; height: 20px; accent-color: var(--jade); }
+.document-adjustment span { display: grid; gap: 3px; min-width: 0; }
+.document-adjustment small { color: var(--muted); overflow-wrap: anywhere; }
 .document-original { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; font: 11px/1.6 monospace; }
 .document-raw-row { font-size: 11px; overflow-wrap: anywhere; line-height: 1.6; }
 .document-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

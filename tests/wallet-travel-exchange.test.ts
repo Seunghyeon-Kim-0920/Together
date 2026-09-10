@@ -3,7 +3,7 @@ import test from "node:test";
 import { createLedgerSharePayload, createTravelSharePayload, parseLedgerShareDocument, parseLedgerSharePayload, shareTravelLedgerFile } from "../src/lib/share";
 import { previewTravelLedgerMerge, type ParticipantMapping } from "../src/lib/travelExchange";
 import type { GeneralLedger, TravelExpense, TravelLedger } from "../src/lib/types";
-import { createLedger, parseLedger, settleTravelExpenses } from "../src/lib/wallet";
+import { createLedger, parseLedger, preserveTravelShares, settleTravelExpenses } from "../src/lib/wallet";
 
 const people = Object.freeze([{ id: "alice", name: "Alice" }, { id: "bob", name: "Bob" }]);
 const paidDinner: TravelExpense = Object.freeze({ id: "dinner-1", description: "Dinner", category: "food", currency: "EUR", minorUnits: 3001, occurredOn: "2026-08-31", paidBy: "alice", shares: Object.freeze([{ participantId: "alice", minorUnits: 1501 }, { participantId: "bob", minorUnits: 1500 }]) });
@@ -11,6 +11,14 @@ const newPeople: ParticipantMapping = { alice: { kind: "new" }, bob: { kind: "ne
 function trip(id: string, expenses: readonly TravelExpense[] = []): TravelLedger {
   return Object.freeze({ ...createLedger("travel", "Summer", "EUR"), id, participants: people, selfParticipantId: "alice", expenses: Object.freeze(expenses) });
 }
+
+test("editing an imported unequal split preserves shares until split inputs change", () => {
+  const imported: TravelExpense = Object.freeze({ ...paidDinner, shares: Object.freeze([{ participantId: "alice", minorUnits: 2200 }, { participantId: "bob", minorUnits: 801 }]) });
+  assert.deepEqual(preserveTravelShares(imported, 3001, "EUR", ["bob", "alice"]), imported.shares);
+  assert.equal(preserveTravelShares(imported, 3000, "EUR", ["alice", "bob"]), null);
+  assert.equal(preserveTravelShares(imported, 3001, "USD", ["alice", "bob"]), null);
+  assert.equal(preserveTravelShares(imported, 3001, "EUR", ["alice"]), null);
+});
 
 test("share documents preserve source, person and expense IDs while dropping private identity", () => {
   const source = trip("source", [paidDinner]);

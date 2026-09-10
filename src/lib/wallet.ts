@@ -1,11 +1,12 @@
 import { currencyDigits } from "./currency";
 import { legacyPublicExpenseId, publicExpenseId } from "./expenseIdentity";
-import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type TravelExpense, type TravelLedger, type WalletState } from "./types";
+import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type StatementImportReceipt, type TravelExpense, type TravelLedger, type WalletState } from "./types";
 
 export const MAX_LEDGERS = 50;
 export const MAX_EXPENSES_PER_LEDGER = 5_000;
 export const MAX_PARTICIPANTS = 100;
 export const MAX_MOVED_EXPENSE_MARKERS = MAX_EXPENSES_PER_LEDGER * 4;
+export const MAX_STATEMENT_IMPORT_RECEIPTS = 20_000;
 // This is a storage-safety bound, not a provider allow-list. Five hundred
 // distinct Android packages is deliberately well beyond normal card usage.
 export const MAX_AUTOMATION_SOURCES = 500;
@@ -57,6 +58,20 @@ function parseMovedExpenseIds(value: unknown): readonly string[] | null {
   return Object.freeze(ids as string[]);
 }
 
+function parseStatementImportHistory(value: unknown): readonly StatementImportReceipt[] | null {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value) || value.length > MAX_STATEMENT_IMPORT_RECEIPTS) return null;
+  const receipts: StatementImportReceipt[] = []; const ids = new Set<string>();
+  for (const entry of value) {
+    if (!isRecord(entry) || entry.kind !== "payment" && entry.kind !== "adjustment") return null;
+    const id = text(entry.id, 100); const expenseId = text(entry.expenseId, 100);
+    const transactionKey = entry.transactionKey === undefined ? undefined : text(entry.transactionKey, 50);
+    if (!id || !expenseId || ids.has(`${entry.kind}:${id}`) || entry.kind === "adjustment" && !/^statement-adjustment-[0-9a-f]{16}$/.test(id) || entry.transactionKey !== undefined && (!transactionKey || !/^statement-transaction-[0-9a-f]{16}$/.test(transactionKey))) return null;
+    ids.add(`${entry.kind}:${id}`); receipts.push(Object.freeze({ kind: entry.kind, id, expenseId, ...(transactionKey ? { transactionKey } : {}) }));
+  }
+  return Object.freeze(receipts);
+}
+
 function parseParticipants(value: unknown): readonly Participant[] | null {
   if (!Array.isArray(value) || value.length > MAX_PARTICIPANTS) return null;
   const result: Participant[] = [];
@@ -99,7 +114,9 @@ function parseGeneralExpense(value: unknown, ledgerCurrency: string): GeneralExp
 export function parseLedger(value: unknown): Ledger | null {
   if (!isRecord(value)) return null;
   const id = text(value.id, 100); const title = text(value.title, 80); const createdAt = timestamp(value.createdAt); const updatedAt = timestamp(value.updatedAt);
-  if (!id || !title || !createdAt || !updatedAt || !Array.isArray(value.expenses) || value.expenses.length > MAX_EXPENSES_PER_LEDGER) return null;
+  const statementImportHistory = parseStatementImportHistory(value.statementImportHistory);
+  if (!id || !title || !createdAt || !updatedAt || !statementImportHistory || !Array.isArray(value.expenses) || value.expenses.length > MAX_EXPENSES_PER_LEDGER) return null;
+  const privateHistory = statementImportHistory.length ? { statementImportHistory } : {};
   const expenseIds = new Set<string>();
   if (value.kind === "travel") {
     const participants = parseParticipants(value.participants);
@@ -117,7 +134,7 @@ export function parseLedger(value: unknown): Ledger | null {
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "travel", createdAt, updatedAt, currencies: Object.freeze(currencies as string[]), defaultCurrency, participants, selfParticipantId, expenses: Object.freeze(expenses) } satisfies TravelLedger);
+    return Object.freeze({ id, title, kind: "travel", createdAt, updatedAt, currencies: Object.freeze(currencies as string[]), defaultCurrency, participants, selfParticipantId, expenses: Object.freeze(expenses), ...privateHistory } satisfies TravelLedger);
   }
   if (value.kind === "general") {
     const ledgerCurrency = currency(value.currency);
@@ -133,7 +150,7 @@ export function parseLedger(value: unknown): Ledger | null {
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses) } satisfies GeneralLedger);
+    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...privateHistory } satisfies GeneralLedger);
   }
   return null;
 }
@@ -163,6 +180,15 @@ export function splitEvenly(minorUnits: number, participantIds: readonly string[
   if (!Number.isSafeInteger(minorUnits) || minorUnits <= 0 || participantIds.length < 1 || new Set(participantIds).size !== participantIds.length) throw new Error("invalid split");
   const sorted = [...participantIds].sort(); const base = Math.floor(minorUnits / sorted.length); const remainder = minorUnits % sorted.length;
   return Object.freeze(sorted.map((participantId, index) => Object.freeze({ participantId, minorUnits: base + (index < remainder ? 1 : 0) })));
+}
+
+/** Preserve an imported unequal split when an edit leaves its split inputs unchanged. */
+export function preserveTravelShares(existing: TravelExpense, minorUnits: number, currency: string, participantIds: readonly string[]): readonly ExpenseShare[] | null {
+  if (existing.minorUnits !== minorUnits || existing.currency !== currency) return null;
+  const previous = new Set(existing.shares.map((share) => share.participantId));
+  const next = new Set(participantIds);
+  if (previous.size !== next.size || [...previous].some((id) => !next.has(id))) return null;
+  return existing.shares;
 }
 
 export interface SettlementTransfer { readonly from: string; readonly to: string; readonly currency: string; readonly minorUnits: number; }

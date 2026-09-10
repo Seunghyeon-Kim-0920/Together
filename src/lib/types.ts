@@ -48,11 +48,20 @@ export interface AutomationSource {
   readonly trustedDirectApp: true;
 }
 
+/** Private, local import receipts. These never belong in a shared ledger. */
+export interface StatementImportReceipt {
+  readonly kind: "payment" | "adjustment";
+  readonly id: string;
+  readonly expenseId: string;
+  readonly transactionKey?: string;
+}
+
 interface LedgerBase {
   readonly id: string;
   readonly title: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly statementImportHistory?: readonly StatementImportReceipt[];
 }
 
 export interface TravelLedger extends LedgerBase {

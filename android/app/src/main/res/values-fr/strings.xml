@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">지갑의 일기</string>
-    <string name="title_activity_main">지갑의 일기</string>
+    <string name="app_name">Journal du portefeuille</string>
+    <string name="title_activity_main">Journal du portefeuille</string>
+    <string name="package_name" translatable="false">com.seunghyeonkim.walletdiary</string>
+    <string name="custom_url_scheme" translatable="false">com.seunghyeonkim.walletdiary</string>
     <string name="card_automation_service">Paiements et virements à partir des notifications</string>
 </resources>
