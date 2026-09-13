@@ -48,6 +48,20 @@ test("statement dates retain provider-local dates through DST and reject calenda
   for (const invalid of ["2025-02-29", "2026-02-30", "2026-04-31", "2026-13-01", "2026-00-01", "2026-01-00", "03/04/26", "9999-01-01", "2026-09-06 garbage", "2026-09-06T99:99:00Z"]) assert.equal(parseStatementDate(invalid), null, invalid);
 });
 
+test("PDF dates support English and French month names and spaced Korean dates strictly", () => {
+  for (const [source, expected] of [["Sep 18, 2026", "2026-09-18"], ["September 2, 2026", "2026-09-02"], ["2 sept. 2026", "2026-09-02"], ["1 février 2026", "2026-02-01"], ["31 août 2026", "2026-08-31"], ["2026. 9. 2.", "2026-09-02"], ["2026년 9월 2일", "2026-09-02"]]) assert.equal(parseStatementDate(source), expected, source);
+  assert.equal(parseStatementDate("Feb 30, 2026"), null);
+  assert.equal(parseStatementDate("31 avril 2026"), null);
+  assert.equal(parseStatementDate("2026. 9. 2. account closed"), null);
+});
+
+test("headerless PDF dates, merchant and amount on separate lines retain their association", () => {
+  const result = previewExpenseDocument(document([], { tables: [], text: "Sep 18, 2026\nCorner Cafe\n-12.34 EUR\n19 septembre 2026 Museum -20.00 EUR\n2026년 9월 20일\n테스트 식당\n-12,000원" }));
+  assert.deepEqual(result.rows.map(row => [row.description, row.occurredOn, row.minorUnits, row.selected]), [["Corner Cafe", "2026-09-18", 1234, true], ["Museum", "2026-09-19", 2000, true], ["테스트 식당", "2026-09-20", 12000, true]]);
+  const summary = previewExpenseDocument(document([], {tables:[],text:"Account statement\nOpening balance €1200.00\nClosing balance €900.00"}));
+  assert.equal(summary.rows.length, 0);
+});
+
 test("Korean, English and French mappings identify expenses without selecting balances or credits", () => {
   assert.deepEqual(detectStatementColumns(["거래일자", "가맹점명", "출금금액", "입금금액", "잔액", "통화", "거래상태"]), { date: 0, description: 1, debit: 2, credit: 3, currency: 5, status: 6 });
   assert.deepEqual(detectStatementColumns(["Date d'opération", "Libellé", "Débit", "Crédit", "Solde", "Devise"]), { date: 0, description: 1, debit: 2, credit: 3, currency: 5 });
@@ -143,8 +157,8 @@ test("refund-only statements offer a confirmed adjustment to the saved expense a
   assert.equal(refund.rows.length, 0);
   assert.equal(refund.adjustments.length, 1);
   assert.equal(refund.adjustments[0].targetExpenseId, ledger.expenses[0].id);
-  assert.equal(refund.adjustments[0].selected, true);
-  const applied = applyStatementImport(initial.state, [], { kind: "existing", ledgerId: ledger.id }, refund.adjustments);
+  assert.equal(refund.adjustments[0].selected, false, "saved expense reductions require explicit review");
+  const applied = applyStatementImport(initial.state, [], { kind: "existing", ledgerId: ledger.id }, refund.adjustments.map((item) => ({ ...item, selected: true })));
   assert.equal(applied.adjusted, 1);
   assert.equal(applied.state.ledgers[0].expenses[0].minorUnits, 1500);
   const originalReplay = applyStatementImport(applied.state, payment.rows, { kind: "existing", ledgerId: ledger.id });
@@ -154,9 +168,50 @@ test("refund-only statements offer a confirmed adjustment to the saved expense a
     ["2026-09-03", "Refund Lidl", "5.00", "EUR", "refund", "completed", "refund-later", "pay-saved"],
   ]), {}, applied.state);
   assert.equal(repeated.adjustments.length, 0);
-  const again = applyStatementImport(applied.state, [], { kind: "existing", ledgerId: ledger.id }, refund.adjustments);
+  const again = applyStatementImport(applied.state, [], { kind: "existing", ledgerId: ledger.id }, refund.adjustments.map((item) => ({ ...item, selected: true })));
   assert.equal(again.adjusted, 0);
   assert.equal(again.state.ledgers[0].expenses[0].minorUnits, 1500);
+});
+
+test("multiple saved refunds in one preview subtract cumulatively and partial selection is independent", () => {
+  const headers = ["Date", "Description", "Amount", "Currency", "Type", "Status", "Transaction ID", "Related Transaction ID"];
+  const payment = ["2026-09-01", "Shop", "-20.00", "EUR", "payment", "completed", "pay-batch", ""];
+  const first = applyStatementImport(EMPTY_WALLET_STATE, preview([payment]).rows, {kind:"new-general",title:"Test"});
+  const refunds = previewExpenseDocument(document([headers, ["2026-09-02", "Shop", "5", "EUR", "refund", "completed", "refund-a", "pay-batch"], ["2026-09-03", "Shop", "3", "EUR", "refund", "completed", "refund-b", "pay-batch"]]), {}, first.state);
+  assert.equal(refunds.adjustments.length, 2);
+  assert.ok(refunds.adjustments.every(item => !item.selected && item.expectedMinorUnits === 2000));
+  const target = {kind:"existing" as const,ledgerId:first.state.ledgers[0].id};
+  const confirmed = refunds.adjustments.map(item=>({...item,selected:true}));
+  assert.equal(applyStatementImport(first.state, [], target, confirmed).state.ledgers[0].expenses[0].minorUnits, 1200);
+  assert.equal(applyStatementImport(first.state, [], target, [confirmed[1]]).state.ledgers[0].expenses[0].minorUnits, 1700);
+  const edited = {...first.state,ledgers:first.state.ledgers.map(ledger=>({...ledger,expenses:ledger.expenses.map(expense=>({...expense,minorUnits:1900}))}))} as WalletState;
+  assert.throws(()=>applyStatementImport(edited, [], target, confirmed), /adjustment_changed/);
+});
+
+test("a full statement adjusts an already-saved original and same-file net refunds are never subtracted twice", () => {
+  const headers = ["Date", "Description", "Amount", "Currency", "Type", "Status", "Transaction ID", "Related Transaction ID"];
+  const payment = ["2026-09-01", "Shop", "-20", "EUR", "payment", "completed", "pay-net", ""];
+  const refund = ["2026-09-02", "Refund Shop", "5", "EUR", "refund", "completed", "refund-net", "pay-net"];
+  const original = applyStatementImport(EMPTY_WALLET_STATE, preview([payment]).rows, {kind:"new-general",title:"Test"});
+  const full = previewExpenseDocument(document([headers,payment,refund]), {}, original.state);
+  assert.equal(full.rows[0].selected, false);
+  assert.equal(full.adjustments.length, 1);
+  const adjusted = applyStatementImport(original.state, full.rows.filter(row=>row.selected), {kind:"existing",ledgerId:original.state.ledgers[0].id}, full.adjustments.map(item=>({...item,selected:true})));
+  assert.equal(adjusted.state.ledgers[0].expenses[0].minorUnits, 1500);
+  const net = applyStatementImport(EMPTY_WALLET_STATE, preview([payment,refund]).rows, {kind:"new-general",title:"Test"});
+  assert.equal(net.state.ledgers[0].expenses[0].minorUnits, 1500);
+  const replay = previewExpenseDocument(document([headers,refund]), {}, net.state);
+  assert.equal(replay.adjustments.length, 0);
+  assert.equal(replay.excluded[0].reason, "duplicate");
+});
+
+test("saved refund original transaction references disambiguate same merchants and protect user-edited labels", () => {
+  const headers = ["Date", "Description", "Amount", "Currency", "Type", "Status", "Transaction ID", "Related Transaction ID"];
+  const initial = applyStatementImport(EMPTY_WALLET_STATE, preview([["2026-09-01","Shop","-20","EUR","payment","completed","original-a",""],["2026-09-01","Shop","-20","EUR","payment","completed","original-b",""]]).rows, {kind:"new-general",title:"Test"});
+  const edited = {...initial.state,ledgers:initial.state.ledgers.map(ledger=>({...ledger,expenses:ledger.expenses.map((expense,index)=>index ? expense : {...expense,description:"User edited label"})}))} as WalletState;
+  const result = previewExpenseDocument(document([headers,["2026-09-02","Refund Shop","5","EUR","refund","completed","refund-specific","original-a"]]),{},edited);
+  assert.equal(result.adjustments.length,1);
+  assert.equal(result.adjustments[0].targetExpenseId,initial.state.ledgers[0].expenses[0].id);
 });
 
 test("cancelled source identities remove their same-file original and conflicting identities are quarantined", () => {
@@ -285,6 +340,32 @@ test("unidentified cancellations reconcile a unique exact payment and quarantine
     ["2026-09-02", "Cafe", "10", "EUR", "payment", "reversed", "", ""],
   ]);
   assert.equal(multiple.rows.length, 2); assert.ok(multiple.rows.every((item) => !item.selected && item.reviewReasons.includes("cancelled")));
+});
+
+test("net-zero refunds require confirmation and block later payment-only reimports without creating expenses", () => {
+  const header = ["Date", "Description", "Amount", "Currency", "Type", "Status", "Transaction ID", "Related Transaction ID"];
+  const payment = ["2026-09-01", "Cafe", "-20", "EUR", "payment", "completed", "p1", ""];
+  const source = document([header, payment, ["2026-09-02", "Cafe", "20", "EUR", "refund", "completed", "r1", "p1"]]);
+  const first = previewExpenseDocument(source);
+  assert.equal(first.rows.length, 0); assert.equal(first.acknowledgements.length, 1);
+  assert.equal(first.acknowledgements[0].selected, false);
+  const untouched = applyStatementImport(EMPTY_WALLET_STATE, [], { kind: "new-general", title: "생활" }, [], first.acknowledgements);
+  assert.equal(untouched.state, EMPTY_WALLET_STATE); assert.equal(untouched.acknowledged, 0);
+  const selected = first.acknowledgements.map((item) => ({ ...item, selected: true }));
+  const saved = applyStatementImport(EMPTY_WALLET_STATE, [], { kind: "new-general", title: "생활" }, [], selected);
+  assert.equal(saved.acknowledged, 1); assert.equal(saved.added, 0); assert.equal(saved.state.ledgers[0].expenses.length, 0);
+  const restored = parseWalletStateStrict(JSON.parse(JSON.stringify(saved.state)))!;
+  const replay = previewExpenseDocument(document([header, payment]), {}, restored);
+  assert.equal(replay.rows[0].selected, false); assert.ok(replay.rows[0].reviewReasons.includes("duplicate"));
+  const repeated = applyStatementImport(restored, [], { kind: "existing", ledgerId: restored.ledgers[0].id }, [], selected);
+  assert.equal(repeated.state, restored); assert.equal(repeated.acknowledged, 0);
+  assert.equal(previewExpenseDocument(source, {}, restored).acknowledgements.length, 0);
+  const travel = createLedger("travel", "Trip", "EUR");
+  const travelState = { ...EMPTY_WALLET_STATE, ledgers: [travel], activeLedgerId: travel.id };
+  const travelResult = applyStatementImport(travelState, [], { kind: "existing", ledgerId: travel.id }, [], selected);
+  assert.equal(travelResult.acknowledged, 1); assert.equal(travelResult.state.ledgers[0].expenses.length, 0);
+  const shared = createLedgerSharePayload(travelResult.state.ledgers[0]);
+  assert.ok(!shared.includes("statementImportHistory"));
 });
 
 test("OFX CREDIT is income while Total and New Balance are legitimate merchant names", () => {

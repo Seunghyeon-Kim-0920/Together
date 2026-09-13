@@ -4,6 +4,8 @@ import { cardAutomationConnectionState, normalizeCardAutomationStatus, withNativ
 import { applyHighConfidenceCardAutomation, automationExpenseId, buildNativeAutomationConfiguration, calculateMonthlyLimitStatus, candidateOwnerLedgerIds, completeCandidateMerchant, confirmCardCandidate, inferGeneralCategory, parseNativeCandidateBatch, parseNativeCardCandidate, reversalMatchIndexes, visibleCardCandidates, type NativeCardCandidate } from "../src/lib/cardAutomation";
 import type { GeneralLedger, WalletState } from "../src/lib/types";
 import { createLedger, mergeGeneralLedgerMutation, parseWalletStateStrict, replaceExpenseById } from "../src/lib/wallet";
+import { moveGeneralExpenseToTravel } from "../src/lib/moveExpense";
+import { createLedgerSharePayload, parseLedgerSharePayload } from "../src/lib/share";
 
 const candidate: NativeCardCandidate = Object.freeze({ id: "native-1", queueToken: null, packageName: "com.revolut.revolut", sourceName: "Revolut", merchant: "Lidl Paris", minorUnits: 1299, currency: "EUR", occurredAt: "2026-08-30T10:15:00+02:00", occurredOn: "2026-08-30", confidence: "high", eventType: "purchase", manualOnly: false });
 
@@ -246,6 +248,171 @@ test("same merchant, date, and amount with another stable id is never silently d
   const confirmed = confirmCardCandidate(result.state, result.state.ledgers[0].id, result.pending[0]);
   assert.equal(confirmed.inserted, true);
   assert.equal(confirmed.state.ledgers[0].expenses.length, 2);
+});
+
+const googleWallet = "com.google.android.apps.walletnfcrel";
+const samsungWallet = "com.samsung.android.spay";
+function walletAlert(packageName = googleWallet, overrides: Partial<NativeCardCandidate> = {}): NativeCardCandidate {
+  return Object.freeze({ ...candidate, id: "wallet-event", packageName, sourceName: "Wallet", occurredAt: "2026-08-30T10:15:18+02:00", ...overrides });
+}
+function pairedLedger(packageName = googleWallet): GeneralLedger {
+  const ledger = configuredLedger();
+  return Object.freeze({ ...ledger, automationSources: Object.freeze([...ledger.automationSources, { packageName, displayName: "Wallet", trustedDirectApp: true as const }]) });
+}
+
+test("Google and Samsung wallet plus issuer alerts record one purchase in either delivery order", () => {
+  for (const packageName of [googleWallet, samsungWallet]) for (const reverse of [false, true]) {
+    const alerts = [candidate, walletAlert(packageName)]; if (reverse) alerts.reverse();
+    const result = applyHighConfidenceCardAutomation(wallet(pairedLedger(packageName)), alerts);
+    assert.equal(result.state.ledgers[0].expenses.length, 1);
+    assert.equal(result.insertedIds.length, 1);
+    assert.equal(result.acknowledgedIds.length, 2);
+    assert.equal(result.pending.length, 0);
+    const ledger = result.state.ledgers[0] as GeneralLedger;
+    assert.equal(ledger.automationPaymentReceipts?.[0].sources.length, 2);
+    const restored = parseWalletStateStrict(JSON.parse(JSON.stringify(result.state))); assert.ok(restored);
+    assert.equal(applyHighConfidenceCardAutomation(restored, alerts).state, restored);
+    assert.equal(confirmCardCandidate(restored, ledger.id, alerts[1]).inserted, false);
+  }
+});
+
+test("late issuer delivery survives restart and expense edits without recreating the wallet payment", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [walletAlert()]);
+  const ledger = first.state.ledgers[0] as GeneralLedger;
+  const edited = Object.freeze({ ...ledger, expenses: Object.freeze(ledger.expenses.map((expense) => Object.freeze({ ...expense, description: "My edited lunch", minorUnits: 1400 }))) });
+  const restored = parseWalletStateStrict(JSON.parse(JSON.stringify(wallet(edited)))); assert.ok(restored);
+  const late = Object.freeze({ ...candidate, occurredAt: "2026-08-30T10:22:00+02:00" });
+  const merged = applyHighConfidenceCardAutomation(restored, [late]);
+  assert.equal(merged.state.ledgers[0].expenses.length, 1);
+  assert.equal(merged.state.ledgers[0].expenses[0].description, "My edited lunch");
+  assert.equal(merged.state.ledgers[0].expenses[0].minorUnits, 1400);
+  assert.deepEqual(merged.acknowledgedIds, [late.id]);
+  assert.equal((merged.state.ledgers[0] as GeneralLedger).automationPaymentReceipts?.[0].sources.length, 2);
+});
+
+test("cross-source matching handles wallet prefixes and branch suffixes but not unrelated shops", () => {
+  const result = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate, walletAlert(googleWallet, { merchant: "Google Pay * LIDL" })]);
+  assert.equal(result.insertedIds.length, 1);
+  assert.equal(result.pending.length, 0);
+  const different = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate, walletAlert(googleWallet, { merchant: "Lidlina" })]);
+  assert.equal(different.insertedIds.length, 2);
+});
+
+test("cross-source pairing is global even when the bank and wallet target different ledgers", () => {
+  const bankLedger = configuredLedger();
+  const second = Object.freeze({ ...createLedger("general", "Wallet spending", "EUR"), automationSources: Object.freeze([{ packageName: googleWallet, displayName: "Wallet", trustedDirectApp: true as const }]) });
+  const state = Object.freeze({ ...wallet(bankLedger), ledgers: Object.freeze([bankLedger, second]) });
+  const result = applyHighConfidenceCardAutomation(state, [candidate, walletAlert()]);
+  assert.deepEqual(result.state.ledgers.map((ledger) => ledger.expenses.length), [1, 0]);
+  assert.equal(result.acknowledgedIds.length, 2);
+  const reversed = applyHighConfidenceCardAutomation(result.state, [Object.freeze({ ...walletAlert(), eventType: "reversal" as const })]);
+  assert.deepEqual(reversed.state.ledgers.map((ledger) => ledger.expenses.length), [0, 0]);
+  assert.equal(reversed.reversedIds.length, 1);
+});
+
+test("manual confirmation of an untrusted wallet counterpart cannot duplicate the saved issuer expense", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(), [candidate]);
+  const review = walletAlert(googleWallet, { confidence: "review" });
+  const pending = applyHighConfidenceCardAutomation(first.state, [review]);
+  assert.equal(pending.pending.length, 1);
+  const confirmed = confirmCardCandidate(pending.state, pending.state.ledgers[0].id, pending.pending[0]);
+  assert.equal(confirmed.inserted, false);
+  assert.equal(confirmed.state.ledgers[0].expenses.length, 1);
+  assert.equal((confirmed.state.ledgers[0] as GeneralLedger).automationPaymentReceipts?.[0].sources.length, 2);
+});
+
+test("a second same-price purchase is retained and cannot consume an already paired source", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate, walletAlert()]);
+  const later = Object.freeze({ ...candidate, id: "second-real-purchase", occurredAt: "2026-08-30T10:16:00+02:00" });
+  const next = applyHighConfidenceCardAutomation(first.state, [later]);
+  assert.equal(next.pending.length, 1);
+  assert.equal(next.acknowledgedIds.length, 0);
+  const confirmed = confirmCardCandidate(next.state, next.state.ledgers[0].id, next.pending[0]);
+  assert.equal(confirmed.inserted, true);
+  assert.equal(confirmed.state.ledgers[0].expenses.length, 2);
+  const secondWallet = walletAlert(googleWallet, { id: "second-wallet-purchase", occurredAt: "2026-08-30T10:16:03+02:00" });
+  const paired = applyHighConfidenceCardAutomation(confirmed.state, [secondWallet]);
+  assert.equal(paired.pending.length, 0);
+  assert.equal(paired.state.ledgers[0].expenses.length, 2);
+  assert.equal((paired.state.ledgers[0] as GeneralLedger).automationPaymentReceipts?.every((receipt) => receipt.sources.length === 2), true);
+});
+
+test("long delays and several same-price matches require an explicit separate-payment decision", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate]);
+  const late = walletAlert(googleWallet, { occurredAt: "2026-08-30T14:15:18+02:00", merchant: "Lidl" });
+  const result = applyHighConfidenceCardAutomation(first.state, [late]);
+  assert.equal(result.insertedIds.length, 0);
+  assert.equal(result.pending[0]?.possibleDuplicate, true);
+  assert.throws(() => confirmCardCandidate(result.state, result.state.ledgers[0].id, result.pending[0]), /candidate-possible-duplicate/);
+  const explicitlySeparate = confirmCardCandidate(result.state, result.state.ledgers[0].id, result.pending[0], { asNewTransaction: true });
+  assert.equal(explicitlySeparate.state.ledgers[0].expenses.length, 2);
+  const another = Object.freeze({ ...candidate, id: "another-real-purchase", occurredAt: "2026-08-30T10:15:30+02:00" });
+  const twoBanks = confirmCardCandidate(first.state, first.state.ledgers[0].id, another).state;
+  const ambiguous = applyHighConfidenceCardAutomation(twoBanks, [walletAlert()]);
+  assert.equal(ambiguous.pending[0]?.possibleDuplicate, true);
+  assert.equal(ambiguous.state.ledgers[0].expenses.length, 2);
+});
+
+test("wallet pairing does not merge other currencies, outgoing transfers, or two issuing banks", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate]);
+  const transfer = walletAlert(googleWallet, { eventType: "outgoing_transfer" });
+  const transferResult = applyHighConfidenceCardAutomation(first.state, [transfer]);
+  assert.equal(transferResult.pending.length, 1);
+  assert.equal(confirmCardCandidate(transferResult.state, transferResult.state.ledgers[0].id, transfer).inserted, true);
+  const usd = walletAlert(googleWallet, { currency: "USD" });
+  assert.equal(applyHighConfidenceCardAutomation(first.state, [usd]).pending.length, 1);
+  const otherBank = Object.freeze({ ...candidate, id: "another-bank", packageName: "com.other.bank" });
+  assert.equal(confirmCardCandidate(first.state, first.state.ledgers[0].id, otherBank).inserted, true);
+});
+
+test("an issuer cancellation can reverse its wallet-first payment and stale alerts remain ignored", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [walletAlert(), candidate]);
+  const reversal = Object.freeze({ ...candidate, eventType: "reversal" as const, queueToken: "cancelled" });
+  const result = applyHighConfidenceCardAutomation(first.state, [reversal]);
+  assert.equal(result.state.ledgers[0].expenses.length, 0);
+  assert.deepEqual(result.reversedIds, [candidate.id]);
+  const stale = applyHighConfidenceCardAutomation(result.state, [candidate, walletAlert()]);
+  assert.equal(stale.state.ledgers[0].expenses.length, 0);
+  assert.equal(stale.acknowledgedIds.length, 2);
+});
+
+test("moving a payment to a trip retains private dedup receipts only in its source ledger", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate]);
+  const trip = Object.freeze({ ...createLedger("travel", "Paris", "EUR"), participants: Object.freeze([{ id: "me", name: "Me" }]), selfParticipantId: "me" });
+  const state = Object.freeze({ ...first.state, ledgers: Object.freeze([...first.state.ledgers, trip]) });
+  const moved = moveGeneralExpenseToTravel(state, { sourceLedgerId: first.state.ledgers[0].id, expenseId: first.state.ledgers[0].expenses[0].id, targetLedgerId: trip.id, paidBy: "me", participantIds: ["me"], category: "food" });
+  const paired = applyHighConfidenceCardAutomation(moved, [walletAlert()]);
+  assert.deepEqual(paired.state.ledgers.map((ledger) => ledger.expenses.length), [0, 1]);
+  assert.equal(paired.acknowledgedIds.length, 1);
+  const reversal = Object.freeze({ ...walletAlert(), eventType: "reversal" as const });
+  const reversed = applyHighConfidenceCardAutomation(paired.state, [reversal]);
+  assert.equal(reversed.pending.length, 1);
+  assert.throws(() => confirmCardCandidate(paired.state, paired.state.ledgers[0].id, reversal), /moved expense reversal/);
+  const source = paired.state.ledgers[0] as GeneralLedger;
+  const share = createLedgerSharePayload(source);
+  assert.equal(share.includes("automationPaymentReceipts"), false);
+  assert.equal(share.includes(googleWallet), false);
+  const tripShare = createLedgerSharePayload(Object.freeze({ ...paired.state.ledgers[1], statementImportHistory: [{ kind: "payment" as const, id: "private-import", expenseId: "private-origin" }], automationPaymentReceipts: source.automationPaymentReceipts }));
+  assert.equal(tripShare.includes("private-import"), false);
+  assert.equal(tripShare.includes("automationPaymentReceipts"), false);
+  const imported = parseLedgerSharePayload(tripShare); assert.ok(imported);
+  assert.equal(imported.statementImportHistory, undefined);
+});
+
+test("notification receipts validate strictly and concurrent user edits preserve the newest receipts", () => {
+  const base = pairedLedger();
+  const first = applyHighConfidenceCardAutomation(wallet(base), [candidate]);
+  const latest = applyHighConfidenceCardAutomation(first.state, [walletAlert()]).state.ledgers[0] as GeneralLedger;
+  const merged = mergeGeneralLedgerMutation(base, Object.freeze({ ...base, title: "Renamed" }), latest);
+  assert.equal(merged.automationPaymentReceipts?.[0].sources.length, 2);
+  assert.ok(parseWalletStateStrict(wallet(merged)));
+  const receipt = merged.automationPaymentReceipts![0];
+  for (const corrupt of [
+    { ...receipt, minorUnits: -1 },
+    { ...receipt, currency: "USD" },
+    { ...receipt, sources: [receipt.sources[0], receipt.sources[0]] },
+    { ...receipt, sources: [{ ...receipt.sources[0], occurredAt: "2026-02-30T10:00:00Z" }] },
+  ]) assert.equal(parseWalletStateStrict(wallet(Object.freeze({ ...merged, automationPaymentReceipts: [corrupt] }))), null);
 });
 
 test("travel ledgers never receive automated expenses", () => {

@@ -7,6 +7,7 @@ import { TravelLedgerView } from "./components/TravelLedgerView";
 import { MoveExpenseSheet, type MoveSelection } from "./components/MoveExpenseSheet";
 import { TravelImportSheet, type TravelImportSelection } from "./components/TravelImportSheet";
 import { DocumentImportSheet, type DocumentImportSelection } from "./components/DocumentImportSheet";
+import { PrivacySheet, privacyTitle } from "./components/PrivacySheet";
 import { applyStatementImport } from "./lib/statementImport";
 import { documentText } from "./lib/documentI18n";
 import { designText as design } from "./lib/designI18n";
@@ -19,13 +20,27 @@ import { moveGeneralExpenseToTravel } from "./lib/moveExpense";
 import { previewTravelLedgerMerge } from "./lib/travelExchange";
 import { getWalletRepository } from "./lib/storage";
 import { EMPTY_WALLET_STATE, SUPPORTED_LOCALES, type AutomationSource, type GeneralExpense, type Ledger, type LedgerKind, type Locale, type TravelLedger, type WalletState } from "./lib/types";
-import { createLedger, MAX_AUTOMATION_SOURCES, MAX_LEDGERS, mergeGeneralLedgerMutation, parseWalletStateStrict, replaceLedger } from "./lib/wallet";
+import { createLedger, MAX_AUTOMATION_SOURCES, MAX_LEDGERS, mergeGeneralLedgerMutation, mergeTravelLedgerMutation, parseWalletStateStrict, replaceLedger } from "./lib/wallet";
 
 type Toast = { readonly id: number; readonly message: string; readonly tone: "success" | "error" | "info" } | null;
+
+/** A first launch opens in the device language. A saved choice always wins. */
+function deviceLocale(fallback: Locale): Locale {
+  const tags = typeof navigator === "undefined" ? [] : [navigator.language, ...(navigator.languages ?? [])];
+  for (const tag of tags) {
+    const base = typeof tag === "string" ? tag.toLowerCase().split("-")[0] : "";
+    const match = SUPPORTED_LOCALES.find((locale) => locale === base);
+    if (match) return match;
+  }
+  return fallback;
+}
 
 export function App() {
   const [state, setState] = useState<WalletState>(EMPTY_WALLET_STATE);
   const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const [newLedgerOpen, setNewLedgerOpen] = useState(false);
   const [menuLedger, setMenuLedger] = useState<Ledger | null>(null);
   const [toast, setToast] = useState<Toast>(null);
@@ -44,7 +59,19 @@ export function App() {
   const travelLedgers = useMemo(() => state.ledgers.filter((ledger): ledger is TravelLedger => ledger.kind === "travel"), [state.ledgers]);
   const notify = useCallback((message: string, tone: "success" | "error" | "info" = "info") => { const id = Date.now(); setToast({ id, message, tone }); window.setTimeout(() => setToast((current) => current?.id === id ? null : current), 3600); }, []);
 
-  useEffect(() => { let cancelled = false; getWalletRepository().load().then((saved) => { if (cancelled) return; const next = saved.ledgers.length && !saved.activeLedgerId ? Object.freeze({ ...saved, activeLedgerId: saved.ledgers[0].id }) : saved; stateRef.current = next; setState(next); setLoaded(true); }).catch(() => { if (!cancelled) { setLoaded(true); notify(t("ko", "storageError"), "error"); } }); return () => { cancelled = true; }; }, [notify]);
+  useEffect(() => {
+    let cancelled = false;
+    getWalletRepository().load().then((saved) => {
+      if (cancelled) return;
+      const next = saved === EMPTY_WALLET_STATE ? Object.freeze({ ...saved, locale: deviceLocale(saved.locale) }) : saved.ledgers.length && !saved.activeLedgerId ? Object.freeze({ ...saved, activeLedgerId: saved.ledgers[0].id }) : saved;
+      stateRef.current = next; setState(next); setLoadFailed(false); setLoaded(true);
+    }).catch(() => {
+      if (cancelled) return;
+      stateRef.current = Object.freeze({ ...stateRef.current, locale: deviceLocale(stateRef.current.locale) });
+      setState(stateRef.current); setLoadFailed(true);
+    });
+    return () => { cancelled = true; };
+  }, [loadAttempt]);
   useEffect(() => { document.documentElement.lang = locale; document.title = design(locale, "brand"); document.querySelector('meta[name="description"]')?.setAttribute("content", t(locale, "appDescription")); }, [locale]);
   useEffect(() => { if (!loaded) return; void import("@capacitor/status-bar").then(({ StatusBar, Style }) => StatusBar.setStyle({ style: Style.Light }).catch(() => undefined)); }, [loaded]);
 
@@ -114,34 +141,41 @@ export function App() {
 
   const changeLocale = (next: Locale) => commit((current) => Object.freeze({ ...current, locale: next }));
   const selectLedger = (id: string) => { commit((current) => Object.freeze({ ...current, activeLedgerId: id })); void import("@capacitor/haptics").then(({ Haptics, ImpactStyle }) => Haptics.impact({ style: ImpactStyle.Light }).catch(() => undefined)); };
-  const addLedger = (kind: LedgerKind, title: string, currency: string) => {
+  const addLedger = async (kind: LedgerKind, title: string, currency: string) => {
     if (state.ledgers.length >= MAX_LEDGERS || state.ledgers.some((ledger) => ledger.title.localeCompare(title.trim(), locale, { sensitivity: "accent" }) === 0)) return notify(t(locale, state.ledgers.length >= MAX_LEDGERS ? "storageError" : "duplicateName"), "error");
     const ledger: Ledger = kind === "travel" ? createLedger("travel", title, currency) : createLedger("general", title, currency);
-    commit((current) => Object.freeze({ ...current, activeLedgerId: ledger.id, ledgers: Object.freeze([...current.ledgers, ledger]) })); setNewLedgerOpen(false); notify(t(locale, "ledgerCreated"), "success");
+    const saved = await commit((current) => {
+      if (current.ledgers.length >= MAX_LEDGERS || current.ledgers.some((item) => item.title.localeCompare(title.trim(), locale, { sensitivity: "accent" }) === 0)) throw new Error("duplicate ledger");
+      return Object.freeze({ ...current, activeLedgerId: ledger.id, ledgers: Object.freeze([...current.ledgers, ledger]) });
+    });
+    if (saved) { setNewLedgerOpen(false); notify(t(locale, "ledgerCreated"), "success"); }
   };
   const updateLedger = useCallback((ledger: Ledger) => {
     const base = state.ledgers.find((candidate) => candidate.id === ledger.id);
-    void commit((current) => {
+    return commit((current) => {
       const latest = current.ledgers.find((candidate) => candidate.id === ledger.id);
-      const merged = base?.kind === "general" && ledger.kind === "general" && latest?.kind === "general" ? mergeGeneralLedgerMutation(base, ledger, latest) : ledger;
+      const merged = base?.kind === "general" && ledger.kind === "general" && latest?.kind === "general" ? mergeGeneralLedgerMutation(base, ledger, latest) : base?.kind === "travel" && ledger.kind === "travel" && latest?.kind === "travel" ? mergeTravelLedgerMutation(base, ledger, latest) : ledger;
       return replaceLedger(current, merged);
     });
   }, [commit, state.ledgers]);
-  const renameLedger = (title: string) => {
+  const renameLedger = async (title: string) => {
     if (!menuLedger) return; const normalized = title.trim(); if (!normalized || state.ledgers.some((ledger) => ledger.id !== menuLedger.id && ledger.title.localeCompare(normalized, locale, { sensitivity: "accent" }) === 0)) return notify(t(locale, "duplicateName"), "error");
-    updateLedger(Object.freeze({ ...menuLedger, title: normalized, updatedAt: new Date().toISOString() })); setMenuLedger(null); notify(t(locale, "ledgerRenamed"), "success");
+    if (await updateLedger(Object.freeze({ ...menuLedger, title: normalized, updatedAt: new Date().toISOString() }))) { setMenuLedger(null); notify(t(locale, "ledgerRenamed"), "success"); }
   };
-  const deleteLedger = () => {
-    if (!menuLedger) return; void commitWithNativeScopeReduction((current) => { const ledgers = current.ledgers.filter((ledger) => ledger.id !== menuLedger.id); return Object.freeze({ ...current, ledgers: Object.freeze(ledgers), activeLedgerId: current.activeLedgerId === menuLedger.id ? ledgers[0]?.id ?? null : current.activeLedgerId }); }); setMenuLedger(null); notify(t(locale, "ledgerDeleted"), "success");
+  const deleteLedger = async () => {
+    if (!menuLedger) return;
+    const saved = await commitWithNativeScopeReduction((current) => { const ledgers = current.ledgers.filter((ledger) => ledger.id !== menuLedger.id); return Object.freeze({ ...current, ledgers: Object.freeze(ledgers), activeLedgerId: current.activeLedgerId === menuLedger.id ? ledgers[0]?.id ?? null : current.activeLedgerId }); });
+    if (saved) { setMenuLedger(null); notify(t(locale, "ledgerDeleted"), "success"); }
   };
   const importStatement = async (selection: DocumentImportSelection) => {
     const imported = await persistWalletMutation((current) => {
-      const result = applyStatementImport(current, selection.rows, selection.target, selection.adjustments);
+      const result = applyStatementImport(current, selection.rows, selection.target, selection.adjustments, selection.acknowledgements);
       return { state: result.state, result };
     });
     setDocumentImportOpen(false);
-    const changed = imported.added + imported.adjusted + imported.removed;
-    notify(changed ? `${documentText(locale, "saved")} ${changed.toLocaleString(locale)}` : documentText(locale, "reviewedDuplicate"), changed ? "success" : "info");
+    const changed = imported.added + imported.adjusted + imported.removed + imported.acknowledged;
+    const counts = ([['addedCount', imported.added], ['adjustedCount', imported.adjusted], ['removedCount', imported.removed], ['acknowledgedCount', imported.acknowledged]] as const).filter(([, count]) => count > 0).map(([key, count]) => `${documentText(locale, key)} ${count.toLocaleString(locale)}`).join(" · ");
+    notify(changed ? counts : documentText(locale, "reviewedDuplicate"), changed ? "success" : "info");
   };
 
   const moveExpense = async (selection: MoveSelection) => {
@@ -233,6 +267,7 @@ export function App() {
       setPendingAutomation((current) => Object.freeze(current.filter((item) => item.id !== candidate.id || item.packageName !== candidate.packageName || item.queueToken !== candidate.queueToken)));
       if (confirmed.inserted) notify(t(stateRef.current.locale, "expenseAdded"), "success");
       if (confirmed.reversed) notify(t(stateRef.current.locale, "automationCancellationApplied"), "success");
+      if (!confirmed.inserted && !confirmed.reversed) notify(n(stateRef.current.locale, "duplicateNotAdded"), "info");
     })().catch((error: unknown) => notify(error instanceof Error && error.message === "candidate-changed" ? n(stateRef.current.locale, "candidateChanged") : error instanceof Error && error.message === "candidate-conflict" ? n(stateRef.current.locale, "identityConflictHelp") : t(stateRef.current.locale, "automationError"), "error")).finally(() => { setAutomationBusy(false); void refreshCardAutomation(); });
   }, [notify, persistWalletMutation, refreshCardAutomation]);
 
@@ -325,10 +360,10 @@ export function App() {
   const toggleAllAppsForActiveLedger = useCallback((enabled: boolean) => { if (activeGeneralLedgerId) toggleAllPaymentApps(activeGeneralLedgerId, enabled); }, [activeGeneralLedgerId, toggleAllPaymentApps]);
   const confirmExpenseForActiveLedger = useCallback((candidate: NativeCardCandidate, asNewTransaction?: boolean) => { if (activeGeneralLedgerId) confirmAutomationExpense(activeGeneralLedgerId, candidate, asNewTransaction); }, [activeGeneralLedgerId, confirmAutomationExpense]);
 
-  if (!loaded) return <main className="mobile-app loading-screen"><img className="loading-brand" src="/brand/wallet-diary-mark.png" alt="" /><p role="status">{t(locale, "loading")}</p></main>;
+  if (!loaded) return <main className="mobile-app loading-screen"><img className="loading-brand" src="/brand/wallet-diary-mark.png" alt="" />{loadFailed ? <div role="alert"><p>{t(locale, "storageError")}</p><button className="primary-button" type="button" onClick={() => { setLoadFailed(false); setLoadAttempt((attempt) => attempt + 1); }}>{t(locale, "refresh")}</button></div> : <p role="status">{t(locale, "loading")}</p>}</main>;
   return (
     <main className="mobile-app">
-      <header className="app-header"><div className="app-brand"><img src="/brand/wallet-diary-mark.png" alt="" width="48" height="48" /><h1>{design(locale, "brand")}</h1></div><div className="header-tools"><label className="language-control"><Languages aria-hidden="true" /><span className="sr-only">{t(locale, "language")}</span><select value={locale} onChange={(event) => changeLocale(event.target.value as Locale)}>{SUPPORTED_LOCALES.map((code) => <option value={code} key={code}>{code === "ko" ? "한국어" : code === "en" ? "English" : "Français"}</option>)}</select></label><button className="icon-button import-button" type="button" onClick={() => setDocumentImportOpen(true)} aria-label={documentText(locale, "title")} title={documentText(locale, "title")}><FileInput aria-hidden="true" /></button></div></header>
+      <header className="app-header"><div className="app-brand"><img src="/brand/wallet-diary-mark.png" alt="" width="48" height="48" /><h1>{design(locale, "brand")}</h1></div><div className="header-tools"><label className="language-control"><Languages aria-hidden="true" /><span className="sr-only">{t(locale, "language")}</span><select value={locale} onChange={(event) => changeLocale(event.target.value as Locale)}>{SUPPORTED_LOCALES.map((code) => <option value={code} key={code}>{new Intl.DisplayNames([locale], { type: "language" }).of(code)}</option>)}</select></label><button className="icon-button import-button" type="button" onClick={() => setDocumentImportOpen(true)} aria-label={documentText(locale, "title")} title={documentText(locale, "title")}><FileInput aria-hidden="true" /></button></div></header>
       <LedgerTabs ledgers={state.ledgers} activeId={activeLedger?.id ?? null} locale={locale} onSelect={selectLedger} onAdd={() => setNewLedgerOpen(true)} onMenu={setMenuLedger} />
       {activeLedger ? activeLedger.kind === "travel" ? <TravelLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} onImport={() => setDocumentImportOpen(true)} onChange={updateLedger} onNotify={notify} /> : <GeneralLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} automationStatus={automationStatus} pendingAutomation={pendingForActiveLedger} automationBusy={automationBusy} onImportStatements={() => setDocumentImportOpen(true)} onAutomationRefresh={refreshCardAutomation} onOpenAutomationSettings={openAutomationSettings} onRequestAutomationAlertPermission={requestAutomationAlertPermission} onToggleAllPaymentApps={toggleAllAppsForActiveLedger} onRegisterAutomationSource={registerSourceForActiveLedger} onRemoveAutomationSource={removeSourceFromActiveLedger} onConfirmAutomationExpense={confirmExpenseForActiveLedger} onDismissAutomationCandidate={dismissAutomationCandidate} onMove={(expense) => setMoveRequest({ sourceLedgerId: activeLedger.id, expense })} onChange={updateLedger} onNotify={notify} /> : <section className="empty-app"><img className="empty-brand" src="/brand/wallet-diary-mark.png" alt="" /><span className="welcome-note">{design(locale, "welcomeNote")}</span><h2>{design(locale, "emptyTitle")}</h2><p className="empty-intro">{design(locale, "emptyBody")}</p><button className="primary-button" type="button" onClick={() => setNewLedgerOpen(true)}><Plus />{t(locale, "newLedger")}</button><p className="storage-note">{t(locale, "storageHelp")}</p></section>}
       {newLedgerOpen ? <NewLedgerSheet locale={locale} onClose={() => setNewLedgerOpen(false)} onCreate={addLedger} /> : null}
@@ -336,6 +371,8 @@ export function App() {
       {travelImport ? <TravelImportSheet incoming={travelImport} travels={travelLedgers} preferredId={activeLedger?.id ?? null} locale={locale} busy={exchangeBusy} onClose={() => setTravelImport(null)} onConfirm={(selection) => void confirmTravelImport(selection)} /> : null}
       {documentImportOpen ? <DocumentImportSheet state={state} locale={locale} onClose={() => setDocumentImportOpen(false)} onTravel={(ledger) => { setDocumentImportOpen(false); setTravelImport(ledger); }} onConfirm={importStatement} /> : null}
       {menuLedger ? <LedgerMenuSheet ledger={menuLedger} locale={locale} onClose={() => setMenuLedger(null)} onRename={renameLedger} onDelete={deleteLedger} /> : null}
+      <footer className="app-footer"><button type="button" onClick={() => setPrivacyOpen(true)}>{privacyTitle[locale]}</button></footer>
+      {privacyOpen ? <PrivacySheet locale={locale} onClose={() => setPrivacyOpen(false)} /> : null}
       {toast ? <div className={`toast ${toast.tone}`} role="status"><span>{toast.message}</span><button type="button" onClick={() => setToast(null)} aria-label={t(locale, "close")}><X /></button></div> : null}
     </main>
   );

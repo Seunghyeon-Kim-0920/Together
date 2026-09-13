@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>지갑의 일기 개인정보처리방침 · Wallet Diary Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; --ink:#16181d; --muted:#5b6270; --line:#e3e6ec; --bg:#ffffff; --accent:#2f4fd8; }
+  @media (prefers-color-scheme: dark) { :root { --ink:#e8eaf0; --muted:#9aa2b1; --line:#2a2e38; --bg:#14161b; --accent:#8fa5ff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", Roboto, sans-serif;
+    line-height:1.7; font-size:16px; }
+  main { max-width: 46rem; margin:0 auto; padding: 2.5rem 1.25rem 5rem; }
+  h1 { font-size:1.6rem; line-height:1.35; margin:0 0 .35rem; }
+  h2 { font-size:1.25rem; margin:2.75rem 0 .75rem; padding-top:1.5rem; border-top:1px solid var(--line); }
+  h3 { font-size:1rem; margin:1.75rem 0 .4rem; }
+  p, li { color:var(--ink); }
+  ul { padding-left:1.15rem; }
+  li { margin:.3rem 0; }
+  .sub { color:var(--muted); font-size:.9rem; margin:0 0 1.75rem; }
+  nav { display:flex; gap:.5rem; flex-wrap:wrap; margin:0 0 2rem; }
+  nav a { text-decoration:none; color:var(--accent); border:1px solid var(--line);
+    padding:.35rem .8rem; border-radius:999px; font-size:.9rem; }
+  .note { border-left:3px solid var(--accent); padding:.6rem 0 .6rem .9rem; margin:1.1rem 0; color:var(--muted); font-size:.94rem; }
+  code { background:rgba(127,127,127,.14); padding:.1rem .35rem; border-radius:4px; font-size:.9em; }
+  footer { margin-top:3.5rem; padding-top:1.25rem; border-top:1px solid var(--line); color:var(--muted); font-size:.88rem; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>지갑의 일기 · Wallet Diary · Journal du portefeuille</h1>
+<p class="sub">개인정보처리방침 / Privacy Policy / Politique de confidentialité<br>
+최종 수정일 · Last updated · Dernière mise à jour : 2026-09-12</p>
+
+<nav>
+  <a href="#ko">한국어</a>
+  <a href="#en">English</a>
+  <a href="#fr">Français</a>
+</nav>
+
+<!-- ────────────────────────────── 한국어 ────────────────────────────── -->
+<h2 id="ko">한국어</h2>
+
+<p>지갑의 일기(패키지 <code>com.seunghyeonkim.walletdiary</code>, 이하 "앱")는 개인이 개발·배포하는 오프라인 가계부 앱입니다. 이 방침은 앱이 어떤 정보를 다루고 어디에 두는지 설명합니다.</p>
+
+<h3>1. 계정과 서버</h3>
+<ul>
+  <li>앱은 회원가입과 로그인이 없습니다. 개발자는 이용자용 서버를 운영하지 않습니다.</li>
+  <li>개발자는 이용자의 가계부 내용을 열람할 수 없습니다.</li>
+</ul>
+
+<h3>2. 기기에 저장되는 정보</h3>
+<p>아래 정보는 <strong>기기 내부 저장소(SQLite와 비공개 앱 설정)에만</strong> 저장되며 외부로 전송되지 않습니다.</p>
+<ul>
+  <li>가계부 이름, 지출 내용·금액·화폐·날짜·카테고리</li>
+  <li>여행 가계부의 참가자 이름, 결제자, 분담 금액</li>
+  <li>월 지출 한도, 자동기록 대상으로 등록한 앱의 패키지 이름과 표시 이름</li>
+  <li>중복 기록을 막기 위한 내부 식별자</li>
+  <li>알림의 거래 시각·종류·화폐와 중복 대조 정보, 최근 앱별 확인 시각·인식 여부, 감지 서비스 연결·오류 시각</li>
+</ul>
+
+<h3>3. 알림 접근 권한</h3>
+<p>이용자가 Android 설정에서 알림 접근을 직접 허용한 경우에만 동작합니다.</p>
+<ul>
+  <li>앱은 허용된 은행·카드·결제 앱 알림의 제목과 본문을 읽어 <strong>사용처·금액·화폐·거래 종류·시각</strong>을 추출합니다. 중복 대조 정보는 기기에 보관합니다.</li>
+  <li>알림 원문은 저장하거나 전송하지 않습니다.</li>
+  <li>메신저·메일·브라우저·소셜 앱(카카오톡, 인스타그램, 메일, 인터넷 브라우저, 기본 문자 앱 등)의 알림은 읽지 않습니다. 이용자가 해당 앱을 결제 앱으로 직접 등록한 경우에만 검토 목록으로 보냅니다.</li>
+  <li>알림 접근은 Android 설정에서 언제든 해제할 수 있고, 해제하면 즉시 중단됩니다.</li>
+</ul>
+
+<h3>4. 파일 가져오기와 문자 인식</h3>
+<ul>
+  <li>이용자가 선택한 명세서 파일(PDF, 엑셀, CSV 등)은 기기 안에서만 읽습니다.</li>
+  <li>이미지와 스캔 PDF의 문자 인식은 앱에 포함된 Google ML Kit의 기기 내 모델로 처리하며, <strong>이미지와 인식된 문자는 외부로 전송되지 않습니다.</strong></li>
+  <li>다만 ML Kit 구성요소는 이 기능을 사용할 때 <strong>진단 정보</strong>(기기 제조사·모델·OS 버전, 앱 패키지 이름과 버전, 설치별 식별자, 처리 시간·오류 코드 등 성능 지표)를 Google로 전송합니다. 가계부 내용, 이미지, 인식된 문자는 포함되지 않습니다. 자세한 내용은 <a href="https://developers.google.com/ml-kit/android-data-disclosure" rel="noopener">Google ML Kit 데이터 공개</a>를 참고하세요.</li>
+</ul>
+
+<h3>5. 공유와 내보내기</h3>
+<p>PDF 저장이나 동행에게 보내기는 <strong>이용자가 직접 실행할 때만</strong> 동작하며, 이용자가 고른 앱이나 저장 위치로만 전달됩니다. 본인 선택, 신뢰 앱 목록, 예산, 자동기록 식별자는 공유 파일에 포함되지 않습니다.</p>
+
+<h3>6. 광고·분석·제3자 제공</h3>
+<p>앱에는 광고가 없습니다. 개발자는 가계부 내용을 판매하거나 외부로 전송하지 않습니다. 문자 인식 구성요소의 진단·사용량 분석 정보는 위 4항과 같이 Google에 전송됩니다.</p>
+
+<h3>7. 권한</h3>
+<ul>
+  <li><strong>알림 접근</strong> — 결제·이체 알림을 자동으로 기록하기 위해 사용합니다. 선택 사항입니다.</li>
+  <li><strong>알림 표시</strong>(<code>POST_NOTIFICATIONS</code>) — 월 지출 한도 알림에 사용합니다. 선택 사항입니다.</li>
+  <li><strong>인터넷</strong> — 앱 프레임워크가 선언하는 권한입니다. 앱은 가계부 내용을 어떤 서버로도 보내지 않습니다.</li>
+</ul>
+
+<h3>8. 보관과 삭제</h3>
+<p>데이터는 이용자가 지우기 전까지 기기에 남습니다. 앱을 삭제하면 앱이 저장한 데이터도 함께 삭제됩니다. 개발자가 보관하는 사본은 없습니다. 앱을 삭제하기 전에 중요한 가계부는 PDF나 가계부 파일로 백업하세요.</p>
+
+<h3>9. 이용자의 권리 (GDPR 등)</h3>
+<p>개발자는 이용자의 가계부 데이터를 서버에 보관하지 않습니다. 열람·정정·삭제·이동은 기기 안에서 직접 하실 수 있습니다. ML Kit 진단 정보에 관한 문의는 Google의 정책을 따릅니다.</p>
+
+<h3>10. 아동</h3>
+<p>앱은 아동을 대상으로 하지 않으며 아동으로부터 의도적으로 정보를 수집하지 않습니다.</p>
+
+<h3>11. 변경</h3>
+<p>이 방침이 바뀌면 이 페이지의 최종 수정일이 갱신됩니다.</p>
+
+<h3>12. 문의</h3>
+<p>rlatmdgus0920@gmail.com</p>
+
+<!-- ────────────────────────────── English ────────────────────────────── -->
+<h2 id="en">English</h2>
+
+<p>Wallet Diary (package <code>com.seunghyeonkim.walletdiary</code>, the "app") is an offline expense-tracking app developed and published by an individual developer. This policy explains what the app handles and where it keeps it.</p>
+
+<h3>1. Accounts and servers</h3>
+<ul>
+  <li>The app has no sign-up and no login. The developer operates no server for users.</li>
+  <li>The developer cannot see your ledger contents.</li>
+</ul>
+
+<h3>2. Information stored on your device</h3>
+<p>The following is stored <strong>only in on-device storage</strong> (SQLite and private app settings) and is never transmitted.</p>
+<ul>
+  <li>Ledger names, expense descriptions, amounts, currencies, dates and categories</li>
+  <li>Travel-ledger participant names, payers and split amounts</li>
+  <li>Monthly spending limits, and the package and display names of apps you registered for automatic recording</li>
+  <li>Internal identifiers used to prevent duplicate records</li>
+  <li>Notification transaction times, types, currencies and duplicate-matching information; recent app check times and recognition outcomes; detection-service connection and error times</li>
+</ul>
+
+<h3>3. Notification access</h3>
+<p>This works only if you grant notification access yourself in Android settings.</p>
+<ul>
+  <li>The app reads notification titles and bodies from permitted banking, card and payment apps and extracts <strong>the merchant, amount, currency, transaction type and time</strong>. Duplicate-matching information stays on your device.</li>
+  <li>Raw notification text is never stored or transmitted.</li>
+  <li>Notifications from messaging, mail, browser and social apps (KakaoTalk, Instagram, mail clients, web browsers, the default SMS app and similar) are not read. They reach the review list only if you registered that app as a payment source on purpose.</li>
+  <li>You can revoke notification access at any time in Android settings; recording stops immediately.</li>
+</ul>
+
+<h3>4. File import and text recognition</h3>
+<ul>
+  <li>Statement files you choose (PDF, spreadsheet, CSV and others) are read on your device only.</li>
+  <li>Text recognition for images and scanned PDFs runs on Google ML Kit models bundled in the app. <strong>Your images and the recognized text are never transmitted.</strong></li>
+  <li>However, when you use that feature the ML Kit component sends <strong>diagnostic data</strong> to Google: device manufacturer, model and OS version, app package name and version, a per-installation identifier, and performance metrics such as latency and error codes. Ledger contents, images and recognized text are not included. See <a href="https://developers.google.com/ml-kit/android-data-disclosure" rel="noopener">Google's ML Kit data disclosure</a>.</li>
+</ul>
+
+<h3>5. Sharing and export</h3>
+<p>Saving a PDF or sending a ledger to a travel companion happens <strong>only when you start it</strong>, and only to the app or location you choose. Your own-participant selection, trusted app list, budget and automation identifiers are excluded from shared files.</p>
+
+<h3>6. Advertising, analytics and third parties</h3>
+<p>The app contains no advertising. The developer does not sell or transmit ledger contents. The text-recognition component sends diagnostics and usage analytics to Google as described in section 4.</p>
+
+<h3>7. Permissions</h3>
+<ul>
+  <li><strong>Notification access</strong> — used to record payment and transfer alerts automatically. Optional.</li>
+  <li><strong>Post notifications</strong> (<code>POST_NOTIFICATIONS</code>) — used for monthly spending limit alerts. Optional.</li>
+  <li><strong>Internet</strong> — declared by the app framework. The app sends no ledger content to any server.</li>
+</ul>
+
+<h3>8. Retention and deletion</h3>
+<p>Data stays on your device until you delete it. Uninstalling the app deletes the data it stored. The developer holds no copy. Back up important ledgers as a PDF or ledger file before uninstalling.</p>
+
+<h3>9. Your rights (GDPR and similar)</h3>
+<p>The developer does not store your ledger data on a server. Access, correction, deletion and portability are performed by you on the device. Questions about ML Kit diagnostic data are governed by Google's policies.</p>
+
+<h3>10. Children</h3>
+<p>The app is not directed to children and does not knowingly collect information from them.</p>
+
+<h3>11. Changes</h3>
+<p>If this policy changes, the last-updated date on this page is revised.</p>
+
+<h3>12. Contact</h3>
+<p>rlatmdgus0920@gmail.com</p>
+
+<!-- ────────────────────────────── Français ────────────────────────────── -->
+<h2 id="fr">Français</h2>
+
+<p>Journal du portefeuille (package <code>com.seunghyeonkim.walletdiary</code>, « l'application ») est une application de suivi de dépenses hors ligne développée et publiée par un développeur indépendant. Cette politique explique quelles informations l'application traite et où elles restent.</p>
+
+<h3>1. Comptes et serveurs</h3>
+<ul>
+  <li>L'application ne comporte ni inscription ni connexion. Le développeur n'exploite aucun serveur destiné aux utilisateurs.</li>
+  <li>Le développeur ne peut pas consulter le contenu de vos carnets.</li>
+</ul>
+
+<h3>2. Informations conservées sur votre appareil</h3>
+<p>Les éléments suivants sont enregistrés <strong>uniquement dans le stockage local</strong> (SQLite et réglages privés de l'application) et ne sont jamais transmis.</p>
+<ul>
+  <li>Noms des carnets, libellés, montants, devises, dates et catégories des dépenses</li>
+  <li>Noms des participants, payeurs et parts de répartition des carnets de voyage</li>
+  <li>Plafonds de dépenses mensuels, ainsi que le nom de package et le nom affiché des applications que vous avez enregistrées pour l'enregistrement automatique</li>
+  <li>Identifiants internes servant à éviter les doublons</li>
+  <li>Dates, types, devises et informations de rapprochement des notifications ; dates et résultats des dernières vérifications d’applications ; dates de connexion et d’erreur du service de détection</li>
+</ul>
+
+<h3>3. Accès aux notifications</h3>
+<p>Cette fonction n'opère que si vous accordez vous-même l'accès aux notifications dans les réglages Android.</p>
+<ul>
+  <li>L’application lit les notifications des applications bancaires, de carte et de paiement autorisées pour extraire <strong>le commerçant, le montant, la devise, le type et la date de l’opération</strong>. Les informations de rapprochement restent sur l’appareil.</li>
+  <li>Le texte brut des notifications n'est ni enregistré ni transmis.</li>
+  <li>Les notifications des applications de messagerie, de courriel, de navigation et des réseaux sociaux (KakaoTalk, Instagram, clients de messagerie, navigateurs web, application SMS par défaut, etc.) ne sont pas lues. Elles ne parviennent à la liste de vérification que si vous avez délibérément enregistré cette application comme source de paiement.</li>
+  <li>Vous pouvez révoquer l'accès à tout moment dans les réglages Android ; l'enregistrement cesse immédiatement.</li>
+</ul>
+
+<h3>4. Import de fichiers et reconnaissance de texte</h3>
+<ul>
+  <li>Les relevés que vous sélectionnez (PDF, tableur, CSV et autres) sont lus uniquement sur votre appareil.</li>
+  <li>La reconnaissance de texte des images et des PDF numérisés s'appuie sur les modèles Google ML Kit intégrés à l'application. <strong>Vos images et le texte reconnu ne sont jamais transmis.</strong></li>
+  <li>En revanche, lorsque vous utilisez cette fonction, le composant ML Kit transmet à Google des <strong>données de diagnostic</strong> : fabricant, modèle et version d'OS de l'appareil, nom de package et version de l'application, identifiant propre à l'installation, ainsi que des indicateurs de performance (latence, codes d'erreur). Le contenu des carnets, les images et le texte reconnu n'en font pas partie. Voir la <a href="https://developers.google.com/ml-kit/android-data-disclosure" rel="noopener">divulgation de données ML Kit de Google</a>.</li>
+</ul>
+
+<h3>5. Partage et export</h3>
+<p>L'enregistrement d'un PDF ou l'envoi d'un carnet à un compagnon de voyage n'a lieu <strong>que si vous le déclenchez</strong>, et uniquement vers l'application ou l'emplacement que vous choisissez. Votre identité de participant, la liste des applications de confiance, le budget et les identifiants d'automatisation sont exclus des fichiers partagés.</p>
+
+<h3>6. Publicité, analyse et tiers</h3>
+<p>L’application ne contient pas de publicité. Le développeur ne vend ni ne transmet le contenu des carnets. Le composant de reconnaissance de texte transmet à Google les diagnostics et statistiques d’utilisation décrits à la section 4.</p>
+
+<h3>7. Autorisations</h3>
+<ul>
+  <li><strong>Accès aux notifications</strong> — pour enregistrer automatiquement les alertes de paiement et de virement. Facultatif.</li>
+  <li><strong>Affichage de notifications</strong> (<code>POST_NOTIFICATIONS</code>) — pour les alertes de plafond mensuel. Facultatif.</li>
+  <li><strong>Internet</strong> — déclarée par le framework applicatif. L'application n'envoie aucun contenu de carnet à un serveur.</li>
+</ul>
+
+<h3>8. Conservation et suppression</h3>
+<p>Les données restent sur votre appareil jusqu'à ce que vous les supprimiez. La désinstallation supprime les données enregistrées par l'application. Le développeur n'en conserve aucune copie. Sauvegardez les carnets importants en PDF ou en fichier de carnet avant de désinstaller.</p>
+
+<h3>9. Vos droits (RGPD et équivalents)</h3>
+<p>Le développeur ne conserve pas vos carnets sur un serveur. L’accès, la rectification, l’effacement et la portabilité s’exercent directement sur l’appareil. Les questions relatives aux données de diagnostic ML Kit relèvent des politiques de Google.</p>
+
+<h3>10. Enfants</h3>
+<p>L'application ne s'adresse pas aux enfants et ne collecte pas sciemment d'informations les concernant.</p>
+
+<h3>11. Modifications</h3>
+<p>En cas de modification, la date de dernière mise à jour de cette page est actualisée.</p>
+
+<h3>12. Contact</h3>
+<p>rlatmdgus0920@gmail.com</p>
+
+<footer>
+지갑의 일기 · Wallet Diary · Journal du portefeuille — <code>com.seunghyeonkim.walletdiary</code>
+</footer>
+
+</main>
+</body>
+</html>

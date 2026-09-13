@@ -2,7 +2,7 @@ import { currencyDigits } from "./currency";
 import { publicExpenseId } from "./expenseIdentity";
 import { merchantDisplayName } from "./merchant";
 import type { LedgerShareDocument } from "./share";
-import { GENERAL_CATEGORIES, TRAVEL_CATEGORIES, type GeneralCategory, type GeneralExpense, type Ledger, type WalletState } from "./types";
+import { GENERAL_CATEGORIES, TRAVEL_CATEGORIES, type GeneralCategory, type GeneralExpense, type Ledger, type StatementImportReceipt, type WalletState } from "./types";
 import { createLedger, MAX_EXPENSES_PER_LEDGER, MAX_LEDGERS, parseWalletStateStrict, splitEvenly } from "./wallet";
 
 /** Extraction is intentionally separate from interpreting money. Nothing in
@@ -46,6 +46,9 @@ export interface StatementImportRow {
   /** Original equal-transaction ordinal survives selecting only part of a
    * preview, so commit does not mistake the second payment for the first. */
   readonly sourceOccurrence?: number;
+  /** Local-only hashed identities preserve refund replay safety after netting. */
+  readonly transactionKey?: string;
+  readonly reconciledAdjustmentIds?: readonly string[];
 }
 export interface StatementImportIssue { readonly sourceRow: number; readonly reason: StatementIssueReason; readonly raw: readonly string[]; }
 export interface StatementImportAdjustment {
@@ -62,6 +65,17 @@ export interface StatementImportAdjustment {
   readonly expectedMinorUnits: number;
   readonly selected: boolean;
 }
+export interface StatementImportAcknowledgement {
+  readonly id: string;
+  readonly sourceRow: number;
+  readonly description: string;
+  readonly occurredOn: string;
+  readonly currency: string;
+  readonly minorUnits: number;
+  readonly transactionKey?: string;
+  readonly adjustmentIds: readonly string[];
+  readonly selected: boolean;
+}
 export interface StatementCurrencyTotal { readonly currency: string; readonly minorUnits: string; readonly count: number; }
 export interface StatementImportPreview {
   readonly rows: readonly StatementImportRow[];
@@ -75,9 +89,10 @@ export interface StatementImportPreview {
   readonly currencyTotals: readonly StatementCurrencyTotal[];
   readonly receivedCount: number;
   readonly adjustments: readonly StatementImportAdjustment[];
+  readonly acknowledgements: readonly StatementImportAcknowledgement[];
 }
 export type StatementImportTarget = { readonly kind: "existing"; readonly ledgerId: string; readonly paidBy?: string; readonly participantIds?: readonly string[] } | { readonly kind: "new-general"; readonly title: string };
-export interface StatementImportResult { readonly state: WalletState; readonly added: number; readonly duplicates: number; readonly adjusted: number; readonly removed: number; readonly ledgerIds: readonly string[]; }
+export interface StatementImportResult { readonly state: WalletState; readonly added: number; readonly duplicates: number; readonly adjusted: number; readonly removed: number; readonly acknowledged: number; readonly ledgerIds: readonly string[]; }
 
 const MAX_SOURCE_ROWS = 20_000;
 const FAILED = /(?:\b(?:declined|failed|rejected|échoué|echec|échec|refusé)\b|승인\s*거절|결제\s*실패|처리\s*불가)/iu;
@@ -88,8 +103,8 @@ const INCOME = /(?:\b(?:income|salary|deposit|top.?up|received|incoming|credited
 const BALANCE = /(?:\b(?:balance|solde|opening|closing|available|total|subtotal)\b|잔액|잔고|누계|합계|이월|월계)/iu;
 const DEBIT = /(?:\b(?:debit|débit|purchase|payment|card payment|paid|withdrawal|direct debit|standing order|outgoing|sent|paiement|prélèvement|virement émis)\b|출금|결제|구매|사용|송금|보낸\s*이체|자동이체)/iu;
 const fieldAliases: Record<keyof StatementColumnMapping, readonly string[]> = {
-  date: ["date", "transaction date", "payment date", "booking date", "booked on", "completed date", "started date", "occurred on", "occurredOn", "date de transaction", "date opération", "date d'opération", "date de paiement", "날짜", "거래일", "거래일자", "거래일시", "이용일자", "승인일자", "결제일", "사용일시"],
-  description: ["description", "merchant", "merchant name", "payee", "name", "counterparty", "libellé", "libelle", "commerçant", "commercant", "bénéficiaire", "가맹점", "가맹점명", "사용처", "적요", "거래내용", "내용", "받는분"],
+  date: ["date", "transaction date", "payment date", "booking date", "booked on", "completed date", "started date", "start date", "occurred on", "occurredOn", "date de transaction", "date opération", "date d'opération", "date de paiement", "날짜", "거래일", "거래일자", "거래일시", "이용일자", "승인일자", "결제일", "사용일시"],
+  description: ["description", "merchant", "merchant name", "payee", "name", "counterparty", "libellé", "libelle", "commerçant", "commercant", "bénéficiaire", "가맹점", "가맹점명", "사용처", "적요", "거래내용", "내용", "설명", "받는분"],
   amount: ["amount", "transaction amount", "payment amount", "montant", "montant de transaction", "금액", "거래금액", "이용금액", "승인금액", "결제금액", "사용금액"],
   debit: ["debit", "débit", "money out", "paid out", "withdrawal", "withdrawals", "expense", "dépense", "지출", "출금", "출금액", "출금금액", "찾으신금액", "지출금액"],
   credit: ["credit", "crédit", "money in", "paid in", "deposit", "deposits", "income", "입금", "입금액", "입금금액", "맡기신금액"],
@@ -129,11 +144,18 @@ function amountCurrency(raw: string, fallback?: string): string | null {
  * shift a late-night local purchase to another date. Ambiguous slash dates
  * require the user's chosen order. */
 export function parseStatementDate(input: string, order: StatementImportOptions["dateOrder"] = "auto"): string | null {
-  const value = input.trim().replace(/년\s*/gu, "-").replace(/월\s*/gu, "-").replace(/일/gu, "");
+  let value = input.normalize("NFKC").trim().replace(/년\s*/gu, "-").replace(/월\s*/gu, "-").replace(/일/gu, "");
+  value = value.replace(/^(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})\.(?=\s|$)/u, "$1-$2-$3").trim();
+  const monthNames = ["jan(?:uary|vier)?", "feb(?:ruary)?|f[eé]vr(?:ier)?", "mar(?:ch|s)?", "apr(?:il)?|avr(?:il)?", "may|mai", "jun(?:e)?|juin", "jul(?:y)?|juil(?:let)?", "aug(?:ust)?|ao[uû]t", "sep(?:t(?:ember|embre)?)?", "oct(?:ober|obre)?", "nov(?:ember|embre)?", "dec(?:ember)?|d[eé]c(?:embre)?"];
+  const named = new RegExp(`^(?:(${monthNames.join("|")})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,|\\s)\\s*(\\d{4})|(\\d{1,2})(?:er)?\\s+(${monthNames.join("|")})\\.?\\s+(\\d{4}))(?=$|[ T])`, "iu").exec(value);
+  if (named) {
+    const month = monthNames.findIndex((pattern) => new RegExp(`^(?:${pattern})$`, "iu").test(named[1] || named[5])) + 1;
+    value = `${named[3] || named[6]}-${month}-${named[2] || named[4]}${value.slice(named[0].length)}`;
+  }
   const clock = /[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/u.exec(value);
   if (clock && (Number(clock[1]) > 23 || Number(clock[2]) > 59 || Number(clock[3] ?? 0) > 59)) return null;
   let year = 0; let month = 0; let day = 0;
-  const iso = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?(?:Z|[+-]\d{2}:?\d{2}))?)?$/u.exec(value);
+  const iso = /^(\d{4})[-/.]\s*(\d{1,2})[-/.]\s*(\d{1,2})(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?(?:Z|[+-]\d{2}:?\d{2}))?)?$/u.exec(value);
   if (iso) { year = Number(iso[1]); month = Number(iso[2]); day = Number(iso[3]); }
   else {
     const local = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$/u.exec(value);
@@ -278,7 +300,7 @@ function parseTableRow(raw: readonly string[], sourceRow: number, mapping: State
   const minorUnits = actualAmount === null ? 0 : Math.abs(actualAmount);
   const transactionId = cell("transactionId"); const relatedId = cell("relatedTransactionId");
   const identity = JSON.stringify([transactionId || null, occurredOn || cell("date"), code || "", merchantKey(description), minorUnits]);
-  const row: StatementImportRow = Object.freeze({ id: `statement-${transactionId ? "t-" : ""}${fingerprint(identity)}`, sourceRow, description, occurredOn: occurredOn ?? "", currency: code ?? "", minorUnits, category: categoryFor(description), reviewReasons: Object.freeze(review), raw: Object.freeze([...raw]), selected: review.length === 0 });
+  const row: StatementImportRow = Object.freeze({ id: `statement-${transactionId ? "t-" : ""}${fingerprint(identity)}`, ...(transactionId ? { transactionKey: transactionKey(transactionId, code ?? "") } : {}), sourceRow, description, occurredOn: occurredOn ?? "", currency: code ?? "", minorUnits, category: categoryFor(description), reviewReasons: Object.freeze(review), raw: Object.freeze([...raw]), selected: review.length === 0 });
   return { parsed: { row, transactionId, relatedId, kind: cancelled ? "cancelled" : refund ? "refund" : "expense" } };
 }
 
@@ -287,11 +309,21 @@ function parseTableRow(raw: readonly string[], sourceRow: number, mapping: State
  * numeric columns require mapping instead of guessing which one is balance. */
 function textTable(text: string): { name: string; rows: readonly string[][] } {
   const rows: string[][] = [["Date", "Description", "Amount", "Currency", "Type"]];
-  for (const line of text.split(/\r?\n/u)) {
-    const date = /^\s*(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s+(.+)$/u.exec(line);
+  const lines = text.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
+  const leadingDate = /^(\d{4}\s*[-/.년]\s*\d{1,2}\s*[-/.월]\s*\d{1,2}(?:일|\.(?=\s|$))?|\d{1,2}[-/.]\d{1,2}[-/.]\d{4}|\p{L}{3,10}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}(?:er)?\s+\p{L}{3,10}\.?\s+\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?(?:\s+(.+))?$/iu;
+  for (let index = 0; index < lines.length; index++) {
+    const date = leadingDate.exec(lines[index]);
     if (!date) continue;
-    const content = date[2];
-    const ending = /^(.*?)\s+([+-]?\(?\d[\d., '\u00a0\u202f]*\)?(?:\s*(?:€|EUR|USD|GBP|KRW|JPY|CNY|CHF|CAD|AUD|INR|KWD|[$£₩¥]))?|(?:€|[$£₩¥]|EUR|USD|GBP|KRW)\s*[+-]?\d[\d., '\u00a0\u202f]*)\s*$/iu.exec(content);
+    let content = date[2] ?? "";
+    // Mobile exports/OCR often put date, merchant and amount on separate lines.
+    // Join only nearby non-monetary continuation text, never a balance label.
+    for (let continuation = 0; continuation < 3 && index + 1 < lines.length; continuation++) {
+      const next = lines[index + 1];
+      if (leadingDate.test(next) || /(?:[€$£₩¥]|\b(?:EUR|USD|GBP|KRW|JPY|CHF|CAD|AUD)\b)/iu.test(content) || BALANCE.test(next) || /^(?:card|carte|카드|reference|계좌)\s*[:：]/iu.test(next)) break;
+      content = `${content} ${next}`.trim(); index++;
+      if (/[+-]\s*\d[\d.,]*\s*$/u.test(content)) break;
+    }
+    const ending = /^(.*?)\s+([+-]?\(?\d[\d., '\u00a0\u202f]*\)?(?:\s*(?:€|EUR|USD|GBP|KRW|JPY|CNY|CHF|CAD|AUD|INR|KWD|유로|원|円|[$£₩¥]))?|(?:€|[$£₩¥]|EUR|USD|GBP|KRW)\s*[+-]?\d[\d., '\u00a0\u202f]*)\s*$/iu.exec(content);
     if (!ending) { rows.push([date[1], content, "", "", ""]); continue; }
     const description = ending[1].trim(); const amount = ending[2].trim();
     // A preceding numeric amount is evidence of a multi-column statement.
@@ -301,27 +333,35 @@ function textTable(text: string): { name: string; rows: readonly string[][] } {
   return { name: "text", rows };
 }
 
-function completePreview(rowsInput: readonly StatementImportRow[], excluded: StatementImportIssue[], issues: StatementImportIssue[], mapping: StatementColumnMapping, headers: readonly string[], tableIndex: number, headerRow: number, receivedCount: number, state?: WalletState, adjustments: readonly StatementImportAdjustment[] = []): StatementImportPreview {
+function completePreview(rowsInput: readonly StatementImportRow[], excluded: StatementImportIssue[], issues: StatementImportIssue[], mapping: StatementColumnMapping, headers: readonly string[], tableIndex: number, headerRow: number, receivedCount: number, state?: WalletState, adjustments: readonly StatementImportAdjustment[] = [], acknowledgements: readonly StatementImportAcknowledgement[] = []): StatementImportPreview {
   const rows = markExistingDuplicates(rowsInput, state); const dates = rows.filter((row) => validateStatementImportRow(row)).map((row) => row.occurredOn).sort();
   const totals = new Map<string, { amount: bigint; count: number }>();
   for (const row of rows) if (row.selected && validateStatementImportRow(row)) { const total = totals.get(row.currency) ?? { amount: 0n, count: 0 }; total.amount += BigInt(row.minorUnits); total.count += 1; totals.set(row.currency, total); }
   if ([...totals.values()].some((total) => total.amount > BigInt(Number.MAX_SAFE_INTEGER))) issues.push(issue(0, "total_overflow", []));
-  return Object.freeze({ rows: Object.freeze(rows), excluded: Object.freeze(excluded), issues: Object.freeze(issues), mapping, headers: Object.freeze([...headers]), tableIndex, headerRow, receivedCount, adjustments: Object.freeze(adjustments.map((adjustment) => Object.freeze({ ...adjustment, raw: Object.freeze([...adjustment.raw]) }))), dateRange: dates.length ? Object.freeze({ from: dates[0], to: dates[dates.length - 1] }) : null, currencyTotals: Object.freeze([...totals].sort(([a], [b]) => a.localeCompare(b)).map(([currency, total]) => Object.freeze({ currency, minorUnits: total.amount.toString(), count: total.count }))) });
+  return Object.freeze({ rows: Object.freeze(rows), excluded: Object.freeze(excluded), issues: Object.freeze(issues), mapping, headers: Object.freeze([...headers]), tableIndex, headerRow, receivedCount, adjustments: Object.freeze(adjustments.map((adjustment) => Object.freeze({ ...adjustment, raw: Object.freeze([...adjustment.raw]) }))), acknowledgements: Object.freeze(acknowledgements), dateRange: dates.length ? Object.freeze({ from: dates[0], to: dates[dates.length - 1] }) : null, currencyTotals: Object.freeze([...totals].sort(([a], [b]) => a.localeCompare(b)).map(([currency, total]) => Object.freeze({ currency, minorUnits: total.amount.toString(), count: total.count }))) });
 }
 
 function existingAdjustmentHistory(state?: WalletState): Set<string> {
   return new Set((state?.ledgers ?? []).flatMap((ledger) => (ledger.statementImportHistory ?? []).filter((receipt) => receipt.kind === "adjustment").map((receipt) => receipt.id)));
 }
+function transactionKey(id: string, currency: string): string { return `statement-transaction-${fingerprint(JSON.stringify([id, currency]))}`; }
+function adjustmentKey(reversal: ParsedSourceRow): string { return `statement-adjustment-${fingerprint(JSON.stringify([reversal.row.id, reversal.kind, reversal.row.occurredOn, reversal.row.minorUnits]))}`; }
 
-function savedRefundCandidates(state: WalletState | undefined, reversal: ParsedSourceRow): { ledgerId: string; expenseId: string; minorUnits: number }[] {
+function savedRefundCandidates(state: WalletState | undefined, reversal: ParsedSourceRow, sourceId?: string): { ledgerId: string; expenseId: string; minorUnits: number }[] {
   if (!state || !validateStatementImportRow(reversal.row)) return [];
   const cleanDescription = merchantKey(reversal.row.description.replace(REFUND, "").replace(CANCELLED, "").trim());
   const candidates: { ledgerId: string; expenseId: string; minorUnits: number }[] = [];
+  const related = reversal.relatedId || (reversal.kind === "cancelled" ? reversal.transactionId : "");
+  const relatedKey = related ? transactionKey(related, reversal.row.currency) : undefined;
+  const knownRelation = relatedKey && state.ledgers.some((ledger) => ledger.statementImportHistory?.some((receipt) => receipt.transactionKey === relatedKey));
   for (const ledger of state.ledgers) {
     if (ledger.kind !== "general") continue;
     for (const expense of ledger.expenses) {
       const merchant = merchantKey(merchantDisplayName(expense.description, expense.id));
-      if (expense.currency !== reversal.row.currency || merchant !== cleanDescription || expense.occurredOn > reversal.row.occurredOn) continue;
+      const matchedSource = sourceId && (expense.id === sourceId || ledger.statementImportHistory?.some((receipt) => receipt.id === sourceId && receipt.expenseId === expense.id));
+      const matchedRelation = relatedKey && ledger.statementImportHistory?.some((receipt) => receipt.transactionKey === relatedKey && receipt.expenseId === expense.id);
+      if (expense.currency !== reversal.row.currency || expense.occurredOn > reversal.row.occurredOn) continue;
+      if (knownRelation ? !matchedRelation : sourceId ? !matchedSource : merchant !== cleanDescription) continue;
       if (reversal.kind === "cancelled" ? expense.minorUnits === reversal.row.minorUnits : expense.minorUnits >= reversal.row.minorUnits) candidates.push({ ledgerId: ledger.id, expenseId: expense.id, minorUnits: expense.minorUnits });
     }
   }
@@ -385,6 +425,7 @@ export function previewExpenseDocument(document: ReadExpenseDocument, options: S
     parsed.push(current);
   }
   const expenses = parsed.filter((entry) => entry.kind === "expense" && !conflicts.has(JSON.stringify([entry.transactionId, entry.row.currency])));
+  const originalAmounts = new Map(expenses.map((entry) => [entry.row.id, entry.row.minorUnits]));
   for (const entry of parsed) if (entry.kind === "expense" && conflicts.has(JSON.stringify([entry.transactionId, entry.row.currency]))) excluded.push(issue(entry.row.sourceRow, "conflicting_duplicate", entry.row.raw));
   const adjustments = new Set<string>(); const savedAdjustments: StatementImportAdjustment[] = []; const appliedAdjustmentIds = existingAdjustmentHistory(existingState);
   for (const reversal of parsed.filter((entry) => entry.kind !== "expense")) {
@@ -392,37 +433,52 @@ export function previewExpenseDocument(document: ReadExpenseDocument, options: S
     if (adjustments.has(reversalKey)) { excluded.push(issue(reversal.row.sourceRow, "duplicate", reversal.row.raw)); continue; }
     adjustments.add(reversalKey);
     if (!validateStatementImportRow(reversal.row)) { excluded.push(issue(reversal.row.sourceRow, reversal.kind === "cancelled" ? "cancelled" : "refund_unmatched", reversal.row.raw)); continue; }
+    const adjustmentId = adjustmentKey(reversal);
+    if (appliedAdjustmentIds.has(adjustmentId)) { excluded.push(issue(reversal.row.sourceRow, "duplicate", reversal.row.raw)); continue; }
     const targetId = reversal.relatedId || (reversal.kind === "cancelled" ? reversal.transactionId : "");
     const matching = expenses.filter((entry) => entry.row.minorUnits > 0 && entry.row.currency === reversal.row.currency && (targetId ? entry.transactionId === targetId : merchantKey(entry.row.description.replace(REFUND, "").replace(CANCELLED, "").trim()) === merchantKey(reversal.row.description.replace(REFUND, "").replace(CANCELLED, "").trim()) && entry.row.occurredOn && reversal.row.occurredOn && entry.row.occurredOn <= reversal.row.occurredOn && (reversal.kind === "cancelled" ? entry.row.minorUnits === reversal.row.minorUnits : entry.row.minorUnits >= reversal.row.minorUnits)));
-    if (matching.length !== 1 || !Number.isSafeInteger(reversal.row.minorUnits) || reversal.row.minorUnits <= 0 || matching[0].row.minorUnits < reversal.row.minorUnits) {
-      for (const match of matching) match.row = Object.freeze({ ...match.row, selected: false, reviewReasons: Object.freeze([...match.row.reviewReasons, reversal.kind === "cancelled" ? "cancelled" as const : "refund_unmatched" as const]) });
-      const candidates = savedRefundCandidates(existingState, reversal);
-      if (candidates.length === 1 && !appliedAdjustmentIds.has(`statement-adjustment-${fingerprint(JSON.stringify([reversal.row.id, reversal.kind, reversal.row.occurredOn, reversal.row.minorUnits]))}`)) {
-        const candidate = candidates[0]; const adjustmentId = `statement-adjustment-${fingerprint(JSON.stringify([reversal.row.id, reversal.kind, reversal.row.occurredOn, reversal.row.minorUnits]))}`;
-        savedAdjustments.push(Object.freeze({ id: adjustmentId, sourceRow: reversal.row.sourceRow, kind: reversal.kind === "cancelled" ? "cancelled" : "refund", description: reversal.row.description, occurredOn: reversal.row.occurredOn, currency: reversal.row.currency, minorUnits: reversal.row.minorUnits, raw: reversal.row.raw, targetLedgerId: candidate.ledgerId, targetExpenseId: candidate.expenseId, expectedMinorUnits: candidate.minorUnits, selected: true }));
+    // A complete export may contain an already-imported original as well as
+    // its new refund. Reconcile the saved expense before duplicate filtering;
+    // merely reducing the preview row would discard the refund with the duplicate.
+    const candidates = savedRefundCandidates(existingState, reversal, matching.length === 1 ? matching[0].row.id : undefined);
+    if (candidates.length === 1 && matching.length <= 1) {
+      const candidate = candidates[0];
+      const previousAmount = savedAdjustments.filter((item) => item.targetLedgerId === candidate.ledgerId && item.targetExpenseId === candidate.expenseId).reduce((sum, item) => sum + item.minorUnits, 0);
+      if (candidate.minorUnits - previousAmount >= reversal.row.minorUnits) {
+        savedAdjustments.push(Object.freeze({ id: adjustmentId, sourceRow: reversal.row.sourceRow, kind: reversal.kind === "cancelled" ? "cancelled" : "refund", description: reversal.row.description, occurredOn: reversal.row.occurredOn, currency: reversal.row.currency, minorUnits: reversal.row.minorUnits, raw: reversal.row.raw, targetLedgerId: candidate.ledgerId, targetExpenseId: candidate.expenseId, expectedMinorUnits: candidate.minorUnits, selected: false }));
         excluded.push(issue(reversal.row.sourceRow, "refund_adjusted", reversal.row.raw)); continue;
       }
+      excluded.push(issue(reversal.row.sourceRow, "refund_unmatched", reversal.row.raw)); continue;
+    }
+    if (matching.length !== 1 || !Number.isSafeInteger(reversal.row.minorUnits) || reversal.row.minorUnits <= 0 || matching[0].row.minorUnits < reversal.row.minorUnits) {
+      for (const match of matching) match.row = Object.freeze({ ...match.row, selected: false, reviewReasons: Object.freeze([...match.row.reviewReasons, reversal.kind === "cancelled" ? "cancelled" as const : "refund_unmatched" as const]) });
       excluded.push(issue(reversal.row.sourceRow, reversal.kind === "cancelled" ? "cancelled" : "refund_unmatched", reversal.row.raw)); continue;
     }
     const match = matching[0]; const remaining = reversal.kind === "cancelled" ? 0 : match.row.minorUnits - reversal.row.minorUnits;
-    match.row = Object.freeze({ ...match.row, minorUnits: remaining, reviewReasons: Object.freeze([...match.row.reviewReasons, "refund_adjusted" as const]) });
+    match.row = Object.freeze({ ...match.row, minorUnits: remaining, reconciledAdjustmentIds: Object.freeze([...(match.row.reconciledAdjustmentIds ?? []), adjustmentId]), reviewReasons: Object.freeze([...match.row.reviewReasons, "refund_adjusted" as const]) });
     excluded.push(issue(reversal.row.sourceRow, "refunded", reversal.row.raw));
   }
-  const rows: StatementImportRow[] = [];
-  for (const entry of expenses) { if (!entry.row.minorUnits && entry.row.reviewReasons.includes("refund_adjusted")) excluded.push(issue(entry.row.sourceRow, "refunded", entry.row.raw)); else rows.push(entry.row); }
+  const rows: StatementImportRow[] = []; const acknowledgements: StatementImportAcknowledgement[] = [];
+  const knownIds = existingIndex(existingState).ids;
+  for (const entry of expenses) {
+    if (!entry.row.minorUnits && entry.row.reviewReasons.includes("refund_adjusted")) {
+      excluded.push(issue(entry.row.sourceRow, "refunded", entry.row.raw));
+      if (!knownIds.has(entry.row.id)) acknowledgements.push(Object.freeze({ id: entry.row.id, sourceRow: entry.row.sourceRow, description: entry.row.description, occurredOn: entry.row.occurredOn, currency: entry.row.currency, minorUnits: originalAmounts.get(entry.row.id)!, ...(entry.row.transactionKey ? { transactionKey: entry.row.transactionKey } : {}), adjustmentIds: Object.freeze([...(entry.row.reconciledAdjustmentIds ?? [])]), selected: false }));
+    } else rows.push(entry.row);
+  }
   if (!rows.length && !excluded.length) issues.push(issue(0, "no_rows", []));
-  return completePreview(rows, excluded, issues, mapping, headers, tableIndex, headerRow, sourceRows.length, existingState, savedAdjustments);
+  return completePreview(rows, excluded, issues, mapping, headers, tableIndex, headerRow, sourceRows.length, existingState, savedAdjustments, acknowledgements);
 }
 
 /** Review reasons are informational after a user edits a row. Fields are
  * revalidated independently at commit; no earlier preview is trusted. */
 export function validateStatementImportRow(row: StatementImportRow): boolean {
-  return typeof row.id === "string" && row.id.trim().length > 0 && row.id.length <= 100 && typeof row.description === "string" && row.description.trim().length > 0 && row.description.trim().length <= 500 && currencyCode(row.currency) === row.currency && Number.isSafeInteger(row.minorUnits) && row.minorUnits > 0 && parseStatementDate(row.occurredOn, "ymd") === row.occurredOn && GENERAL_CATEGORIES.includes(row.category) && (row.sourceOccurrence === undefined || Number.isSafeInteger(row.sourceOccurrence) && row.sourceOccurrence >= 0 && row.sourceOccurrence < MAX_SOURCE_ROWS);
+  return typeof row.id === "string" && row.id.trim().length > 0 && row.id.length <= 100 && typeof row.description === "string" && row.description.trim().length > 0 && row.description.trim().length <= 500 && currencyCode(row.currency) === row.currency && Number.isSafeInteger(row.minorUnits) && row.minorUnits > 0 && parseStatementDate(row.occurredOn, "ymd") === row.occurredOn && GENERAL_CATEGORIES.includes(row.category) && (row.sourceOccurrence === undefined || Number.isSafeInteger(row.sourceOccurrence) && row.sourceOccurrence >= 0 && row.sourceOccurrence < MAX_SOURCE_ROWS) && (row.transactionKey === undefined || /^statement-transaction-[0-9a-f]{16}$/u.test(row.transactionKey)) && (row.reconciledAdjustmentIds === undefined || Array.isArray(row.reconciledAdjustmentIds) && row.reconciledAdjustmentIds.length <= MAX_SOURCE_ROWS && new Set(row.reconciledAdjustmentIds).size === row.reconciledAdjustmentIds.length && row.reconciledAdjustmentIds.every((id) => /^statement-adjustment-[0-9a-f]{16}$/u.test(id)));
 }
 
 /** Call only after the user confirms the selected preview. Validation and
  * capacity checks complete before a new immutable state is returned. */
-export function applyStatementImport(state: WalletState, rows: readonly StatementImportRow[], target: StatementImportTarget, adjustments: readonly StatementImportAdjustment[] = []): StatementImportResult {
+export function applyStatementImport(state: WalletState, rows: readonly StatementImportRow[], target: StatementImportTarget, adjustments: readonly StatementImportAdjustment[] = [], acknowledgements: readonly StatementImportAcknowledgement[] = []): StatementImportResult {
   if (!parseWalletStateStrict(state)) throw new Error("invalid_state");
   if (rows.length > MAX_SOURCE_ROWS || rows.some((row) => !validateStatementImportRow(row))) throw new Error("invalid_rows");
   const known = existingIndex(state); const consumed = new Map<string, number>(); const accepted: StatementImportRow[] = []; let duplicates = 0;
@@ -432,51 +488,65 @@ export function applyStatementImport(state: WalletState, rows: readonly Statemen
     if (known.ids.has(row.id) || used < (signatures.get(signature) ?? 0)) { duplicates += 1; continue; }
     known.ids.add(row.id); accepted.push(row);
   }
+  const acceptedAcknowledgements: StatementImportAcknowledgement[] = [];
+  if (acknowledgements.length > MAX_SOURCE_ROWS) throw new Error("invalid_acknowledgements");
+  for (const acknowledgement of acknowledgements) {
+    if (!acknowledgement.adjustmentIds.length || !validateStatementImportRow({ ...acknowledgement, category: "other", reviewReasons: [], raw: [], reconciledAdjustmentIds: acknowledgement.adjustmentIds })) throw new Error("invalid_acknowledgements");
+    if (!acknowledgement.selected) continue;
+    if (state.ledgers.some((ledger) => ledger.expenses.some((expense) => expense.id === acknowledgement.id))) throw new Error("acknowledgement_changed");
+    if (known.ids.has(acknowledgement.id)) { duplicates++; continue; }
+    known.ids.add(acknowledgement.id); acceptedAcknowledgements.push(acknowledgement);
+  }
+  const acknowledged = acceptedAcknowledgements.length;
+  const acknowledgementReceipts = acceptedAcknowledgements.flatMap(acknowledgementReceiptsFor);
   if (adjustments.some((adjustment) => !adjustment.id.startsWith("statement-adjustment-") || !/^statement-adjustment-[0-9a-f]{16}$/u.test(adjustment.id) || !adjustment.targetLedgerId || !adjustment.targetExpenseId || !validateStatementImportRow({ id: adjustment.id, sourceRow: adjustment.sourceRow, description: adjustment.description, occurredOn: adjustment.occurredOn, currency: adjustment.currency, minorUnits: adjustment.minorUnits, category: "other", reviewReasons: [], raw: adjustment.raw, selected: true }))) throw new Error("invalid_adjustments");
-  const ledgers: Ledger[] = [...state.ledgers]; let adjusted = 0; let removed = 0; const adjustmentIds = new Set<string>();
+  const ledgers: Ledger[] = [...state.ledgers]; let adjusted = 0; let removed = 0; const adjustmentIds = existingAdjustmentHistory(state);
   for (const adjustment of adjustments.filter((item) => item.selected)) {
     if (adjustmentIds.has(adjustment.id)) continue; adjustmentIds.add(adjustment.id);
     const ledgerIndex = ledgers.findIndex((ledger) => ledger.id === adjustment.targetLedgerId); const ledger = ledgerIndex >= 0 ? ledgers[ledgerIndex] : null;
     if (!ledger || ledger.kind !== "general") throw new Error("adjustment_ledger");
-    const history = ledger.statementImportHistory ?? []; if (history.some((receipt) => receipt.kind === "adjustment" && receipt.id === adjustment.id)) continue;
+    const history = ledger.statementImportHistory ?? [];
     const expenseIndex = ledger.expenses.findIndex((expense) => expense.id === adjustment.targetExpenseId); const expense = expenseIndex >= 0 ? ledger.expenses[expenseIndex] : null;
-    if (!expense || expense.currency !== adjustment.currency || expense.minorUnits !== adjustment.expectedMinorUnits || expense.minorUnits < adjustment.minorUnits) throw new Error("adjustment_changed");
+    const original = state.ledgers.find((entry) => entry.id === ledger.id)?.expenses.find((entry) => entry.id === adjustment.targetExpenseId);
+    // Every preview adjustment records the same original snapshot. Subtract
+    // selected refunds cumulatively, while rejecting actual edits since preview.
+    if (!expense || !original || expense.currency !== adjustment.currency || original.minorUnits !== adjustment.expectedMinorUnits || expense.minorUnits < adjustment.minorUnits) throw new Error("adjustment_changed");
     const nextHistory = [...history, Object.freeze({ kind: "adjustment" as const, id: adjustment.id, expenseId: expense.id })];
     const remaining = adjustment.kind === "cancelled" ? 0 : expense.minorUnits - adjustment.minorUnits;
     const nextExpenses = remaining ? [...ledger.expenses.slice(0, expenseIndex), Object.freeze({ ...expense, minorUnits: remaining }), ...ledger.expenses.slice(expenseIndex + 1)] : [...ledger.expenses.slice(0, expenseIndex), ...ledger.expenses.slice(expenseIndex + 1)];
     ledgers[ledgerIndex] = { ...ledger, expenses: nextExpenses, statementImportHistory: nextHistory, updatedAt: new Date().toISOString() };
     if (remaining) adjusted += 1; else removed += 1;
   }
-  if (!accepted.length && !adjusted && !removed) return Object.freeze({ state, added: 0, duplicates, adjusted: 0, removed: 0, ledgerIds: Object.freeze([]) });
+  if (!accepted.length && !acknowledged && !adjusted && !removed) return Object.freeze({ state, added: 0, duplicates, adjusted: 0, removed: 0, acknowledged: 0, ledgerIds: Object.freeze([]) });
   const ledgerIds: string[] = [];
-  if (!accepted.length) {
+  if (!accepted.length && !acknowledged) {
     const result = parseWalletStateStrict({ ...state, ledgers });
     if (!result) throw new Error("invalid_import");
-    return Object.freeze({ state: result, added: 0, duplicates, adjusted, removed, ledgerIds: Object.freeze([...new Set(adjustments.filter((adjustment) => adjustment.selected).map((adjustment) => adjustment.targetLedgerId))]) });
+    return Object.freeze({ state: result, added: 0, duplicates, adjusted, removed, acknowledged: 0, ledgerIds: Object.freeze([...new Set(adjustments.filter((adjustment) => adjustment.selected).map((adjustment) => adjustment.targetLedgerId))]) });
   }
   if (target.kind === "existing") {
     const index = ledgers.findIndex((ledger) => ledger.id === target.ledgerId); if (index < 0) throw new Error("missing_ledger");
     const ledger = ledgers[index];
     if (ledger.expenses.length + accepted.length > MAX_EXPENSES_PER_LEDGER) throw new Error("expense_limit");
     if (ledger.kind === "general") {
-      if (accepted.some((row) => row.currency !== ledger.currency)) throw new Error("currency_mismatch");
-      const imported = accepted.map(toGeneralExpense); ledgers[index] = { ...ledger, expenses: [...ledger.expenses, ...imported], statementImportHistory: [...(ledger.statementImportHistory ?? []), ...imported.map((expense) => Object.freeze({ kind: "payment" as const, id: expense.id, expenseId: expense.id }))], updatedAt: new Date().toISOString() };
+      if ([...accepted, ...acceptedAcknowledgements].some((row) => row.currency !== ledger.currency)) throw new Error("currency_mismatch");
+      const imported = accepted.map(toGeneralExpense); ledgers[index] = { ...ledger, expenses: [...ledger.expenses, ...imported], statementImportHistory: [...(ledger.statementImportHistory ?? []), ...accepted.flatMap(importReceipts), ...acknowledgementReceipts], updatedAt: new Date().toISOString() };
     } else {
       const participantIds = target.participantIds ?? []; const allowed = new Set(ledger.participants.map((person) => person.id));
-      if (!target.paidBy || !allowed.has(target.paidBy) || !participantIds.length || participantIds.some((id) => !allowed.has(id)) || new Set(participantIds).size !== participantIds.length) throw new Error("participants_required");
-      const paidBy = target.paidBy; const currencies = [...new Set([...ledger.currencies, ...accepted.map((row) => row.currency)])];
+      if (accepted.length && (!target.paidBy || !allowed.has(target.paidBy) || !participantIds.length || participantIds.some((id) => !allowed.has(id)) || new Set(participantIds).size !== participantIds.length)) throw new Error("participants_required");
+      const paidBy = target.paidBy ?? ""; const currencies = [...new Set([...ledger.currencies, ...accepted.map((row) => row.currency)])];
       if (currencies.length > 20) throw new Error("currency_limit");
-      const imported = accepted.map((row) => ({ ...toGeneralExpense(row), category: TRAVEL_CATEGORIES.includes(row.category as never) ? row.category as (typeof TRAVEL_CATEGORIES)[number] : "other" as const, paidBy, shares: splitEvenly(row.minorUnits, participantIds) })); ledgers[index] = { ...ledger, currencies, expenses: [...ledger.expenses, ...imported], statementImportHistory: [...(ledger.statementImportHistory ?? []), ...imported.map((expense) => Object.freeze({ kind: "payment" as const, id: expense.id, expenseId: expense.id }))], updatedAt: new Date().toISOString() };
+      const imported = accepted.map((row) => ({ ...toGeneralExpense(row), category: TRAVEL_CATEGORIES.includes(row.category as never) ? row.category as (typeof TRAVEL_CATEGORIES)[number] : "other" as const, paidBy, shares: splitEvenly(row.minorUnits, participantIds) })); ledgers[index] = { ...ledger, currencies, expenses: [...ledger.expenses, ...imported], statementImportHistory: [...(ledger.statementImportHistory ?? []), ...accepted.flatMap(importReceipts), ...acknowledgementReceipts], updatedAt: new Date().toISOString() };
     }
     ledgerIds.push(ledger.id);
   } else {
     if (!target.title.trim() || target.title.trim().length > 80) throw new Error("invalid_title");
-    const currencies = [...new Set(accepted.map((row) => row.currency))];
+    const currencies = [...new Set([...accepted, ...acceptedAcknowledgements].map((row) => row.currency))];
     if (state.ledgers.length + currencies.length > MAX_LEDGERS) throw new Error("ledger_limit");
     for (const currency of currencies) {
       const currencyRows = accepted.filter((row) => row.currency === currency); if (currencyRows.length > MAX_EXPENSES_PER_LEDGER) throw new Error("expense_limit");
       const title = currencies.length > 1 ? `${target.title.trim().slice(0, 74)} · ${currency}` : target.title.trim();
-      const ledger = createLedger("general", title, currency); const imported = currencyRows.map(toGeneralExpense); ledgers.push({ ...ledger, expenses: imported, statementImportHistory: imported.map((expense) => Object.freeze({ kind: "payment" as const, id: expense.id, expenseId: expense.id })) }); ledgerIds.push(ledger.id);
+      const ledger = createLedger("general", title, currency); const imported = currencyRows.map(toGeneralExpense); ledgers.push({ ...ledger, expenses: imported, statementImportHistory: [...currencyRows.flatMap(importReceipts), ...acceptedAcknowledgements.filter((row) => row.currency === currency).flatMap(acknowledgementReceiptsFor)] }); ledgerIds.push(ledger.id);
     }
   }
   // Totals must remain exactly representable by existing statistics code.
@@ -487,6 +557,12 @@ export function applyStatementImport(state: WalletState, rows: readonly Statemen
   }
   const result = parseWalletStateStrict({ ...state, ledgers, activeLedgerId: ledgerIds[0] ?? state.activeLedgerId });
   if (!result) throw new Error("invalid_import");
-  return Object.freeze({ state: result, added: accepted.length, duplicates, adjusted, removed, ledgerIds: Object.freeze(ledgerIds) });
+  return Object.freeze({ state: result, added: accepted.length, duplicates, adjusted, removed, acknowledged, ledgerIds: Object.freeze(ledgerIds) });
 }
 function toGeneralExpense(row: StatementImportRow): GeneralExpense { return Object.freeze({ id: row.id, description: row.description.trim(), category: row.category, occurredOn: row.occurredOn, currency: row.currency, minorUnits: row.minorUnits }); }
+function importReceipts(row: StatementImportRow): StatementImportReceipt[] {
+  return [Object.freeze({ kind: "payment" as const, id: row.id, expenseId: row.id, ...(row.transactionKey ? { transactionKey: row.transactionKey } : {}) }), ...(row.reconciledAdjustmentIds ?? []).map((id) => Object.freeze({ kind: "adjustment" as const, id, expenseId: row.id }))];
+}
+function acknowledgementReceiptsFor(row: StatementImportAcknowledgement): StatementImportReceipt[] {
+  return [Object.freeze({ kind: "payment" as const, id: row.id, expenseId: row.id, ...(row.transactionKey ? { transactionKey: row.transactionKey } : {}) }), ...row.adjustmentIds.map((id) => Object.freeze({ kind: "adjustment" as const, id, expenseId: row.id }))];
+}

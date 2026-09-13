@@ -14,8 +14,18 @@ const MAX_IMPORT_BYTES = 2_000_000;
 export function createLedgerSharePayload(ledger: Ledger): string {
   // Travel shares omit local identity. General shares omit the local budget
   // and notification-source allowlist because both are private settings.
-  const shareSafe = ledger.kind === "travel" ? { ...ledger, selfParticipantId: null } : omitGeneralPrivacySettings(ledger);
+  const shareSafe = ledger.kind === "travel" ? omitTravelPrivacySettings(ledger) : omitGeneralPrivacySettings(ledger);
   return JSON.stringify({ format: "wallet-diary", version: SHARE_VERSION, ledger: shareSafe });
+}
+
+function omitTravelPrivacySettings(ledger: TravelLedger): TravelLedger {
+  // Explicit public fields also exclude statement/notification receipts from
+  // machine-readable data embedded in PDFs and from forwarded share files.
+  return Object.freeze({ id: ledger.id, title: ledger.title, kind: "travel", createdAt: ledger.createdAt, updatedAt: ledger.updatedAt,
+    currencies: ledger.currencies, defaultCurrency: ledger.defaultCurrency, participants: ledger.participants, selfParticipantId: null,
+    expenses: Object.freeze(ledger.expenses.map((expense) => Object.freeze({ id: expense.id, description: expense.description,
+      category: expense.category, currency: expense.currency, minorUnits: expense.minorUnits, paidBy: expense.paidBy,
+      shares: expense.shares, occurredOn: expense.occurredOn }))) });
 }
 
 function omitGeneralPrivacySettings(ledger: Extract<Ledger, { kind: "general" }>) {
@@ -30,7 +40,7 @@ export function createTravelSharePayload(ledger: TravelLedger): string {
 }
 
 function withoutImportedPrivacy(parsed: Ledger): Ledger {
-  if (parsed.kind === "travel") return Object.freeze({ ...parsed, selfParticipantId: null });
+  if (parsed.kind === "travel") return omitTravelPrivacySettings(parsed);
   const shareSafe = omitGeneralPrivacySettings(parsed);
   return Object.freeze({ ...shareSafe, monthlyLimitMinor: null, automationAllApps: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), movedExpenseIds: Object.freeze([]), expenses: Object.freeze(shareSafe.expenses.map((expense) => Object.freeze(expense))) });
 }

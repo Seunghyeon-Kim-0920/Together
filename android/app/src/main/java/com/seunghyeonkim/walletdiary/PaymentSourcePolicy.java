@@ -31,7 +31,52 @@ final class PaymentSourcePolicy {
         "com.tencent.mm"
     ));
 
+    /**
+     * Bank, card and wallet apps whose package name carries no payment word.
+     * The keyword rule below covers the rest, so this list only fills gaps.
+     */
+    private static final Set<String> KNOWN_PAYMENT_APPS = new HashSet<>(Arrays.asList(
+        // Wallets and global providers
+        "com.google.android.apps.walletnfcrel", "com.google.android.apps.nbu.paisa.user",
+        "com.samsung.android.spay", "com.samsung.android.spaylite", "com.lge.lgpay",
+        "com.revolut.revolut", "de.number26.android", "com.transferwise.android",
+        "hr.lunc.client", "com.squareup.cash", "co.uk.getmondo", "com.curve.app",
+        // France
+        "com.boursorama.android.clients", "net.bnpparibas.mescomptes", "com.sg.appli",
+        "fr.lcl.android.customerarea", "com.caisse.epargne.android", "fr.creditmutuel.android",
+        "com.arkea.android.application.cmb", "fr.hellobank.android", "com.fortuneo.android",
+        "com.qonto.app", "fr.lydia.android", "com.shine.android",
+        // Korea
+        "com.kebhana.hanapush", "nh.smart", "nh.smart.banking", "viva.republica.toss",
+        "com.ibk.neobanking", "com.epost.psf.sdsi", "com.kftc.kjbank",
+        "kr.co.citibank.citimobile", "com.sc.danb.scbankapp"
+    ));
+
+    /**
+     * Package-name fragments used by bank, card and payment apps worldwide.
+     * Checked only after the relay list above has already rejected a package.
+     */
+    private static final String[] PAYMENT_KEYWORDS = {
+        "bank", "banc", "banq", "bkng", "card", "carte", "pay", "wallet",
+        "credit", "debit", "finance", "money", "cash", "visa", "mastercard", "amex"
+    };
+
     private PaymentSourcePolicy() {}
+
+    /**
+     * True for a bank, card or payment app. Automatic discovery reads only
+     * these: an alert from any other app is the user's mail, chat, shopping or
+     * delivery notification, not a payment their own card or account made.
+     */
+    static boolean isPaymentSourcePackage(String packageName) {
+        if (packageName == null) return false;
+        String normalized = packageName.toLowerCase(Locale.ROOT);
+        if (KNOWN_PAYMENT_APPS.contains(normalized)) return true;
+        // A mail or chat app must never qualify through a payment word.
+        if (isKnownAggregatorPackage(normalized)) return false;
+        for (String keyword : PAYMENT_KEYWORDS) if (normalized.contains(keyword)) return true;
+        return false;
+    }
 
     static boolean isKnownAggregatorPackage(String packageName) {
         if (packageName == null) return true;
@@ -66,6 +111,16 @@ final class PaymentSourcePolicy {
         // Independently identified relay packages remain permanently manual.
         return isKnownAggregatorPackage(packageName) || "social".equals(category)
             || "recommendation".equals(category) || "promo".equals(category);
+    }
+
+    /**
+     * Chat, mail, browser and social apps post ordinary messages that can look
+     * like a payment, so automatic discovery must never read them. Such an app
+     * is used only after the user registered it as a payment source on purpose.
+     */
+    static boolean isExcludedFromDiscovery(String packageName, boolean relayIdentity, boolean explicitlyConfigured) {
+        if (explicitlyConfigured) return false;
+        return relayIdentity || isKnownAggregatorPackage(packageName);
     }
 
     static boolean isHardBlockedApplicationCategory(int category) {

@@ -1,12 +1,13 @@
 import { currencyDigits } from "./currency";
 import { legacyPublicExpenseId, publicExpenseId } from "./expenseIdentity";
-import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type StatementImportReceipt, type TravelExpense, type TravelLedger, type WalletState } from "./types";
+import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationPaymentReceipt, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type StatementImportReceipt, type TravelExpense, type TravelLedger, type WalletState } from "./types";
 
 export const MAX_LEDGERS = 50;
 export const MAX_EXPENSES_PER_LEDGER = 5_000;
 export const MAX_PARTICIPANTS = 100;
 export const MAX_MOVED_EXPENSE_MARKERS = MAX_EXPENSES_PER_LEDGER * 4;
 export const MAX_STATEMENT_IMPORT_RECEIPTS = 20_000;
+export const MAX_AUTOMATION_PAYMENT_RECEIPTS = 20_000;
 // This is a storage-safety bound, not a provider allow-list. Five hundred
 // distinct Android packages is deliberately well beyond normal card usage.
 export const MAX_AUTOMATION_SOURCES = 500;
@@ -49,6 +50,27 @@ function parseAutomationReversalIds(value: unknown): readonly string[] | null {
   const ids = value.map((candidate) => text(candidate, 100));
   if (ids.some((candidate) => !candidate || !/^card-(?:auto|origin|reversal)-[0-9a-f]{16}$/.test(candidate as string)) || new Set(ids).size !== ids.length) return null;
   return Object.freeze(ids as string[]);
+}
+
+function parseAutomationPaymentReceipts(value: unknown, ledgerCurrency: string): readonly AutomationPaymentReceipt[] | null {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value) || value.length > MAX_AUTOMATION_PAYMENT_RECEIPTS) return null;
+  const receipts: AutomationPaymentReceipt[] = []; const ids = new Set<string>(); const sourceIds = new Set<string>();
+  for (const entry of value) {
+    if (!isRecord(entry)) return null;
+    const expenseId = text(entry.expenseId, 100); const merchant = text(entry.merchant, 500); const minorUnits = positiveMinor(entry.minorUnits);
+    if (!expenseId || !merchant || !minorUnits || entry.currency !== ledgerCurrency || ids.has(expenseId) || !Array.isArray(entry.sources) || !entry.sources.length || entry.sources.length > 8) return null;
+    const sources: AutomationPaymentReceipt["sources"][number][] = []; const packages = new Set<string>();
+    for (const source of entry.sources) {
+      if (!isRecord(source)) return null;
+      const sourceId = text(source.expenseId, 100); const packageName = text(source.packageName, 200); const occurredAt = timestamp(source.occurredAt);
+      const originFingerprint = text(source.originFingerprint, 40); const reversalFingerprint = text(source.reversalFingerprint, 42);
+      if (!sourceId || !/^card-auto-[0-9a-f]{16}$/.test(sourceId) || sourceIds.has(sourceId) || !packageName || !isValidPackageName(packageName) || packages.has(packageName) || !occurredAt || !/^\d{4}-\d{2}-\d{2}T/.test(occurredAt) || !date(occurredAt.slice(0, 10)) || !originFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(originFingerprint) || !reversalFingerprint || !/^card-reversal-[0-9a-f]{16}$/.test(reversalFingerprint)) return null;
+      sources.push(Object.freeze({ expenseId: sourceId, packageName, occurredAt, originFingerprint, reversalFingerprint })); sourceIds.add(sourceId); packages.add(packageName);
+    }
+    ids.add(expenseId); receipts.push(Object.freeze({ expenseId, merchant, minorUnits, currency: ledgerCurrency, sources: Object.freeze(sources) }));
+  }
+  return Object.freeze(receipts);
 }
 
 function parseMovedExpenseIds(value: unknown): readonly string[] | null {
@@ -143,14 +165,15 @@ export function parseLedger(value: unknown): Ledger | null {
     const automationSources = value.automationSources === undefined ? Object.freeze([]) : parseAutomationSources(value.automationSources);
     const automationReversalIds = value.automationReversalIds === undefined ? Object.freeze([]) : parseAutomationReversalIds(value.automationReversalIds);
     const movedExpenseIds = value.movedExpenseIds === undefined ? Object.freeze([]) : parseMovedExpenseIds(value.movedExpenseIds);
-    if (!ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds || !movedExpenseIds) return null;
+    const automationPaymentReceipts = ledgerCurrency ? parseAutomationPaymentReceipts(value.automationPaymentReceipts, ledgerCurrency) : null;
+    if (!ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds || !movedExpenseIds || !automationPaymentReceipts) return null;
     const expenses: GeneralExpense[] = [];
     for (const candidate of value.expenses) {
       const expense = parseGeneralExpense(candidate, ledgerCurrency);
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...privateHistory } satisfies GeneralLedger);
+    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...(automationPaymentReceipts.length ? { automationPaymentReceipts } : {}), ...privateHistory } satisfies GeneralLedger);
   }
   return null;
 }
@@ -253,6 +276,42 @@ export function mergeGeneralLedgerMutation(base: GeneralLedger, desired: General
     // are monotonic and must never be erased by an older view of the ledger.
     movedExpenseIds: Object.freeze([...new Set([...latest.movedExpenseIds, ...desired.movedExpenseIds])]),
     expenses: Object.freeze(expenses),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function mergeChangedEntities<T extends { readonly id: string }>(base: readonly T[], desired: readonly T[], latest: readonly T[]): readonly T[] {
+  const beforeById = new Map(base.map((item) => [item.id, item]));
+  const desiredById = new Map(desired.map((item) => [item.id, item]));
+  const latestIds = new Set(latest.map((item) => item.id));
+  const merged: T[] = [];
+  for (const current of latest) {
+    const before = beforeById.get(current.id); const requested = desiredById.get(current.id);
+    if (before && !requested) continue;
+    merged.push(before && requested && JSON.stringify(before) !== JSON.stringify(requested) ? requested : current);
+  }
+  // An item deleted since the sheet opened must not be resurrected by a stale
+  // edit. Only genuinely new ids are additions.
+  for (const requested of desired) if (!beforeById.has(requested.id) && !latestIds.has(requested.id)) merged.push(requested);
+  return Object.freeze(merged);
+}
+
+/** Apply a travel edit as a delta, preserving queued deletes, newly received
+ * shared expenses, participants and currencies. replaceLedger subsequently
+ * validates payer/split references atomically against this merged snapshot. */
+export function mergeTravelLedgerMutation(base: TravelLedger, desired: TravelLedger, latest: TravelLedger): TravelLedger {
+  if (base.id !== desired.id || desired.id !== latest.id) return desired;
+  const beforeCurrencies = new Set(base.currencies); const wantedCurrencies = new Set(desired.currencies);
+  const currencies = [...latest.currencies.filter((code) => !beforeCurrencies.has(code) || wantedCurrencies.has(code))];
+  for (const code of desired.currencies) if (!beforeCurrencies.has(code) && !currencies.includes(code)) currencies.push(code);
+  return Object.freeze({
+    ...latest,
+    title: desired.title !== base.title ? desired.title : latest.title,
+    defaultCurrency: desired.defaultCurrency !== base.defaultCurrency ? desired.defaultCurrency : latest.defaultCurrency,
+    selfParticipantId: desired.selfParticipantId !== base.selfParticipantId ? desired.selfParticipantId : latest.selfParticipantId,
+    participants: mergeChangedEntities(base.participants, desired.participants, latest.participants),
+    currencies: Object.freeze(currencies),
+    expenses: mergeChangedEntities(base.expenses, desired.expenses, latest.expenses),
     updatedAt: new Date().toISOString(),
   });
 }

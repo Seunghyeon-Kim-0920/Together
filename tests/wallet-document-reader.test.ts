@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as XLSX from "xlsx";
 import { zipSync, strToU8 } from "fflate";
-import { parseDelimited, readExpenseDocument, groupTextLines } from "../src/lib/documentReader";
+import { parseDelimited, readExpenseDocument, groupTextLines, extractPositionedStatementTables, type PositionedDocumentText } from "../src/lib/documentReader";
+import { previewExpenseDocument } from "../src/lib/statementImport";
 
 test("CSV handles quoted separators, escaped quotes and multiline descriptions", () => {
   assert.deepEqual(parseDelimited('Date;Description;Amount\r\n2026-09-01;"Cafe; ""Paris""\nLunch";"-12,34"'), [["Date", "Description", "Amount"], ["2026-09-01", 'Cafe; "Paris"\nLunch', "-12,34"]]);
@@ -47,4 +48,42 @@ test("unsupported binary and invalid JSON are rejected", async () => {
 });
 test("text cell positions preserve left-to-right columns and top-to-bottom lines", () => {
   assert.deepEqual(groupTextLines([{ text: "-12.34", x: 90, y: 10, height: 10 }, { text: "Cafe", x: 10, y: 10, height: 10 }, { text: "Next", x: 10, y: 30, height: 10 }]), [["Cafe", "-12.34"], ["Next"]]);
+});
+
+test("PDF statement geometry preserves empty debit cells, dates, wrapped merchants and page boundaries", () => {
+  const item = (text: string, x: number, y: number, height = 10): PositionedDocumentText => ({ text, x, y, height, width: text.length * height * .45 });
+  const header = (y: number) => [item("Date", 40, y), item("Description", 130, y), item("Money out", 340, y), item("Money in", 420, y), item("Balance", 530, y)];
+  const tables = extractPositionedStatementTables([
+    [item("Account summary", 40, 10), item("€10,000.00", 530, 20), ...header(50), item("Sep 18, 2026", 40, 70), item("Corner", 130, 70), item("€12.34", 340, 70), item("€987.66", 530, 70), item("Coffee Shop", 130, 82), item("Card: 0000******0000", 130, 92, 6), item("Sep 19, 2026", 40, 110), item("Salary", 130, 110), item("€1000.00", 420, 110), item("€1987.66", 530, 110)],
+    [...header(10), item("Sep 20, 2026", 40, 30), item("Museum", 130, 30), item("€20.00", 340, 30), item("€1967.66", 530, 30), item("Page 2 of 2", 40, 700)],
+  ]);
+  assert.equal(tables.length, 1);
+  assert.equal(tables[0].rows.length, 4);
+  assert.deepEqual(tables[0].rows[1], ["Sep 18, 2026", "Corner Coffee Shop", "€12.34", "", "€987.66"]);
+  assert.equal(tables[0].rows[2][2], "", "incoming money must not slide into debit");
+  const result = previewExpenseDocument({ name: "bank.pdf", tables, text: "", ledger: null, scanned: false });
+  assert.deepEqual(result.rows.map(row => [row.description, row.occurredOn, row.minorUnits, row.selected]), [["Corner Coffee Shop", "2026-09-18", 1234, true], ["Museum", "2026-09-20", 2000, true]]);
+  assert.deepEqual(result.excluded.map(row => row.reason), ["income"]);
+});
+
+test("separate PDF reverted sections retain their cancellation status on subsequent pages", () => {
+  const item = (text: string, x: number, y: number): PositionedDocumentText => ({ text, x, y, width: 50, height: 10 });
+  const header = [item("Start date", 40, 40), item("Description", 160, 40), item("Money out", 340, 40), item("Money in", 450, 40)];
+  const tables = extractPositionedStatementTables([
+    [item("Reverted from September 1, 2023 to March 27, 2024", 40, 10), ...header, item("Sep 18, 2023", 40, 60), item("Test Cafe", 160, 60), item("€12.34", 340, 60)],
+    [...header, item("Sep 19, 2023", 40, 60), item("Test Market", 160, 60), item("€8.00", 340, 60)],
+  ]);
+  assert.equal(tables[0].rows[0].at(-1), "Status");
+  assert.equal(tables[0].rows[1].at(-1), "reverted"); assert.equal(tables[0].rows[2].at(-1), "reverted");
+  const preview = previewExpenseDocument({ name: "bank.pdf", tables, text: "", ledger: null, scanned: false });
+  assert.equal(preview.rows.length, 0); assert.equal(preview.excluded.length, 2);
+});
+
+test("PDF Korean headers and fragmented labels form real columns; account summaries do not form transactions", () => {
+  const item = (text: string, x: number, y: number, width = 30): PositionedDocumentText => ({text,x,y,width,height:10});
+  const tables = extractPositionedStatementTables([[item("거래", 40, 10, 20), item("일자", 62, 10, 20), item("가맹점명", 140, 10), item("출금금액", 320, 10), item("입금금액", 420, 10), item("잔액", 520, 10), item("2026. 9. 2.", 40, 30, 70), item("테스트 식당", 140, 30, 80), item("12,000원", 320, 30, 50), item("90,000원", 520, 30, 50)]]);
+  const result = previewExpenseDocument({name:"bank.pdf",tables,text:"",ledger:null,scanned:false});
+  assert.equal(result.rows[0].occurredOn, "2026-09-02"); assert.equal(result.rows[0].minorUnits, 12000);
+  const summary = extractPositionedStatementTables([[item("Closing balance",40,10,100), item("€900.00",400,10,60)]]);
+  assert.deepEqual(summary, []);
 });

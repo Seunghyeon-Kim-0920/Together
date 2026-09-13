@@ -1,6 +1,8 @@
 import type { Locale } from "./types";
 
 const ko = {
+  possibleDuplicateHelp: "이미 기록된 결제와 비슷합니다. 같은 결제의 다른 앱 알림이면 제외하고, 별도로 결제한 내역일 때만 추가하세요.",
+  duplicateNotAdded: "이미 기록된 결제입니다. 중복으로 추가하지 않았습니다.",
   identityConflictHelp: "은행 앱이 이전 알림 번호를 다른 금액·사용처로 다시 보냈습니다. 기존 내역을 확인하고, 별도로 결제한 경우에만 새 지출로 기록하세요.",
   confirmNewTransaction: "기존 내역을 확인했으며 별도로 결제한 새 지출입니다",
   candidateChanged: "알림이 변경되거나 이미 처리됐습니다. 새로 표시된 내역을 확인해주세요.",
@@ -37,6 +39,8 @@ const ko = {
 };
 type Key = keyof typeof ko;
 const en: Record<Key, string> = {
+  possibleDuplicateHelp: "This resembles an existing payment. Dismiss another app's alert for the same payment; add it only if you made a separate purchase.",
+  duplicateNotAdded: "This payment is already recorded. No duplicate was added.",
   identityConflictHelp: "The bank app reused a previous notification ID with a different amount or merchant. Check the existing entry and add this only if it is a separate payment.",
   confirmNewTransaction: "I checked the existing entry; this is a separate new expense",
   candidateChanged: "This notification changed or was already processed. Please review the refreshed item.",
@@ -72,6 +76,8 @@ const en: Record<Key, string> = {
   noChecks: "No notifications checked yet. Check notification access and app detection settings.",
 };
 const fr: Record<Key, string> = {
+  possibleDuplicateHelp: "Cette alerte ressemble à un paiement déjà enregistré. Écartez-la si une autre application signale le même paiement ; ajoutez-la uniquement pour un achat distinct.",
+  duplicateNotAdded: "Ce paiement est déjà enregistré. Aucun doublon n’a été ajouté.",
   identityConflictHelp: "L’application bancaire a réutilisé un identifiant de notification avec un autre montant ou commerçant. Vérifiez l’opération existante et ajoutez celle-ci uniquement s’il s’agit d’un paiement distinct.",
   confirmNewTransaction: "J’ai vérifié l’opération existante ; il s’agit d’une nouvelle dépense distincte",
   candidateChanged: "Cette notification a changé ou a déjà été traitée. Vérifiez l’opération actualisée.",

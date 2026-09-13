@@ -1,9 +1,64 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { WebWalletRepository } from "../src/lib/storage";
 import { legacyPublicExpenseId, publicExpenseId } from "../src/lib/expenseIdentity";
 import { createLedgerSharePayload, createTravelSharePayload, createTravelShareText, parseLedgerShareDocument, parseLedgerSharePayload, parseTravelSharePayload, safeFilename } from "../src/lib/share";
 import { EMPTY_WALLET_STATE, type TravelLedger } from "../src/lib/types";
-import { createLedger, createTravelExpense, MAX_AUTOMATION_SOURCES, mergeGeneralLedgers, parseWalletState, parseWalletStateStrict } from "../src/lib/wallet";
+import { createLedger, createTravelExpense, MAX_AUTOMATION_SOURCES, mergeGeneralLedgers, mergeTravelLedgerMutation, parseWalletState, parseWalletStateStrict, replaceLedger } from "../src/lib/wallet";
+
+test("queued travel deletions and stale edits never restore removed expenses", () => {
+  const expense = (id: string) => ({ ...createTravelExpense({ description: id, category: "food", currency: "EUR", minorUnits: 1000, occurredOn: "2026-09-01", paidBy: "a", participantIds: ["a", "b"] }), id });
+  const [a, b, c] = [expense("A"), expense("B"), expense("C")];
+  const base = { ...createLedger("travel", "Trip", "EUR"), participants: [{ id: "a", name: "A" }, { id: "b", name: "B" }], expenses: [a, b, c] };
+  const first = mergeTravelLedgerMutation(base, { ...base, expenses: [b, c] }, base);
+  const second = mergeTravelLedgerMutation(base, { ...base, expenses: [a, c] }, first);
+  assert.deepEqual(second.expenses.map((e) => e.id), ["C"]);
+  const stale = mergeTravelLedgerMutation(base, { ...base, expenses: [{ ...a, description: "Edited A" }, b, c] }, second);
+  assert.deepEqual(stale.expenses.map((e) => e.id), ["C"]);
+  assert.ok(parseWalletStateStrict({ ...EMPTY_WALLET_STATE, ledgers: [stale], activeLedgerId: stale.id }));
+});
+
+test("travel delta saves preserve new shared data and reject invalid participant references atomically", () => {
+  const base = { ...createLedger("travel", "Trip", "EUR"), participants: [{ id: "a", name: "A" }, { id: "b", name: "B" }] };
+  const received = createTravelExpense({ description: "Shared meal", category: "food", currency: "EUR", minorUnits: 1000, occurredOn: "2026-09-01", paidBy: "b", participantIds: ["a", "b"] });
+  const latest = { ...base, currencies: ["EUR", "USD"], participants: [...base.participants, { id: "c", name: "C" }], expenses: [received], statementImportHistory: [{ kind: "payment" as const, id: "source-1", expenseId: received.id }] };
+  const merged = mergeTravelLedgerMutation(base, { ...base, title: "Renamed", currencies: ["EUR", "JPY"], participants: [...base.participants, { id: "d", name: "D" }] }, latest);
+  assert.deepEqual(merged.currencies, ["EUR", "USD", "JPY"]); assert.equal(merged.participants.length, 4);
+  assert.deepEqual(merged.expenses, [received]); assert.deepEqual(merged.statementImportHistory, latest.statementImportHistory);
+  const state = { ...EMPTY_WALLET_STATE, ledgers: [latest], activeLedgerId: latest.id };
+  const invalid = mergeTravelLedgerMutation(base, { ...base, participants: [base.participants[0]] }, latest);
+  assert.throws(() => replaceLedger(state, invalid));
+  assert.equal(state.ledgers[0].participants.length, 3); assert.equal(state.ledgers[0].expenses.length, 1);
+});
+
+test("storage read failures never masquerade as a first launch or permit overwriting the ledger", async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const ledger = createLedger("general", "Retained", "EUR");
+  const state = { ...EMPTY_WALLET_STATE, activeLedgerId: ledger.id, ledgers: [ledger] };
+  let raw = JSON.stringify(state); let fail = true; let writes = 0;
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: {
+    getItem: () => { if (fail) throw new Error("temporary storage failure"); return raw; },
+    setItem: (_key: string, value: string) => { writes++; raw = value; },
+  } } });
+  try {
+    const repository = new WebWalletRepository();
+    await assert.rejects(repository.load());
+    await assert.rejects(repository.save(EMPTY_WALLET_STATE));
+    assert.equal(writes, 0);
+    fail = false;
+    const loaded = await repository.load();
+    assert.equal(loaded.ledgers[0].title, "Retained");
+    await repository.save(loaded);
+    assert.equal(writes, 1);
+    raw = "{broken";
+    await assert.rejects(repository.load());
+    await assert.rejects(repository.save(EMPTY_WALLET_STATE));
+    assert.equal(raw, "{broken");
+  } finally {
+    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
+});
 
 test("a new installation starts with no ledgers, people, or expenses", () => {
   assert.equal(EMPTY_WALLET_STATE.activeLedgerId, null);

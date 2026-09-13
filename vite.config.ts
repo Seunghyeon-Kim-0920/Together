@@ -49,6 +49,9 @@ function offlinePdfResources(): Plugin {
 
 export default defineConfig({
   plugins: [react(), offlinePdfResources()],
+  // Native packages and private signing files are not dev-server assets.
+  // OneDrive may lock release packages while they are being copied.
+  server: { watch: { ignored: ["**/release/**", "**/android/**", "**/ios/**", "**/tmp/**"] } },
   build: {
     target: "es2022",
   },

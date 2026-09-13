@@ -158,13 +158,27 @@ public final class PaymentNotificationListenerService extends NotificationListen
         if (groupSummary && hasVisibleChild(statusBarNotification)) return;
         final boolean explicitlyConfigured = CardAutomationStore.isConfiguredSourcePackage(this, packageName);
         final String currencyHint = CardAutomationStore.currencyHint(this, packageName);
-        final boolean manualOnly = requiresManualReview(packageName, notification, explicitlyConfigured);
+        final boolean relayIdentity = isRelayIdentity(packageName);
+        // A messenger, mail client, browser or social app carries other people's
+        // messages, not the user's own payments. Discovery never reads them.
+        if (PaymentSourcePolicy.isExcludedFromDiscovery(packageName, relayIdentity, explicitlyConfigured)) return;
+        final boolean manualOnly = relayIdentity
+            || PaymentSourcePolicy.requiresManualReview(packageName, notification.category, explicitlyConfigured);
+        // Discovery reads bank, card and payment apps only. Any other app is
+        // read solely because the user registered it as a payment source.
+        final boolean paymentSource = explicitlyConfigured || PaymentSourcePolicy.isPaymentSourcePackage(packageName);
         final long postedAt = stableEventTime(notification, statusBarNotification.getPostTime());
         final String notificationKey = statusBarNotification.getKey();
 
         try { executor.execute(() -> {
             // Consent may have been revoked while this task was waiting.
             if (!CardAutomationStore.isAllowedPackage(getApplicationContext(), packageName)) return;
+            if (!paymentSource) {
+                // Not a bank, card or payment app. Record that the app was seen
+                // by name and time only, and read none of its notification text.
+                CardAutomationStore.recordCheck(getApplicationContext(), packageName, applicationLabel(packageName), false);
+                return;
+            }
             try {
             Bundle extras = notification.extras;
             if (extras == null) return;
@@ -263,7 +277,8 @@ public final class PaymentNotificationListenerService extends NotificationListen
         }
     }
 
-    private boolean requiresManualReview(String packageName, Notification notification, boolean explicitlyConfigured) {
+    /** Identifies a relay by the app itself, independent of a notification's category. */
+    private boolean isRelayIdentity(String packageName) {
         try {
             if (packageName.equals(Telephony.Sms.getDefaultSmsPackage(this))) return true;
             Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://wallet-diary.invalid"));
@@ -275,7 +290,7 @@ public final class PaymentNotificationListenerService extends NotificationListen
                 if (PaymentSourcePolicy.isHardBlockedApplicationCategory(info.category)) return true;
             }
         } catch (Exception ignored) {}
-        return PaymentSourcePolicy.requiresManualReview(packageName, notification.category, explicitlyConfigured);
+        return PaymentSourcePolicy.isKnownAggregatorPackage(packageName);
     }
 
     private static long stableEventTime(Notification notification, long postedAt) {

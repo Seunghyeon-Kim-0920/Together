@@ -326,3 +326,10 @@ button:disabled { cursor: default; opacity: .44; }
 .notification-diagnostics li { display: grid; gap: 5px; padding: 10px 0; border-bottom: 1px solid #e6ded0; overflow-wrap: anywhere; }
 .notification-diagnostics span, .notification-diagnostics small { font-size: 12px; }
 .automation-card-body > button { text-align: start; overflow-wrap: anywhere; }
+.app-footer { padding-top: 28px; text-align: center; }
+.app-footer button { background: none; border: 0; padding: 12px; color: var(--muted); text-decoration: underline; font-size: 12px; min-height: 44px; }
+.privacy-policy { font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.privacy-policy h3 { margin-top: 24px; font-size: 16px; }
+.privacy-policy ul { padding-left: 22px; }
+.privacy-policy li { margin-block: 8px; }
+.privacy-policy a { color: var(--jade-dark); }

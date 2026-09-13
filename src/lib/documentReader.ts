@@ -1,6 +1,7 @@
 import type { LedgerShareDocument } from "./share";
 import { parseLedgerShareDocument } from "./share";
 import { recognizeImage } from "./documentFiles";
+import { detectStatementColumns, parseStatementDate } from "./statementImport";
 
 export interface DocumentTable { name: string; rows: string[][]; }
 export interface ReadDocument { name: string; tables: DocumentTable[]; text: string; ledger: LedgerShareDocument | null; scanned: boolean; }
@@ -34,6 +35,93 @@ export function groupTextLines(items: { text: string; x: number; y: number; heig
     else groups.push({ y: item.y, height: item.height, items: [item] });
   }
   return groups.map((group) => group.items.sort((a, b) => a.x - b.x).map((item) => item.text.trim()));
+}
+export interface PositionedDocumentText { text: string; x: number; y: number; height: number; width?: number; }
+interface PositionedLine { y: number; height: number; items: PositionedDocumentText[]; }
+function positionedLines(items: readonly PositionedDocumentText[]): PositionedLine[] {
+  const lines: PositionedLine[] = [];
+  for (const item of [...items].filter((item) => item.text.trim()).sort((a, b) => a.y - b.y || a.x - b.x)) {
+    const previous = lines[lines.length - 1];
+    if (previous && Math.abs(previous.y - item.y) <= Math.max(2, Math.min(previous.height, item.height) * .4)) previous.items.push(item);
+    else lines.push({ y: item.y, height: item.height, items: [item] });
+  }
+  return lines.map((line) => {
+    const merged: PositionedDocumentText[] = [];
+    for (const item of line.items.sort((a, b) => a.x - b.x)) {
+      const previous = merged[merged.length - 1];
+      const gap = previous?.width === undefined ? Infinity : item.x - previous.x - previous.width;
+      if (previous && gap >= -1 && gap <= Math.max(3, Math.min(previous.height, item.height) * .65)) {
+        previous.text += `${gap > .5 ? " " : ""}${item.text.trim()}`;
+        previous.width = item.x + (item.width ?? item.text.length * item.height * .5) - previous.x;
+      } else merged.push({ ...item, text: item.text.trim() });
+    }
+    return { ...line, items: merged };
+  });
+}
+/** PDF text fragments are not spreadsheet cells: absent credit/debit cells
+ * must keep their column, and a merchant wrapped below its date belongs to
+ * the same transaction. Only a labelled transaction table supplies geometry. */
+export function extractPositionedStatementTables(pages: readonly (readonly PositionedDocumentText[])[]): DocumentTable[] {
+  const output: DocumentTable[] = [];
+  let sectionStatus = "";
+  for (const [pageIndex, page] of pages.entries()) {
+    const lines = positionedLines(page);
+    let current: { headers: PositionedDocumentText[]; mapping: ReturnType<typeof detectStatementColumns>; table: DocumentTable; lastY: number; height: number } | null = null;
+    for (const line of lines) {
+      const headerText = line.items.map((item) => item.text);
+      const heading = headerText.join(" ").trim();
+      // Some statements put reversals in a separate table with no row-level
+      // status column. Preserve that heading as status, never as a purchase.
+      if (/^(?:reverted(?: transactions)?(?: from\b.*)?|cancelled transactions(?: from\b.*)?|opérations annulées(?: du\b.*)?|거래\s*취소\s*내역|취소\s*내역)$/iu.test(heading)) {
+        sectionStatus = "reverted"; current = null; continue;
+      }
+      if (/^(?:account transactions(?: from\b.*)?|completed transactions(?: from\b.*)?|opérations du compte(?: du\b.*)?|계좌\s*거래\s*내역)$/iu.test(heading)) {
+        sectionStatus = ""; current = null; continue;
+      }
+      const mapping = detectStatementColumns(headerText);
+      if (mapping.date !== undefined && mapping.description !== undefined && (mapping.amount !== undefined || mapping.debit !== undefined)) {
+        const outputHeaders = sectionStatus && mapping.status === undefined ? [...headerText, "Status"] : headerText;
+        const signature = JSON.stringify(outputHeaders);
+        const table = output.find((entry) => JSON.stringify(entry.rows[0]) === signature) ?? { name: `PDF ${pageIndex + 1}`, rows: [outputHeaders] };
+        if (!output.includes(table)) output.push(table);
+        current = { headers: line.items, mapping, table, lastY: line.y, height: line.height };
+        continue;
+      }
+      if (!current) continue;
+      const { headers, mapping: columns, table } = current;
+      const cells = headers.map(() => "");
+      const boundaries = headers.slice(1).map((header, index) => {
+        const previous = headers[index];
+        const right = previous.x + (previous.width ?? previous.text.length * previous.height * .5);
+        return Math.min(header.x - 3, (right + header.x) / 2);
+      });
+      for (const item of line.items) {
+        const column = boundaries.findIndex((boundary) => item.x < boundary);
+        const index = column < 0 ? cells.length - 1 : column;
+        cells[index] = `${cells[index]} ${item.text}`.trim();
+      }
+      const dateIndex = columns.date!; const descriptionIndex = columns.description!;
+      const date = cells[dateIndex];
+      const dateLike = !!parseStatementDate(date, "dmy") || !!parseStatementDate(date, "mdy") || /^\d{4}[.\-/년]/u.test(date) || /^\d{1,2}[.\-/]/u.test(date);
+      const moneyColumns = [columns.amount, columns.debit, columns.credit].filter((value): value is number => value !== undefined);
+      const hasAmount = moneyColumns.some((index) => /\d/u.test(cells[index]));
+      if (dateLike) {
+        table.rows.push(sectionStatus && columns.status === undefined ? [...cells, sectionStatus] : cells); current.lastY = line.y; current.height = line.height;
+      } else if (!date && table.rows.length > 1 && line.y - current.lastY <= Math.max(22, current.height * 2.8)) {
+        const previous = table.rows[table.rows.length - 1];
+        // Small-print card numbers, FX amounts and recipient/account metadata
+        // are not extra purchases and must not contaminate the merchant.
+        const metadata = /^(?:card|carte|카드|from|to|de|vers|받는\s*사람|보낸\s*사람|계좌|reference|référence|환율|exchange rate|fee|수수료)\s*[:：]/iu.test(cells[descriptionIndex]);
+        if (line.height < current.height * .8 || metadata) continue;
+        const onlyDescription = cells.every((cell, index) => !cell || index === descriptionIndex);
+        if (onlyDescription) previous[descriptionIndex] = `${previous[descriptionIndex]} ${cells[descriptionIndex]}`.trim();
+        else if (hasAmount && moneyColumns.every((index) => !previous[index])) {
+          for (let index = 0; index < cells.length; index++) if (cells[index]) previous[index] = `${previous[index]} ${cells[index]}`.trim();
+        }
+      }
+    }
+  }
+  return output.filter((table) => table.rows.length > 1);
 }
 function readableText(bytes: Uint8Array, encoding?: string): string {
   if (encoding && encoding !== "auto") return new TextDecoder(encoding).decode(bytes).replace(/^\ufeff/, "");
@@ -78,12 +166,13 @@ async function readPdf(bytes: Uint8Array, name: string, options: ReadOptions): P
       throw new Error("invalid-ledger");
     }
     if (pdf.numPages > 100) throw new Error("limit");
-    const rows: string[][] = []; let scanned = false;
+    const rows: string[][] = []; const pages: PositionedDocumentText[][] = []; let scanned = false;
     for (let index = 1; index <= pdf.numPages; index++) {
       options.progress?.(index, pdf.numPages);
       const page = await pdf.getPage(index); const content = await page.getTextContent();
       const items = content.items.filter((item): item is import("pdfjs-dist/types/src/display/api").TextItem => "str" in item);
-      let pageRows = groupTextLines(items.map((item) => ({ text: item.str, x: item.transform[4], y: -item.transform[5], height: item.height || 12 })));
+      let positioned: PositionedDocumentText[] = items.map((item) => ({ text: item.str, x: item.transform[4], y: -item.transform[5], height: item.height || 12, width: item.width }));
+      let pageRows = groupTextLines(positioned);
       if (pageRows.flat().join("").trim().length < 15) {
         scanned = true;
         const dimensions = page.getViewport({ scale: 1 });
@@ -95,13 +184,16 @@ async function readPdf(bytes: Uint8Array, name: string, options: ReadOptions): P
           const context = canvas.getContext("2d"); if (!context) throw new Error("canvas");
           await page.render({ canvas, canvasContext: context, viewport }).promise;
           const image = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => value ? resolve(value) : reject(new Error("image")), "image/png"));
-          pageRows = groupTextLines(await recognizeImage(new Uint8Array(await image.arrayBuffer()), options.language ?? "en"));
+          positioned = await recognizeImage(new Uint8Array(await image.arrayBuffer()), options.language ?? "en");
+          pageRows = groupTextLines(positioned);
         } finally { canvas.width = 0; canvas.height = 0; }
       }
-      rows.push(...pageRows); page.cleanup();
+      pages.push(positioned); rows.push(...pageRows); page.cleanup();
       if (rows.length > 20_000) throw new Error("limit");
     }
-    return { name, tables: [{ name: "PDF", rows }], text: rows.map((row) => row.join("\t")).join("\n"), ledger: null, scanned };
+    const tables = extractPositionedStatementTables(pages);
+    // Unlabelled layouts use the text parser, not accidental fragment indexes.
+    return { name, tables, text: rows.map((row) => row.join("\t")).join("\n"), ledger: null, scanned };
   } finally { await task.destroy(); }
 }
 export async function readExpenseDocument(file: File, options: ReadOptions = {}): Promise<ReadDocument> {
@@ -112,8 +204,10 @@ export async function readExpenseDocument(file: File, options: ReadOptions = {})
   const image = file.type.startsWith("image/") || [0x89, 0xff, 0x47, 0x42].includes(bytes[0]) && (
     bytes[0] === 0x89 && bytes[1] === 0x50 || bytes[0] === 0xff && bytes[1] === 0xd8 || head.startsWith("GIF8") || head.startsWith("BM")) || head.startsWith("RIFF") && head.includes("WEBP") || head.slice(4, 32).includes("ftyphei");
   if (image) {
-    const rows = groupTextLines(await recognizeImage(bytes, options.language ?? "en"));
-    return { name, tables: [{ name: "OCR", rows }], text: rows.map((row) => row.join("\t")).join("\n"), ledger: null, scanned: true };
+    const items = await recognizeImage(bytes, options.language ?? "en");
+    const rows = groupTextLines(items);
+    const tables = extractPositionedStatementTables([items]).map((table) => ({ ...table, name: "OCR" }));
+    return { name, tables, text: rows.map((row) => row.join("\t")).join("\n"), ledger: null, scanned: true };
   }
   const isZip = bytes[0] === 0x50 && bytes[1] === 0x4b;
   if (isZip) {

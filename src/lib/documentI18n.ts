@@ -1,5 +1,8 @@
 import type { Locale } from "./types";
 const ko = {
+  acknowledgements: "취소·전액 환불 확인기록", acknowledgementHelp: "지출로 추가하지 않고, 같은 결제의 재등록을 막는 확인기록만 저장합니다.", acknowledgedCount: "취소·전액 환불 확인",
+  missingDate: "날짜를 확인해주세요.", missingMerchant: "사용처를 확인해주세요.", missingAmount: "금액을 확인해주세요.",
+  existingExpense: "기존 지출", afterAdjustments: "선택한 환불 반영 후", adjustmentCount: "반영할 취소·환불", addedCount: "추가", adjustedCount: "금액 조정", removedCount: "취소·전액 환불 삭제",
   automatic: "자동",
   directionReview: "입금인지 지출인지 확인 후 선택하세요.", reviewedDuplicate: "같은 내역이 이미 있어 다시 등록하지 않습니다.",
   encoding: "텍스트 인코딩(글자가 깨질 때)", headerRow: "제목 행", noHeader: "제목 행 없음", debitColumn: "출금 금액 열(분리된 경우)", typeColumn: "거래 종류 열", idColumn: "거래 번호 열", nextPage: "다음 내역", previousPage: "이전 내역", incomplete: "확인이 필요한 내역은 수정 후 선택해주세요.",
@@ -17,6 +20,9 @@ const ko = {
 };
 type Key = keyof typeof ko;
 const en: Record<Key, string> = {
+  acknowledgements: "Cancelled or fully refunded payments", acknowledgementHelp: "Save only a confirmation record to prevent this payment from being imported again. No expense is added.", acknowledgedCount: "Cancellations and full refunds confirmed",
+  missingDate: "Check the date.", missingMerchant: "Check the merchant.", missingAmount: "Check the amount.",
+  existingExpense: "Existing expense", afterAdjustments: "After selected refunds", adjustmentCount: "Refunds and cancellations to apply", addedCount: "Added", adjustedCount: "Adjusted", removedCount: "Cancelled or fully refunded",
   automatic: "Automatic",
   directionReview: "Check whether this is an expense or incoming money before selecting.", reviewedDuplicate: "This item already exists and will not be imported again.",
   encoding: "Text encoding (for unreadable characters)", headerRow: "Header row", noHeader: "No header row", debitColumn: "Outgoing amount column (if separate)", typeColumn: "Transaction type column", idColumn: "Transaction ID column", nextPage: "Next items", previousPage: "Previous items", incomplete: "Edit items needing review, then select them.",
@@ -32,6 +38,9 @@ const en: Record<Key, string> = {
   newRow: "New item", fileChanged: "The ledger changed. Check the items again.", sheetEmpty: "No readable rows.", summary: "Date range, count and totals by currency", of: "/", keep: "Import", cancelledHelp: "Cancellations and refunds are not imported as expenses. If a saved expense matches, review it below before changing the amount.", adjustments: "Saved expense adjustments", adjustmentHelp: "Refunds and cancellations found in another file. Select only matches you approve; the saved expense will be reduced or removed.", refund: "Refund", scanNotice: "Text was recognized from an image. Compare dates, decimal points and amounts with the original.",
 };
 const fr: Record<Key, string> = {
+  acknowledgements: "Paiements annulés ou intégralement remboursés", acknowledgementHelp: "Enregistre uniquement une confirmation pour empêcher la réimportation de ce paiement. Aucune dépense n’est ajoutée.", acknowledgedCount: "Annulations et remboursements intégraux confirmés",
+  missingDate: "Vérifiez la date.", missingMerchant: "Vérifiez le commerçant.", missingAmount: "Vérifiez le montant.",
+  existingExpense: "Dépense existante", afterAdjustments: "Après les remboursements sélectionnés", adjustmentCount: "Remboursements et annulations à appliquer", addedCount: "Ajoutées", adjustedCount: "Ajustées", removedCount: "Annulées ou intégralement remboursées",
   automatic: "Automatique",
   directionReview: "Vérifiez s’il s’agit d’une dépense ou d’une entrée d’argent avant de sélectionner.", reviewedDuplicate: "Cette opération existe déjà et ne sera pas importée à nouveau.",
   encoding: "Encodage du texte (si les caractères sont illisibles)", headerRow: "Ligne d’en-tête", noHeader: "Sans en-tête", debitColumn: "Colonne des débits (si séparée)", typeColumn: "Colonne du type d’opération", idColumn: "Colonne de l’identifiant", nextPage: "Opérations suivantes", previousPage: "Opérations précédentes", incomplete: "Corrigez les opérations à vérifier, puis sélectionnez-les.",

@@ -48,6 +48,22 @@ export interface AutomationSource {
   readonly trustedDirectApp: true;
 }
 
+/** Private evidence joining one wallet alert to its issuing bank alert. Kept
+ * separately from editable expenses, and never included in shared files. */
+export interface AutomationPaymentReceipt {
+  readonly expenseId: string;
+  readonly merchant: string;
+  readonly currency: string;
+  readonly minorUnits: number;
+  readonly sources: readonly {
+    readonly expenseId: string;
+    readonly packageName: string;
+    readonly occurredAt: string;
+    readonly originFingerprint: string;
+    readonly reversalFingerprint: string;
+  }[];
+}
+
 /** Private, local import receipts. These never belong in a shared ledger. */
 export interface StatementImportReceipt {
   readonly kind: "payment" | "adjustment";
@@ -85,6 +101,7 @@ export interface GeneralLedger extends LedgerBase {
   /** Private source expense ids and automation fingerprints retained after a
    * move, so imports cannot recreate the expense in this general ledger. */
   readonly movedExpenseIds: readonly string[];
+  readonly automationPaymentReceipts?: readonly AutomationPaymentReceipt[];
   readonly expenses: readonly GeneralExpense[];
 }
 
