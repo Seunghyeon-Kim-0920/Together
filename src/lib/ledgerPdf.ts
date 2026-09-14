@@ -3,12 +3,39 @@ import { generalCategoryLabel, t, travelCategoryLabel } from "./i18n";
 import { merchantDisplayName } from "./merchant";
 import { createLedgerSharePayload, parseLedgerShareDocument, safeFilename } from "./share";
 import { savePdfFile, sharePdfFile } from "./documentFiles";
+import { pdfExportText } from "./pdfExportI18n";
 import type { Ledger, Locale } from "./types";
 import { newestExpensesFirst, parseLedger, settleTravelExpenses } from "./wallet";
 
+export interface LedgerPdfDateRange { readonly from: string; readonly to: string }
+
+export function isValidPdfDateRange(range: LedgerPdfDateRange): boolean {
+  const calendarDate = (value: string) => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const parsed = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  };
+  return calendarDate(range.from) && calendarDate(range.to) && range.from <= range.to;
+}
+
+/** One snapshot is used for visible totals, rows and the restorable attachment. */
+export function ledgerForPdf(ledger: Ledger, range?: LedgerPdfDateRange): Ledger {
+  if (!parseLedger(ledger)) throw new Error("invalid-ledger");
+  if (!range) return ledger;
+  if (ledger.kind !== "general" || !isValidPdfDateRange(range)) throw new Error("invalid-pdf-date-range");
+  // ISO calendar dates are compared directly: no timezone conversion can move
+  // an expense across the user's inclusive start/end boundaries.
+  return Object.freeze({ ...ledger, expenses: Object.freeze(ledger.expenses.filter((expense) => expense.occurredOn >= range.from && expense.occurredOn <= range.to)) });
+}
+
+export function ledgerPdfFilename(ledger: Ledger, range?: LedgerPdfDateRange): string {
+  if (range && (ledger.kind !== "general" || !isValidPdfDateRange(range))) throw new Error("invalid-pdf-date-range");
+  return safeFilename(ledger.title) + (range ? `_${range.from}_${range.to}` : "") + ".pdf";
+}
+
 /** A standard PDF attachment preserves exact expense IDs, participants and splits. */
-export async function attachLedgerToPdf(bytes: Uint8Array, ledger: Ledger): Promise<Uint8Array> {
-  const payload = createLedgerSharePayload(ledger);
+export async function attachLedgerToPdf(bytes: Uint8Array, ledger: Ledger, range?: LedgerPdfDateRange): Promise<Uint8Array> {
+  const payload = createLedgerSharePayload(range ? ledgerForPdf(ledger, range) : ledger);
   // Do not create a backup that our importer cannot restore in full.
   if (!parseLedgerShareDocument(payload)) throw new Error("ledger-attachment-limit");
   const { PDFDocument } = await import("pdf-lib");
@@ -17,8 +44,8 @@ export async function attachLedgerToPdf(bytes: Uint8Array, ledger: Ledger): Prom
   pdf.setTitle(ledger.title); pdf.setAuthor("지갑의 일기");
   return pdf.save();
 }
-export async function createLedgerPdf(ledger: Ledger, locale: Locale): Promise<{ filename: string; blob: Blob }> {
-  if (!parseLedger(ledger)) throw new Error("invalid-ledger");
+export async function createLedgerPdf(sourceLedger: Ledger, locale: Locale, range?: LedgerPdfDateRange): Promise<{ filename: string; blob: Blob }> {
+  const ledger = ledgerForPdf(sourceLedger, range);
   if (!parseLedgerShareDocument(createLedgerSharePayload(ledger))) throw new Error("ledger-attachment-limit");
   const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import("html2canvas"), import("jspdf")]);
   await document.fonts.ready;
@@ -84,7 +111,8 @@ export async function createLedgerPdf(ledger: Ledger, locale: Locale): Promise<{
     newPage();
     add(text("p", t(locale, ledger.kind === "travel" ? "travelLedger" : "generalLedger"), { color: "#63726d", marginBottom: "6px" }));
     const dates = ledger.expenses.map((expense) => expense.occurredOn).sort();
-    if (dates.length) add(text("p", dates[0] + " - " + dates[dates.length - 1], { color: "#63726d" }));
+    if (range) add(text("p", pdfExportText(locale, "period") + ": " + range.from + " - " + range.to, { color: "#63726d" }));
+    else if (dates.length) add(text("p", dates[0] + " - " + dates[dates.length - 1], { color: "#63726d" }));
     heading(t(locale, "totalSpent"));
     const currencies = ledger.kind === "general" ? [ledger.currency] : ledger.currencies;
     for (const currency of currencies) {
@@ -123,11 +151,11 @@ export async function createLedgerPdf(ledger: Ledger, locale: Locale): Promise<{
     }
     const bytes = await attachLedgerToPdf(new Uint8Array(pdf.output("arraybuffer")), ledger);
     if (bytes.byteLength > 40_000_000) throw new Error("pdf-file-limit");
-    return { filename: safeFilename(ledger.title) + ".pdf", blob: new Blob([new Uint8Array(bytes)], { type: "application/pdf" }) };
+    return { filename: ledgerPdfFilename(ledger, range), blob: new Blob([new Uint8Array(bytes)], { type: "application/pdf" }) };
   } finally { report.remove(); }
 }
-export async function saveLedgerPdf(ledger: Ledger, locale: Locale): Promise<boolean> {
-  const file = await createLedgerPdf(ledger, locale); return savePdfFile(file.blob, file.filename);
+export async function saveLedgerPdf(ledger: Ledger, locale: Locale, range?: LedgerPdfDateRange): Promise<boolean> {
+  const file = await createLedgerPdf(ledger, locale, range); return savePdfFile(file.blob, file.filename);
 }
 export async function shareLedgerPdf(ledger: Ledger, locale: Locale): Promise<boolean> {
   const file = await createLedgerPdf(ledger, locale); return sharePdfFile(file.blob, file.filename);

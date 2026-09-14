@@ -48,6 +48,13 @@ export interface AutomationSource {
   readonly trustedDirectApp: true;
 }
 
+/** Explicit local user choices, excluded from shared ledgers/PDFs. */
+export interface MerchantCategoryPreference {
+  readonly merchantKey: string;
+  readonly category: GeneralCategory;
+  readonly updatedAt: string;
+}
+
 /** Private evidence joining one wallet alert to its issuing bank alert. Kept
  * separately from editable expenses, and never included in shared files. */
 export interface AutomationPaymentReceipt {
@@ -102,6 +109,7 @@ export interface GeneralLedger extends LedgerBase {
    * move, so imports cannot recreate the expense in this general ledger. */
   readonly movedExpenseIds: readonly string[];
   readonly automationPaymentReceipts?: readonly AutomationPaymentReceipt[];
+  readonly merchantCategoryPreferences?: readonly MerchantCategoryPreference[];
   readonly expenses: readonly GeneralExpense[];
 }
 

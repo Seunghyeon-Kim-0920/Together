@@ -103,8 +103,8 @@ const INCOME = /(?:\b(?:income|salary|deposit|top.?up|received|incoming|credited
 const BALANCE = /(?:\b(?:balance|solde|opening|closing|available|total|subtotal)\b|잔액|잔고|누계|합계|이월|월계)/iu;
 const DEBIT = /(?:\b(?:debit|débit|purchase|payment|card payment|paid|withdrawal|direct debit|standing order|outgoing|sent|paiement|prélèvement|virement émis)\b|출금|결제|구매|사용|송금|보낸\s*이체|자동이체)/iu;
 const fieldAliases: Record<keyof StatementColumnMapping, readonly string[]> = {
-  date: ["date", "transaction date", "payment date", "booking date", "booked on", "completed date", "started date", "start date", "occurred on", "occurredOn", "date de transaction", "date opération", "date d'opération", "date de paiement", "날짜", "거래일", "거래일자", "거래일시", "이용일자", "승인일자", "결제일", "사용일시"],
-  description: ["description", "merchant", "merchant name", "payee", "name", "counterparty", "libellé", "libelle", "commerçant", "commercant", "bénéficiaire", "가맹점", "가맹점명", "사용처", "적요", "거래내용", "내용", "설명", "받는분"],
+  date: ["date", "transaction date", "payment date", "booking date", "booked on", "completed date", "started date", "start date", "occurred on", "occurredOn", "date de transaction", "date opération", "date d'opération", "date de paiement", "날짜", "거래일", "거래일자", "거래일시", "이용일", "이용일자", "이용일시", "승인일", "승인일자", "승인일시", "결제일", "사용일자", "사용일시"],
+  description: ["description", "merchant", "merchant name", "payee", "name", "counterparty", "libellé", "libelle", "commerçant", "commercant", "bénéficiaire", "가맹점", "가맹점명", "이용가맹점", "이용가맹점명", "사용처", "적요", "거래내용", "내용", "설명", "받는분", "보내신분받는분"],
   amount: ["amount", "transaction amount", "payment amount", "montant", "montant de transaction", "금액", "거래금액", "이용금액", "승인금액", "결제금액", "사용금액"],
   debit: ["debit", "débit", "money out", "paid out", "withdrawal", "withdrawals", "expense", "dépense", "지출", "출금", "출금액", "출금금액", "찾으신금액", "지출금액"],
   credit: ["credit", "crédit", "money in", "paid in", "deposit", "deposits", "income", "입금", "입금액", "입금금액", "맡기신금액"],
@@ -172,11 +172,42 @@ export function parseStatementDate(input: string, order: StatementImportOptions[
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === result ? result : null;
 }
 
+/** Missing years are read from an explicit statement period/month heading,
+ * never the phone clock. Two-digit years must match a declared full year. */
+export function statementContextYears(text: string): number[] {
+  const years = new Set<number>();
+  for (const line of text.split(/\r?\n/u)) {
+    if (!/(?:기간|명세|조회|이용내역|거래내역|statement|period|période|relevé|^(?:\p{L}{3,12}\.?\s+)?(?:19|20|21)\d{2}(?:년|\b)|^(?:19|20|21)\d{2}\s*[-/.]\s*\d{1,2})/iu.test(line.trim())) continue;
+    for (const match of line.matchAll(/(?<!\d)(19\d{2}|20\d{2}|21\d{2})(?!\d)/gu)) years.add(Number(match[1]));
+  }
+  return [...years];
+}
+export function parseStatementDateWithContext(input: string, years: readonly number[], order: StatementImportOptions["dateOrder"] = "auto"): string | null {
+  const value = input.normalize("NFKC").trim().replace(/[,•·]\s*(?=\d{1,2}:)/u, " ").replace(/\s+/gu, " ");
+  const direct = parseStatementDate(value, order); if (direct) return direct;
+  const shortYear = /^(\d{2})\s*[.-]\s*(\d{1,2})\s*[.-]\s*(\d{1,2})\.?(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?$/u.exec(value);
+  if (shortYear) {
+    const matching = years.filter(year => year % 100 === Number(shortYear[1]));
+    if (matching.length === 1) return parseStatementDate(`${matching[0]}-${shortYear[2]}-${shortYear[3]}${shortYear[4] ? ` ${shortYear[4]}` : ""}`);
+  }
+  if (years.length !== 1) return null;
+  const named = /^(\d{1,2}(?:er)?\s+\p{L}{3,12}\.?)(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?$/iu.exec(value);
+  if (named) return parseStatementDate(`${named[1]} ${years[0]}${named[2] ? ` ${named[2]}` : ""}`);
+  const monthDay = /^(\d{1,2})\s*(?:월|[./-])\s*(\d{1,2})(?:일|\.)?(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?$/u.exec(value);
+  // A slash without a chosen order remains ambiguous; Korean month labels
+  // and dot-separated statement dates explicitly use month/day ordering.
+  if (monthDay && (!value.includes("/") || order === "mdy" || order === "dmy")) {
+    const swap = value.includes("/") && order === "dmy";
+    return parseStatementDate(`${years[0]}-${monthDay[swap ? 2 : 1]}-${monthDay[swap ? 1 : 2]}${monthDay[3] ? ` ${monthDay[3]}` : ""}`);
+  }
+  return null;
+}
+
 /** Strict decimal parsing uses integer arithmetic, including zero-decimal
  * currencies. Separators are never deleted if that would change precision. */
 export function parseStatementAmount(input: string, currency: string, decimal: StatementImportOptions["decimalSeparator"] = "auto"): number | null {
   if (!currencyCode(currency)) return null;
-  let value = input.normalize("NFKC").trim().replace(/[−–]/gu, "-");
+  let value = input.normalize("NFKC").trim().replace(/[−–]/gu, "-").replace(/\s*([.,])\s*/gu, "$1");
   const declared = amountCurrency(value, currency);
   if (declared !== currency) return null;
   let negative = /^\(.*\)$/u.test(value); if (negative) value = value.slice(1, -1).trim();
@@ -224,7 +255,11 @@ export function detectStatementColumns(headers: readonly string[]): StatementCol
   const mapping: Partial<Record<keyof StatementColumnMapping, number>> = {};
   for (const key of Object.keys(fieldAliases) as (keyof StatementColumnMapping)[]) {
     const aliases = fieldAliases[key].map(canonical);
-    const matches = headers.flatMap((header, index) => aliases.includes(canonical(header)) ? [index] : []);
+    const matches = headers.flatMap((header, index) => {
+      const label = canonical(header.replace(/[（(]\s*(?:원|KRW|EUR|€|USD|단위\s*[:：]?\s*원)\s*[）)]/giu, ""));
+      const compound = key === "date" && ["dateheure", "dateetheure", "datetime"].includes(label) || key === "description" && ["commerçantdescription", "commercantdescription", "merchantdescription"].includes(label);
+      return aliases.includes(label) || compound ? [index] : [];
+    });
     if (matches.length) mapping[key] = matches[0];
   }
   // Revolut exports both dates; completed is the posted transaction date.
@@ -304,31 +339,42 @@ function parseTableRow(raw: readonly string[], sourceRow: number, mapping: State
   return { parsed: { row, transactionId, relatedId, kind: cancelled ? "cancelled" : refund ? "refund" : "expense" } };
 }
 
-/** Text-only PDF/OCR lines become editable rows. Only date-leading lines with
- * an explicit currency (or user-selected default) are interpreted. Multiple
- * numeric columns require mapping instead of guessing which one is balance. */
+/** A dated block and merchant text are required. Separate signs, currencies
+ * and amounts must never become independent blank purchases. */
 function textTable(text: string): { name: string; rows: readonly string[][] } {
-  const rows: string[][] = [["Date", "Description", "Amount", "Currency", "Type"]];
-  const lines = text.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
-  const leadingDate = /^(\d{4}\s*[-/.년]\s*\d{1,2}\s*[-/.월]\s*\d{1,2}(?:일|\.(?=\s|$))?|\d{1,2}[-/.]\d{1,2}[-/.]\d{4}|\p{L}{3,10}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}(?:er)?\s+\p{L}{3,10}\.?\s+\d{4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?(?:\s+(.+))?$/iu;
+  const rows: string[][] = [["Date", "Description", "Amount", "Currency", "Type", "Status"]];
+  const lines = text.split(/\r?\n/u).map(line => line.normalize("NFKC").replace(/[−–]/gu, "-").replace(/\s+/gu, " ").trim()).filter(Boolean);
+  let years = statementContextYears(text);
+  const used = new Set<number>();
+  const leadingDate = /^(\d{4}\s*[-/.년]\s*\d{1,2}\s*[-/.월]\s*\d{1,2}(?:일|\.(?=\s|$))?|\d{1,2}[-/.]\d{1,2}[-/.]\d{4}|\p{L}{3,12}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}(?:er)?\s+\p{L}{3,12}\.?\s+\d{4}|\d{2}[.-]\d{1,2}[.-]\d{1,2}\.?|\d{1,2}(?:er)?\s+\p{L}{3,12}\.?|\d{1,2}(?:월|[./-])\s*\d{1,2}(?:일|\.)?)(?:,?\s+\d{1,2}:\d{2}(?::\d{2})?)?(?:\s+(.+))?$/iu;
+  const splitDate = (line: string) => { const match = leadingDate.exec(line); if (!match) return null; const date = parseStatementDateWithContext(match[1], years); return date ? { date, content: match[2] ?? "" } : null; };
+  const heading = (line: string) => /^(?:\p{L}{3,12}\.?\s+(?:19|20|21)\d{2}|(?:19|20|21)\d{2}년(?:\s*\d{1,2}월)?|Swile|KB(?:국민)?(?:카드|은행)?|Account statement|Transactions|Historique|내역|이용내역|거래내역)$/iu.test(line);
+  const metadata = (line: string) => /^(?:card|carte|카드|reference|référence|계좌|page)\s*[:：#]|\b(?:statement|relevé de compte)\b|조회기간|이용기간/iu.test(line);
+  const monetary = (content: string) => /^(.*?)\s+([+-]?\s*\(?\d[\d., '\u00a0\u202f]*\)?(?:\s*(?:€|EUR|USD|GBP|KRW|JPY|CNY|CHF|CAD|AUD|INR|KWD|유로|원|円|[$£₩¥]))?|(?:€|[$£₩¥]|EUR|USD|GBP|KRW)\s*[+-]?\s*\d[\d., '\u00a0\u202f]*)\s*$/iu.exec(content);
+  const moneyOnly = (content: string) => /^[+\-\s\d.,'()€$£₩¥]+(?:\s*(?:EUR|USD|GBP|KRW|JPY|CHF|CAD|AUD|원|유로))?$/iu.test(content);
   for (let index = 0; index < lines.length; index++) {
-    const date = leadingDate.exec(lines[index]);
-    if (!date) continue;
-    let content = date[2] ?? "";
-    // Mobile exports/OCR often put date, merchant and amount on separate lines.
-    // Join only nearby non-monetary continuation text, never a balance label.
-    for (let continuation = 0; continuation < 3 && index + 1 < lines.length; continuation++) {
-      const next = lines[index + 1];
-      if (leadingDate.test(next) || /(?:[€$£₩¥]|\b(?:EUR|USD|GBP|KRW|JPY|CHF|CAD|AUD)\b)/iu.test(content) || BALANCE.test(next) || /^(?:card|carte|카드|reference|계좌)\s*[:：]/iu.test(next)) break;
-      content = `${content} ${next}`.trim(); index++;
-      if (/[+-]\s*\d[\d.,]*\s*$/u.test(content)) break;
+    const line = lines[index];
+    if (heading(line)) { const context = statementContextYears(line); if (context.length === 1) years = context; continue; }
+    const anchor = splitDate(line); if (!anchor) continue;
+    let content = anchor.content; let status = ""; let last = index;
+    if (!content && index > 0 && !used.has(index - 1) && /\p{L}/u.test(lines[index - 1]) && !heading(lines[index - 1]) && !metadata(lines[index - 1]) && !splitDate(lines[index - 1]) && !moneyOnly(lines[index - 1])) { content = lines[index - 1]; used.add(index - 1); }
+    for (let continuation = 0; continuation < 8 && last + 1 < lines.length; continuation++) {
+      const next = lines[last + 1];
+      if (splitDate(next) || heading(next) || metadata(next)) break;
+      const found = monetary(content);
+      if (found && amountCurrency(found[2])) break;
+      if (FAILED.test(next) || CANCELLED.test(next) || REFUND.test(next) || /^Prix barré$/iu.test(next)) { status += ` ${next === "Prix barré" ? "failed" : next}`; last++; used.add(last); continue; }
+      if (/^(?:Consulter|Réactiver|Rendre éligible)/iu.test(next)) { last++; used.add(last); continue; }
+      if (found && /^[+-]\s*\d/u.test(found[2]) && !/^(?:€|EUR|USD|GBP|KRW|JPY|CHF|CAD|AUD|원|유로)$/iu.test(next)) break;
+      content = `${content} ${next}`.trim(); last++; used.add(last);
     }
-    const ending = /^(.*?)\s+([+-]?\(?\d[\d., '\u00a0\u202f]*\)?(?:\s*(?:€|EUR|USD|GBP|KRW|JPY|CNY|CHF|CAD|AUD|INR|KWD|유로|원|円|[$£₩¥]))?|(?:€|[$£₩¥]|EUR|USD|GBP|KRW)\s*[+-]?\d[\d., '\u00a0\u202f]*)\s*$/iu.exec(content);
-    if (!ending) { rows.push([date[1], content, "", "", ""]); continue; }
-    const description = ending[1].trim(); const amount = ending[2].trim();
-    // A preceding numeric amount is evidence of a multi-column statement.
-    if (/(?:^|\s)[+-]?\(?\d[\d., '\u00a0\u202f]*\)?\s*(?:[€$£₩¥]|[A-Z]{3}|원|円)?\s*$/u.test(description)) { rows.push([date[1], content, "", "", ""]); continue; }
-    rows.push([date[1], description, amount, amountCurrency(amount) ?? "", DEBIT.test(description) ? "payment" : ""]);
+    used.add(index); index = last;
+    const ending = monetary(content); const description = ending?.[1].trim() ?? content.trim();
+    if (!/\p{L}/u.test(description) || moneyOnly(description) || metadata(description) || heading(description)) continue;
+    if (!ending || /(?:^|\s)[+-]?\(?\d[\d., '\u00a0\u202f]*\)?\s*(?:[€$£₩¥]|[A-Z]{3}|원|円)?\s*$/u.test(description)) { rows.push([anchor.date, content, "", "", "", status.trim()]); continue; }
+    const amount = ending[2].trim();
+    const type = INCOME.test(description) || /^\+\s*\d/u.test(amount) && /\bSwile\b/iu.test(text) && !REFUND.test(`${description} ${status}`) ? "credit" : DEBIT.test(description) ? "payment" : "";
+    rows.push([anchor.date, description, amount, amountCurrency(amount) ?? "", type, status.trim()]);
   }
   return { name: "text", rows };
 }
@@ -400,6 +446,9 @@ export function previewExpenseDocument(document: ReadExpenseDocument, options: S
   if (!table) return completePreview([], [], [issue(0, "no_rows", [])], mapping, headers, tableIndex, headerRow, 0, existingState);
   const sourceRows = table.rows.slice(Math.max(0, headerRow + 1)); const excluded: StatementImportIssue[] = []; const issues: StatementImportIssue[] = [];
   if (mapping.date === undefined || mapping.description === undefined || (mapping.amount === undefined && mapping.debit === undefined)) issues.push(issue(0, "mapping_required", headers));
+  // Without identified columns, each PDF glyph/line used to become an empty
+  // editable payment. Keep the mapping controls, but create no fake rows.
+  if (issues.some(entry => entry.reason === "mapping_required")) return completePreview([], [], issues, mapping, headers, tableIndex, headerRow, sourceRows.length, existingState);
   if (document.scanned && !document.text.trim() && !sourceRows.length) issues.push(issue(0, "scanned_document", []));
   if (sourceRows.length > MAX_SOURCE_ROWS) issues.push(issue(0, "row_limit", []));
   const parsed: ParsedSourceRow[] = []; const identitySeen = new Map<string, ParsedSourceRow>(); const occurrences = new Map<string, number>(); const conflicts = new Set<string>();

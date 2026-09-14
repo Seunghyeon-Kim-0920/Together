@@ -261,6 +261,8 @@ final class PaymentNotificationParser {
             result.put("packageName", packageName);
             result.put("sourceName", clean(sourceName).isEmpty() ? packageName : clean(sourceName));
             result.put("merchant", merchantValue);
+            String categoryHint = PaymentCategoryHints.infer(merchantValue, safeTitle, body);
+            if (categoryHint != null) result.put("categoryHint", categoryHint);
             result.put("requiresMerchant", requiresMerchant);
             result.put("minorUnits", amount.minorUnits);
             result.put("currency", amount.currency);

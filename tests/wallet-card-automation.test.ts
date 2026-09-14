@@ -575,7 +575,7 @@ test("an explicit source assignment takes precedence over broad same-currency di
   assert.equal(result.state.ledgers[1].expenses.length, 1);
 });
 
-test("one worldwide card app can route explicit currencies to different ledgers", () => {
+test("one worldwide card app routes foreign currencies only after review", () => {
   const eur = Object.freeze({ ...configuredLedger(), id: "eur-ledger" });
   const usd = Object.freeze({ ...createLedger("general", "USD card", "USD"), automationSources: Object.freeze([{ packageName: candidate.packageName, displayName: candidate.sourceName, trustedDirectApp: true as const }]) });
   const state: WalletState = Object.freeze({ version: 2, locale: "en", activeLedgerId: eur.id, ledgers: Object.freeze([eur, usd]) });
@@ -587,7 +587,10 @@ test("one worldwide card app can route explicit currencies to different ledgers"
   const usdCandidate = Object.freeze({ ...candidate, id: "usd-purchase", currency: "USD", merchant: "New York Store" });
   const routed = applyHighConfidenceCardAutomation(state, [usdCandidate]);
   assert.equal(routed.state.ledgers[0].expenses.length, 0);
-  assert.equal(routed.state.ledgers[1].expenses.length, 1);
+  assert.equal(routed.state.ledgers[1].expenses.length, 0);
+  assert.equal(routed.pending[0].currencyReview, true);
+  const confirmed = confirmCardCandidate(routed.state, usd.id, routed.pending[0]);
+  assert.equal(confirmed.state.ledgers[1].expenses.length, 1);
 });
 
 test("a queued user edit merges onto the latest automatic insertion", () => {

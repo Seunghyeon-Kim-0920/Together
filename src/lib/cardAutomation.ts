@@ -1,3 +1,6 @@
+import { GENERAL_CATEGORIES } from "./types";
+import { createCategoryResolver } from "./categoryInference";
+export { inferGeneralCategory } from "./categoryInference";
 import { monthKey, monthTotal } from "./statistics";
 import type { AutomationPaymentReceipt, AutomationSource, GeneralCategory, GeneralExpense, GeneralLedger, Locale, WalletState } from "./types";
 import { MAX_AUTOMATION_PAYMENT_RECEIPTS, MAX_EXPENSES_PER_LEDGER } from "./wallet";
@@ -39,6 +42,8 @@ export interface NativeCardCandidate {
   readonly identityConflict?: boolean;
   /** A wallet/bank counterpart exists but cannot be safely paired automatically. */
   readonly possibleDuplicate?: boolean;
+  readonly categoryHint?: GeneralCategory;
+  readonly currencyReview?: boolean;
 }
 
 export interface ParsedCandidateBatch {
@@ -103,7 +108,8 @@ export function parseNativeCardCandidate(value: unknown): NativeCardCandidate | 
   if (!id || (value.queueToken !== undefined && value.queueToken !== null && !queueToken) || !packageName || !PACKAGE_NAME.test(packageName) || !sourceName || merchant === null || !occurredAt || !Number.isSafeInteger(value.minorUnits) || (value.minorUnits as number) <= 0 || !/^[A-Z]{3}$/.test(currency) || (value.confidence !== "high" && value.confidence !== "review") || !CARD_CANDIDATE_EVENT_TYPES.includes(eventType as CardCandidateEventType) || typeof manualOnly !== "boolean" || typeof requiresMerchant !== "boolean") return null;
   const occurredOn = value.occurredOn === undefined ? localCalendarDate(occurredAt) : validCalendarDate(value.occurredOn);
   if (!occurredOn) return null;
-  return Object.freeze({ id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, occurredOn, confidence: requiresMerchant ? "review" : value.confidence, eventType: eventType as CardCandidateEventType, manualOnly, ...(requiresMerchant ? { requiresMerchant: true } : {}) });
+  const categoryHint = GENERAL_CATEGORIES.includes(value.categoryHint as GeneralCategory) ? value.categoryHint as GeneralCategory : undefined;
+  return Object.freeze({ ...(categoryHint ? { categoryHint } : {}), id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, occurredOn, confidence: requiresMerchant ? "review" : value.confidence, eventType: eventType as CardCandidateEventType, manualOnly, ...(requiresMerchant ? { requiresMerchant: true } : {}) });
 }
 
 export function completeCandidateMerchant(candidate: NativeCardCandidate, merchant: string): NativeCardCandidate {
@@ -173,24 +179,6 @@ function shortFingerprint(value: string): string {
   return `${(left >>> 0).toString(16).padStart(8, "0")}${(right >>> 0).toString(16).padStart(8, "0")}`;
 }
 
-const CATEGORY_RULES: readonly [GeneralCategory, RegExp][] = [
-  ["transport", /\b(?:uber|bolt|taxi|sncf|ratp|train|metro|bus|tram|parking|fuel|essence|shell|totalenergies)\b/iu],
-  ["food", /\b(?:lidl|carrefour|auchan|monoprix|restaurant|cafe|café|coffee|starbucks|kfc|burger|mcdonald|market|supermarch|grocery|boulanger)\b/iu],
-  ["housing", /\b(?:rent|loyer|residence|résidence|landlord)\b/iu],
-  ["utilities", /\b(?:electric|électric|energy|energie|énergie|water|eau|internet|mobile|telecom|télécom)\b/iu],
-  ["health", /\b(?:pharmacy|pharmacie|doctor|médecin|hospital|hôpital|dentist|dentiste)\b/iu],
-  ["subscriptions", /\b(?:spotify|netflix|youtube|subscription|abonnement|icloud)\b/iu],
-  ["travel", /\b(?:hotel|hôtel|airbnb|airline|booking|hostel|aéroport|airport)\b/iu],
-  ["education", /\b(?:school|école|university|université|course|formation)\b/iu],
-  ["leisure", /\b(?:cinema|cinéma|theatre|théâtre|museum|musée|concert|game)\b/iu],
-  ["shopping", /\b(?:amazon|ikea|zara|uniqlo|decathlon|action|store|shop)\b/iu],
-];
-
-export function inferGeneralCategory(merchant: string): GeneralCategory {
-  for (const [category, pattern] of CATEGORY_RULES) if (pattern.test(merchant)) return category;
-  return "other";
-}
-
 function merchantFingerprint(value: string): string { return value.normalize("NFKD").toLocaleLowerCase("en").replace(/[\p{Diacritic}\p{Punctuation}\p{Separator}]+/gu, ""); }
 function candidateDate(candidate: NativeCardCandidate): string { return candidate.occurredOn; }
 const completedDraftOrigins = new WeakMap<NativeCardCandidate, string>();
@@ -208,8 +196,7 @@ function likelyExistingExpense(expenses: readonly GeneralExpense[], candidate: N
   return expenses.some((expense) => expense.automationFingerprint === origin || (expense.currency === candidate.currency && expense.minorUnits === candidate.minorUnits && expense.occurredOn === occurredOn && merchantFingerprint(expense.description) === merchant));
 }
 
-function candidateExpense(candidate: NativeCardCandidate, id = automationExpenseId(candidate)): GeneralExpense {
-  const category = candidate.eventType === "outgoing_transfer" ? "other" : inferGeneralCategory(candidate.merchant);
+function candidateExpense(candidate: NativeCardCandidate, category: GeneralCategory, id = automationExpenseId(candidate)): GeneralExpense {
   // When a user supplies a missing merchant, retain the fingerprint of the
   // original native draft. A replay of that unchanged alert must remain an
   // idempotent acknowledgement rather than looking like a changed identity.
@@ -286,6 +273,7 @@ export function reversalMatchIndexes(expenses: readonly GeneralExpense[], candid
 }
 
 export function applyHighConfidenceCardAutomation(state: WalletState, candidates: readonly NativeCardCandidate[]): AutomationBatchResult {
+  const resolveCategory = createCategoryResolver(state.ledgers);
   const ledgers = [...state.ledgers]; const acknowledgedIds = new Set<string>(); const insertedIds: string[] = []; const reversedIds: string[] = []; const pending: NativeCardCandidate[] = [];
   let receiptsChanged = false;
   const globallyRecorded = new Map<string, GeneralExpense[]>();
@@ -337,6 +325,12 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
       const identity = recordedIdentity(globallyRecorded, expenseId, origin);
       if (identity === "same") { acknowledgedIds.add(candidate.id); continue; }
       if (identity === "conflict") { pending.push(identityConflictCandidate(candidate)); continue; }
+    }
+    // An app trusted for a different ledger currency does not grant permission
+    // to auto-book foreign spending, even if a second currency ledger exists.
+    if (ledgers.some((item) => item.kind === "general" && item.currency !== candidate.currency
+      && item.automationSources.some((source) => source.packageName === candidate.packageName))) {
+      pending.push(Object.freeze({ ...candidate, confidence: "review", currencyReview: true })); continue;
     }
     const owners = ownerIndexes(ledgers, candidate);
     if (candidate.manualOnly || candidate.requiresMerchant) { pending.push(candidate.confidence === "review" ? candidate : Object.freeze({ ...candidate, confidence: "review" })); continue; }
@@ -392,7 +386,7 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     // legitimate second purchase. Keep fuzzy matches for explicit review and
     // only acknowledge deterministic native IDs automatically.
     if (movedExpenseIds.has(automationOriginFingerprint(candidate)) || likelyExistingExpense(ledger.expenses, candidate)) { pending.push(Object.freeze({ ...candidate, confidence: "review" })); continue; }
-    const expense = candidateExpense(candidate); globallyRecorded.set(expense.id, [expense]); insertedIds.push(candidate.id); acknowledgedIds.add(candidate.id);
+    const expense = candidateExpense(candidate, resolveCategory(candidate.merchant, ledger.id, candidate.categoryHint)); globallyRecorded.set(expense.id, [expense]); insertedIds.push(candidate.id); acknowledgedIds.add(candidate.id);
     ledgers[index] = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, expense]), updatedAt: new Date().toISOString() }), candidate);
   }
   const nextState = insertedIds.length || reversedIds.length || receiptsChanged ? Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }) : state;
@@ -403,6 +397,7 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
   if (candidate.requiresMerchant || !parseNativeCardCandidate(candidate)) throw new Error("incomplete candidate");
   const index = state.ledgers.findIndex((ledger) => ledger.id === ledgerId); const ledger = state.ledgers[index];
   if (!ledger || ledger.kind !== "general" || ledger.currency !== candidate.currency) throw new Error("incompatible candidate");
+  const category = createCategoryResolver(state.ledgers)(candidate.merchant, ledger.id, candidate.categoryHint);
   const expenseId = automationExpenseId(candidate);
   const movedExpenseIds = new Set(state.ledgers.flatMap((item) => item.kind === "general" ? item.movedExpenseIds ?? [] : []));
   const appliedReversals = new Set(state.ledgers.flatMap((item) => item.kind === "general" ? item.automationReversalIds : []));
@@ -447,7 +442,7 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
     if (possibleDuplicate && !hasIdentityConflict) {
       if (hasKnownIdentity) return Object.freeze({ state, inserted: false, reversed: false });
       if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
-      const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate)]), updatedAt: new Date().toISOString() }), candidate);
+      const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category)]), updatedAt: new Date().toISOString() }), candidate);
       const ledgers = [...state.ledgers]; ledgers[index] = updated;
       return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: true, reversed: false });
     }
@@ -459,12 +454,12 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
     if (revisionIdentity === "same" || movedExpenseIds.has(revisionId) && movedExpenseIds.has(origin) || appliedReversals.has(revisionId) && appliedReversals.has(origin)) return Object.freeze({ state, inserted: false, reversed: false });
     if (revisionIdentity === "conflict" || movedExpenseIds.has(revisionId) || appliedReversals.has(revisionId)) throw new Error("candidate-conflict");
     if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
-    const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, revisionId)]), updatedAt: new Date().toISOString() }), candidate, revisionId); const ledgers = [...state.ledgers]; ledgers[index] = updated;
+    const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category, revisionId)]), updatedAt: new Date().toISOString() }), candidate, revisionId); const ledgers = [...state.ledgers]; ledgers[index] = updated;
     return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: true, reversed: false });
   }
   if (hasKnownIdentity) return Object.freeze({ state, inserted: false, reversed: false });
   if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
-  const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate)]), updatedAt: new Date().toISOString() }), candidate); const ledgers = [...state.ledgers]; ledgers[index] = updated;
+  const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category)]), updatedAt: new Date().toISOString() }), candidate); const ledgers = [...state.ledgers]; ledgers[index] = updated;
   return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: true, reversed: false });
 }
 

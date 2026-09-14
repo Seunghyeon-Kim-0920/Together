@@ -1,3 +1,5 @@
+import { MAX_MERCHANT_CATEGORY_PREFERENCES } from "./categoryInference";
+import type { MerchantCategoryPreference } from "./types";
 import { currencyDigits } from "./currency";
 import { legacyPublicExpenseId, publicExpenseId } from "./expenseIdentity";
 import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationPaymentReceipt, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type StatementImportReceipt, type TravelExpense, type TravelLedger, type WalletState } from "./types";
@@ -133,6 +135,19 @@ function parseGeneralExpense(value: unknown, ledgerCurrency: string): GeneralExp
   return Object.freeze({ id, description, category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate, ...(automationFingerprint ? { automationFingerprint } : {}), ...(automationReversalFingerprint ? { automationReversalFingerprint } : {}) });
 }
 
+function parseMerchantCategoryPreferences(value: unknown): readonly MerchantCategoryPreference[] | null {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value) || value.length > MAX_MERCHANT_CATEGORY_PREFERENCES) return null;
+  const keys = new Set<string>(); const result: MerchantCategoryPreference[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return null;
+    const merchantKey = text(item.merchantKey, 500); const updatedAt = timestamp(item.updatedAt);
+    if (!merchantKey || !/^[\p{Letter}\p{Number}]+$/u.test(merchantKey) || !updatedAt || keys.has(merchantKey) || !GENERAL_CATEGORIES.includes(item.category as never)) return null;
+    keys.add(merchantKey); result.push(Object.freeze({ merchantKey, category: item.category as GeneralExpense["category"], updatedAt }));
+  }
+  return Object.freeze(result);
+}
+
 export function parseLedger(value: unknown): Ledger | null {
   if (!isRecord(value)) return null;
   const id = text(value.id, 100); const title = text(value.title, 80); const createdAt = timestamp(value.createdAt); const updatedAt = timestamp(value.updatedAt);
@@ -160,20 +175,21 @@ export function parseLedger(value: unknown): Ledger | null {
   }
   if (value.kind === "general") {
     const ledgerCurrency = currency(value.currency);
+    const merchantCategoryPreferences = parseMerchantCategoryPreferences(value.merchantCategoryPreferences);
     const monthlyLimitMinor = value.monthlyLimitMinor === undefined || value.monthlyLimitMinor === null ? null : positiveMinor(value.monthlyLimitMinor);
     const automationAllApps = value.automationAllApps === undefined ? false : value.automationAllApps;
     const automationSources = value.automationSources === undefined ? Object.freeze([]) : parseAutomationSources(value.automationSources);
     const automationReversalIds = value.automationReversalIds === undefined ? Object.freeze([]) : parseAutomationReversalIds(value.automationReversalIds);
     const movedExpenseIds = value.movedExpenseIds === undefined ? Object.freeze([]) : parseMovedExpenseIds(value.movedExpenseIds);
     const automationPaymentReceipts = ledgerCurrency ? parseAutomationPaymentReceipts(value.automationPaymentReceipts, ledgerCurrency) : null;
-    if (!ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds || !movedExpenseIds || !automationPaymentReceipts) return null;
+    if (!merchantCategoryPreferences || !ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds || !movedExpenseIds || !automationPaymentReceipts) return null;
     const expenses: GeneralExpense[] = [];
     for (const candidate of value.expenses) {
       const expense = parseGeneralExpense(candidate, ledgerCurrency);
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...(automationPaymentReceipts.length ? { automationPaymentReceipts } : {}), ...privateHistory } satisfies GeneralLedger);
+    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...(automationPaymentReceipts.length ? { automationPaymentReceipts } : {}), ...(merchantCategoryPreferences.length ? { merchantCategoryPreferences } : {}), ...privateHistory } satisfies GeneralLedger);
   }
   return null;
 }
@@ -265,8 +281,18 @@ export function mergeGeneralLedgerMutation(base: GeneralLedger, desired: General
     expenses.push(before && requested && !sameGeneralExpense(before, requested) ? requested : current);
   }
   for (const requested of desired.expenses) if (!baseById.has(requested.id) && !latestIds.has(requested.id) && !latest.movedExpenseIds.includes(requested.id)) expenses.push(requested);
+  const beforePreferences = new Map((base.merchantCategoryPreferences ?? []).map((entry) => [entry.merchantKey, entry]));
+  const mergedPreferences = new Map((latest.merchantCategoryPreferences ?? []).map((entry) => [entry.merchantKey, entry]));
+  for (const entry of desired.merchantCategoryPreferences ?? []) {
+    const before = beforePreferences.get(entry.merchantKey);
+    if (!before || before.category !== entry.category || before.updatedAt !== entry.updatedAt) {
+      mergedPreferences.delete(entry.merchantKey); mergedPreferences.set(entry.merchantKey, entry);
+    }
+  }
+  const merchantCategoryPreferences = Object.freeze([...mergedPreferences.values()].slice(-MAX_MERCHANT_CATEGORY_PREFERENCES));
   return Object.freeze({
     ...latest,
+    ...(merchantCategoryPreferences.length ? { merchantCategoryPreferences } : {}),
     title: desired.title !== base.title ? desired.title : latest.title,
     monthlyLimitMinor: desired.monthlyLimitMinor !== base.monthlyLimitMinor ? desired.monthlyLimitMinor : latest.monthlyLimitMinor,
     automationAllApps: desired.automationAllApps !== base.automationAllApps ? desired.automationAllApps : latest.automationAllApps,

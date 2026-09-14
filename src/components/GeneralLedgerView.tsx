@@ -6,7 +6,11 @@ import { generalCategoryLabel, t } from "../lib/i18n";
 import { exchangeText as x } from "../lib/exchangeI18n";
 import { documentText as d } from "../lib/documentI18n";
 import { designText as ux } from "../lib/designI18n";
-import { saveLedgerPdf } from "../lib/ledgerPdf";
+import { saveLedgerPdf, type LedgerPdfDateRange } from "../lib/ledgerPdf";
+import { pdfExportText } from "../lib/pdfExportI18n";
+import { rememberMerchantCategory } from "../lib/categoryInference";
+import { categoryText } from "../lib/categoryI18n";
+import { GeneralPdfExportSheet } from "./GeneralPdfExportSheet";
 import { merchantDisplayName, preserveImportedMerchantDescription } from "../lib/merchant";
 import type { CardAutomationStatus } from "../lib/nativeCardAutomation";
 import { addMonths, annualAverageComparison, categoryTotals, monthKey, monthlyTotals, previousMonthComparison, yearlyTotals } from "../lib/statistics";
@@ -23,6 +27,7 @@ export function GeneralLedgerView({ ledger, locale, automationStatus, pendingAut
   const [category, setCategory] = useState<GeneralCategory | "all">("all");
   const [formOpen, setFormOpen] = useState(false);
   const [expenseToEdit, setExpenseToEdit] = useState<GeneralExpense | null>(null);
+  const [pdfSheetOpen, setPdfSheetOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false); const pdfLock = useRef(false);
   const year = Number(selectedMonth.slice(0, 4));
   const month = Number(selectedMonth.slice(5, 7));
@@ -41,13 +46,13 @@ export function GeneralLedgerView({ ledger, locale, automationStatus, pendingAut
   const monthCategoryTotal = [...monthCategories.values()].reduce((sum, total) => sum + total, 0);
   const yearCategoryTotal = [...yearCategories.values()].reduce((sum, total) => sum + total, 0);
   const annualTotal = bars.reduce((sum, total) => sum + total, 0);
-  const update = (expenses: readonly GeneralExpense[]) => onChange(Object.freeze({ ...ledger, expenses: Object.freeze(expenses), updatedAt: new Date().toISOString() }));
+  const update = (expenses: readonly GeneralExpense[], confirmedExpense?: GeneralExpense, previous?: GeneralExpense) => onChange(Object.freeze({ ...(confirmedExpense ? rememberMerchantCategory(ledger, confirmedExpense, previous) : ledger), expenses: Object.freeze(expenses), updatedAt: new Date().toISOString() }));
   const openNewExpense = () => { setExpenseToEdit(null); setFormOpen(true); };
-  const exportPdf = async () => {
-    if (pdfLock.current) return;
+  const exportPdf = async (range?: LedgerPdfDateRange): Promise<boolean> => {
+    if (pdfLock.current) return false;
     pdfLock.current = true; setPdfBusy(true);
-    try { if (await saveLedgerPdf(ledger, locale)) onNotify(t(locale, "pdfReady"), "success"); }
-    catch (error) { if (!(error instanceof Error && error.name === "AbortError")) onNotify(t(locale, "pdfFailed"), "error"); }
+    try { if (await saveLedgerPdf(ledger, locale, range)) { onNotify(t(locale, "pdfReady"), "success"); return true; } return false; }
+    catch (error) { if (!(error instanceof Error && error.name === "AbortError")) onNotify(t(locale, "pdfFailed"), "error"); return false; }
     finally { pdfLock.current = false; setPdfBusy(false); }
   };
   const comparisonCopy = (percent: number | null) => percent === null ? t(locale, "newSpending") : percent === 0 ? t(locale, "noChange") : `${Math.abs(percent).toLocaleString(locale)}% ${percent > 0 ? t(locale, "moreSpent") : t(locale, "lessSpent")}`;
@@ -58,7 +63,7 @@ export function GeneralLedgerView({ ledger, locale, automationStatus, pendingAut
   const expenseDate = (date: string) => dateFormatter.format(new Date(`${date}T12:00:00`));
 
   return <section className="ledger-screen general-ledger">
-    <div className="ledger-screen-heading"><div><span>{t(locale, "generalLedger")}</span><h2>{ledger.title}</h2></div><div className="heading-actions"><button type="button" disabled={pdfBusy} title={d(locale, "saveHelp")} onClick={() => void exportPdf()}><FileDown />{ux(locale, "savePdf")}</button></div></div>
+    <div className="ledger-screen-heading"><div><span>{t(locale, "generalLedger")}</span><h2>{ledger.title}</h2></div><div className="heading-actions"><button type="button" disabled={pdfBusy} title={pdfExportText(locale, "saveHelp")} onClick={() => setPdfSheetOpen(true)}><FileDown />{ux(locale, "savePdf")}</button></div></div>
     {pdfBusy ? <p role="status">{d(locale, "saving")}</p> : null}
     <div className="ledger-segments" role="group" aria-label={t(locale, "generalLedger")}>{(["overview", "entries", "statistics"] as const).map((value) => <button type="button" className={section === value ? "active" : ""} key={value} aria-pressed={section === value} onClick={() => selectSection(value)}>{ux(locale, value)}</button>)}</div>
     <div className="month-navigation"><button type="button" aria-label={t(locale, "previousMonthButton")} onClick={() => setSelectedMonth(addMonths(selectedMonth, -1))}><ChevronLeft /></button><label className="month-picker"><span className="month-picker-label" aria-hidden="true">{monthFormatter.format(new Date(`${selectedMonth}-01T12:00:00`))}<CalendarDays /></span><input type="month" aria-label={t(locale, "selectMonth")} value={selectedMonth} onChange={(event) => { if (event.target.value) setSelectedMonth(event.target.value); }} /></label><button type="button" aria-label={t(locale, "nextMonthButton")} onClick={() => setSelectedMonth(addMonths(selectedMonth, 1))}><ChevronRight /></button></div>
@@ -89,7 +94,8 @@ export function GeneralLedgerView({ ledger, locale, automationStatus, pendingAut
     </div> : null}
     {section === "entries" ? <section className="mobile-panel expense-history"><div className="section-heading"><h3>{t(locale, "history")}</h3><strong>{formatMoney(comparison.current, ledger.currency, locale)}</strong></div>{monthExpenses.length ? <div className="expense-list">{monthExpenses.map((expense) => <article key={expense.id}><span className={`category-icon category-${expense.category}`}><GeneralCategoryIcon category={expense.category} /></span><div><strong>{merchantDisplayName(expense.description, expense.id)}</strong><small>{generalCategoryLabel(locale, expense.category)} · <time dateTime={expense.occurredOn}>{expenseDate(expense.occurredOn)}</time></small></div><b>{formatMoney(expense.minorUnits, expense.currency, locale)}</b><span className="expense-actions"><button type="button" aria-label={`${t(locale, "edit")}: ${merchantDisplayName(expense.description, expense.id)}`} onClick={() => editExpense(expense)}><Pencil /></button><button type="button" aria-label={`${t(locale, "delete")}: ${merchantDisplayName(expense.description, expense.id)}`} onClick={() => { void update(ledger.expenses.filter((candidate) => candidate.id !== expense.id)).then((saved) => { if (saved) onNotify(t(locale, "expenseDeleted"), "success"); }); }}><Trash2 /></button></span><button className="move-expense-button" type="button" onClick={() => onMove(expense)}><ArrowRightLeft />{x(locale, "move")}</button></article>)}</div> : <p className="ledger-empty">{t(locale, "noExpenses")}</p>}</section> : null}
     <button className="floating-add" type="button" onClick={openNewExpense}><Plus />{ux(locale, "recordExpense")}</button>
-    {formOpen ? <GeneralExpenseSheet ledger={ledger} locale={locale} expense={expenseToEdit} onClose={() => { setFormOpen(false); setExpenseToEdit(null); }} onSave={async (expense) => { const saved = await update(expenseToEdit ? replaceExpenseById(ledger.expenses, expense) : [...ledger.expenses, expense]); if (saved) { setFormOpen(false); setExpenseToEdit(null); onNotify(t(locale, expenseToEdit ? "expenseUpdated" : "expenseAdded"), "success"); } }} onNotify={onNotify} /> : null}
+    {pdfSheetOpen ? <GeneralPdfExportSheet ledger={ledger} locale={locale} onClose={() => setPdfSheetOpen(false)} onSave={exportPdf} /> : null}
+    {formOpen ? <GeneralExpenseSheet ledger={ledger} locale={locale} expense={expenseToEdit} onClose={() => { setFormOpen(false); setExpenseToEdit(null); }} onSave={async (expense) => { const saved = await update(expenseToEdit ? replaceExpenseById(ledger.expenses, expense) : [...ledger.expenses, expense], expense, expenseToEdit ?? undefined); if (saved) { setFormOpen(false); setExpenseToEdit(null); onNotify(t(locale, expenseToEdit ? "expenseUpdated" : "expenseAdded"), "success"); } }} onNotify={onNotify} /> : null}
   </section>;
 }
 
@@ -126,7 +132,7 @@ function GeneralExpenseSheet({ ledger, locale, expense, onClose, onSave, onNotif
     saveLock.current = true; setSaving(true);
     try { await onSave(Object.freeze({ id: expense?.id ?? crypto.randomUUID(), description: expense ? preserveImportedMerchantDescription(expense.description, editedDescription, expense.id) : editedDescription, category, currency: ledger.currency, minorUnits, occurredOn, ...(expense?.automationFingerprint ? { automationFingerprint: expense.automationFingerprint } : {}), ...(expense?.automationReversalFingerprint ? { automationReversalFingerprint: expense.automationReversalFingerprint } : {}) })); } finally { saveLock.current = false; setSaving(false); }
   };
-  return <SheetFrame title={t(locale, expense ? "editExpense" : "addExpense")} locale={locale} onClose={() => { if (!saving) onClose(); }}><div className="expense-form-grid"><label>{t(locale, "description")}<input value={description} maxLength={500} onChange={(event) => setDescription(event.target.value)} autoFocus /></label><label>{t(locale, "amount")}<div className="amount-field"><input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /><span>{ledger.currency}</span></div></label><label>{t(locale, "category")}<select value={category} onChange={(event) => setCategory(event.target.value as GeneralCategory)}>{GENERAL_CATEGORIES.map((code) => <option value={code} key={code}>{generalCategoryLabel(locale, code)}</option>)}</select></label><label>{t(locale, "date")}<input type="date" value={occurredOn} onChange={(event) => setOccurredOn(event.target.value)} /></label><button className="primary-button wide" type="button" disabled={saving} onClick={() => void submit()}>{t(locale, expense ? "saveChanges" : "addExpense")}</button></div></SheetFrame>;
+  return <SheetFrame title={t(locale, expense ? "editExpense" : "addExpense")} locale={locale} onClose={() => { if (!saving) onClose(); }}><div className="expense-form-grid"><label>{t(locale, "description")}<input value={description} maxLength={500} onChange={(event) => setDescription(event.target.value)} autoFocus /></label><label>{t(locale, "amount")}<div className="amount-field"><input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /><span>{ledger.currency}</span></div></label><label>{t(locale, "category")}<select value={category} onChange={(event) => setCategory(event.target.value as GeneralCategory)}>{GENERAL_CATEGORIES.map((code) => <option value={code} key={code}>{generalCategoryLabel(locale, code)}</option>)}</select><small>{categoryText(locale, "remembered")}</small></label><label>{t(locale, "date")}<input type="date" value={occurredOn} onChange={(event) => setOccurredOn(event.target.value)} /></label><button className="primary-button wide" type="button" disabled={saving} onClick={() => void submit()}>{t(locale, expense ? "saveChanges" : "addExpense")}</button></div></SheetFrame>;
 }
 
 function compactMoney(minorUnits: number, currency: string, locale: Locale): string { return new Intl.NumberFormat(locale, { notation: "compact", maximumFractionDigits: 1 }).format(minorUnits / 10 ** currencyDigits(currency)); }

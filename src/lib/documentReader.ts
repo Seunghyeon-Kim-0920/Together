@@ -1,7 +1,7 @@
 import type { LedgerShareDocument } from "./share";
 import { parseLedgerShareDocument } from "./share";
 import { recognizeImage } from "./documentFiles";
-import { detectStatementColumns, parseStatementDate } from "./statementImport";
+import { detectStatementColumns, parseStatementDate, parseStatementDateWithContext, statementContextYears } from "./statementImport";
 
 export interface DocumentTable { name: string; rows: string[][]; }
 export interface ReadDocument { name: string; tables: DocumentTable[]; text: string; ledger: LedgerShareDocument | null; scanned: boolean; }
@@ -63,11 +63,34 @@ function positionedLines(items: readonly PositionedDocumentText[]): PositionedLi
  * the same transaction. Only a labelled transaction table supplies geometry. */
 export function extractPositionedStatementTables(pages: readonly (readonly PositionedDocumentText[])[]): DocumentTable[] {
   const output: DocumentTable[] = [];
+  const years = statementContextYears(pages.map(page => positionedLines(page).map(line => line.items.map(item => item.text).join(" ")).join("\n")).join("\n"));
   let sectionStatus = "";
   for (const [pageIndex, page] of pages.entries()) {
     const lines = positionedLines(page);
-    let current: { headers: PositionedDocumentText[]; mapping: ReturnType<typeof detectStatementColumns>; table: DocumentTable; lastY: number; height: number } | null = null;
-    for (const line of lines) {
+    let current: { headers: PositionedDocumentText[]; mapping: ReturnType<typeof detectStatementColumns>; table: DocumentTable; lastY: number; height: number; pending?: { cells: string[]; y: number; height: number } } | null = null;
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      let line = lines[lineIndex];
+      const next = lines[lineIndex + 1];
+      // KB-style table headings often wrap vertically: 이용 / 일자,
+      // 이용 / 가맹점명 and 이용 / 금액. Merge only a header-shaped pair,
+      // never arbitrary nearby transaction lines.
+      if (next && next.y - line.y <= Math.max(16, line.height * 1.8) && line.items.length >= 2 && next.items.length >= 2 && !line.items.some(item => parseStatementDateWithContext(item.text, years))) {
+        const joined = line.items.map(item => ({ ...item })); let aligned = 0;
+        for (const lower of next.items) {
+          const upper = joined.find(item => Math.abs(item.x - lower.x) <= Math.max(12, line.height * 1.5));
+          if (upper) { upper.text += ` ${lower.text}`; upper.width = Math.max(upper.width ?? 0, lower.width ?? 0); aligned++; }
+          else joined.push({ ...lower });
+        }
+        const joinedMapping = detectStatementColumns(joined.map(item => item.text));
+        if (aligned >= 2 && joinedMapping.date !== undefined && joinedMapping.description !== undefined && (joinedMapping.amount !== undefined || joinedMapping.debit !== undefined)) { line = { ...line, items: joined.sort((a, b) => a.x - b.x) }; lineIndex++; }
+      }
+      const basicMapping = detectStatementColumns(line.items.map(item => item.text));
+      const above = lines[lineIndex - 1];
+      if (above && line.y - above.y <= Math.max(16, line.height * 1.8) && basicMapping.date !== undefined && basicMapping.description !== undefined && (basicMapping.amount !== undefined || basicMapping.debit !== undefined)) {
+        const right = Math.max(...line.items.map(item => item.x + (item.width ?? 0)));
+        const floating = above.items.filter(item => item.x > right + 2 && /(?:balance|solde|잔액|잔고)/iu.test(item.text));
+        if (floating.length) line = { ...line, items: [...line.items, ...floating].sort((a, b) => a.x - b.x) };
+      }
       const headerText = line.items.map((item) => item.text);
       const heading = headerText.join(" ").trim();
       // Some statements put reversals in a separate table with no row-level
@@ -102,22 +125,30 @@ export function extractPositionedStatementTables(pages: readonly (readonly Posit
       }
       const dateIndex = columns.date!; const descriptionIndex = columns.description!;
       const date = cells[dateIndex];
-      const dateLike = !!parseStatementDate(date, "dmy") || !!parseStatementDate(date, "mdy") || /^\d{4}[.\-/년]/u.test(date) || /^\d{1,2}[.\-/]/u.test(date);
+      const normalizedDate = parseStatementDateWithContext(date, years);
+      const dateLike = !!normalizedDate || !!parseStatementDate(date, "dmy") || !!parseStatementDate(date, "mdy") || /^\d{4}[.\-/년]/u.test(date) || /^\d{1,2}[.\-/]/u.test(date);
       const moneyColumns = [columns.amount, columns.debit, columns.credit].filter((value): value is number => value !== undefined);
       const hasAmount = moneyColumns.some((index) => /\d/u.test(cells[index]));
       if (dateLike) {
+        if (normalizedDate && !parseStatementDate(date, "dmy") && !parseStatementDate(date, "mdy")) cells[dateIndex] = normalizedDate;
+        if (!cells[descriptionIndex] && current.pending && line.y - current.pending.y <= Math.max(16, current.pending.height * 1.8)) cells[descriptionIndex] = current.pending.cells[descriptionIndex];
+        current.pending = undefined;
         table.rows.push(sectionStatus && columns.status === undefined ? [...cells, sectionStatus] : cells); current.lastY = line.y; current.height = line.height;
       } else if (!date && table.rows.length > 1 && line.y - current.lastY <= Math.max(22, current.height * 2.8)) {
         const previous = table.rows[table.rows.length - 1];
         // Small-print card numbers, FX amounts and recipient/account metadata
         // are not extra purchases and must not contaminate the merchant.
-        const metadata = /^(?:card|carte|카드|from|to|de|vers|받는\s*사람|보낸\s*사람|계좌|reference|référence|환율|exchange rate|fee|수수료)\s*[:：]/iu.test(cells[descriptionIndex]);
+        const metadata = /^(?:card|carte|카드|from|to|de|vers|받는\s*사람|보낸\s*사람|계좌|reference|référence|환율|exchange rate|fee|수수료)\s*[:：]|^(?:Paiement Titres-resto|Rechargement employeur\b)/iu.test(cells[descriptionIndex]);
         if (line.height < current.height * .8 || metadata) continue;
         const onlyDescription = cells.every((cell, index) => !cell || index === descriptionIndex);
         if (onlyDescription) previous[descriptionIndex] = `${previous[descriptionIndex]} ${cells[descriptionIndex]}`.trim();
         else if (hasAmount && moneyColumns.every((index) => !previous[index])) {
           for (let index = 0; index < cells.length; index++) if (cells[index]) previous[index] = `${previous[index]} ${cells[index]}`.trim();
         }
+      } else if (!date && cells[descriptionIndex] && !hasAmount && cells.every((cell, index) => !cell || index === descriptionIndex)) {
+        // In transaction cards inside a table, the merchant sits above the
+        // date/amount baseline; keep it for that next row, not the prior one.
+        current.pending = { cells, y: line.y, height: line.height };
       }
     }
   }

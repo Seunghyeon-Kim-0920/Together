@@ -52,7 +52,7 @@ try {
     [NotificationIcuGate]::u_getVersion($version)
     [pscustomobject]@{ Engine = 'Windows native ICU'; Version = ($version -join '.'); Patterns = $patterns.Count; CompileFailures = $failures.Count } | ConvertTo-Json -Compress
     if ($failures.Count -gt 0) { $failures | Format-Table | Out-String | Write-Output; throw 'Android-incompatible regular expressions found.' }
-    if ($patterns.Count -lt 52) { throw 'Incomplete parser pattern inventory.' }
+    if ($patterns.Count -lt 64) { throw 'Incomplete parser/category pattern inventory.' }
 
     # Prove that the gate catches the exact old class-initialization failure.
     $oldPattern = '(?iuU)\b(?:available\s+credit|credit\s+(?:available|remaining))\b'
@@ -64,6 +64,11 @@ try {
     # Native-ICU matching also covers French Unicode boundaries and Korean text;
     # these are regression fixtures, never user transaction content.
     $cases = @(
+        @('CATEGORY_0', 'uber eats', $true),
+        @('CATEGORY_2', 'pharmacie du centre', $true),
+        @('CATEGORY_3', '스타벅스 강남점', $true),
+        @('CATEGORY_6', 'buster example', $false),
+        @('CATEGORY_8', '월세 이체', $true),
         @('CREDIT_BALANCE_LABEL', 'Available credit', $true),
         @('CREDIT_BALANCE_LABEL', 'Credit remaining', $true),
         @('INCOMING_PAYMENT', 'Paiement reçu 12,34 €', $true),

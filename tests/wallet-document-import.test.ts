@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createLedgerSharePayload, parseLedgerShareDocument } from "../src/lib/share";
-import { applyStatementImport, detectStatementColumns, parseStatementAmount, parseStatementDate, previewExpenseDocument, validateStatementImportRow, type ReadExpenseDocument, type StatementImportRow } from "../src/lib/statementImport";
+import { applyStatementImport, detectStatementColumns, parseStatementAmount, parseStatementDate, parseStatementDateWithContext, statementContextYears, previewExpenseDocument, validateStatementImportRow, type ReadExpenseDocument, type StatementImportRow } from "../src/lib/statementImport";
 import { EMPTY_WALLET_STATE, type WalletState } from "../src/lib/types";
 import { createLedger, parseWalletStateStrict, settleTravelExpenses } from "../src/lib/wallet";
 
@@ -60,6 +60,27 @@ test("headerless PDF dates, merchant and amount on separate lines retain their a
   assert.deepEqual(result.rows.map(row => [row.description, row.occurredOn, row.minorUnits, row.selected]), [["Corner Cafe", "2026-09-18", 1234, true], ["Museum", "2026-09-19", 2000, true], ["테스트 식당", "2026-09-20", 12000, true]]);
   const summary = previewExpenseDocument(document([], {tables:[],text:"Account statement\nOpening balance €1200.00\nClosing balance €900.00"}));
   assert.equal(summary.rows.length, 0);
+});
+
+test("merchant-first cards join detached signs and currency and exclude failed payments and credits", () => {
+  const result = previewExpenseDocument(document([], { tables: [], text: "Demo Card\nAoût 2026\nBlue Cafe\n14 août, 19:45\n−\n8 , 38\n€\nGreen Market\n13 août, 11:36\n- 7,37 €\nBlue Cafe\n12 août, 10:34\nVotre paiement a échoué car vous avez atteint la limite journalière.\nPrix barré\n-\n1,04\n€\nEmployer credit\n11 août, 12:00\n+\n180,00\n€\nJuillet 2026\nOld Cafe\n31 juillet, 17:42\n-2,78 €" }));
+  assert.deepEqual(result.rows.map(row => [row.description, row.occurredOn, row.minorUnits, row.selected]), [["Blue Cafe", "2026-08-14", 838, true], ["Green Market", "2026-08-13", 737, true], ["Old Cafe", "2026-07-31", 278, true]]);
+  assert.deepEqual(result.excluded.map(row => row.reason).sort(), ["failed", "income"]);
+});
+
+test("unmapped PDF glyphs and bare amounts create no empty purchase rows", () => {
+  const result = previewExpenseDocument(document([["-", "12"], ["+", "300"], ["€", "3,40"], ["1", "2"]]));
+  assert.equal(result.rows.length, 0); assert.equal(result.issues[0].reason, "mapping_required");
+  const text = previewExpenseDocument(document([], { tables: [], text: "2026-08-14\n-\n8,38\n€\n2026-08-15\n+\n180,00\n€" }));
+  assert.equal(text.rows.length, 0);
+});
+
+test("document dates use only explicit full-year context and reject ambiguous or invalid calendar guesses", () => {
+  assert.deepEqual(statementContextYears("이용기간 2026.08.01 ~ 2026.08.31"), [2026]);
+  assert.equal(parseStatementDateWithContext("26.08.14", [2026]), "2026-08-14");
+  assert.equal(parseStatementDateWithContext("14 août, 19:45", [2026]), "2026-08-14");
+  assert.equal(parseStatementDateWithContext("08.14", [2026]), "2026-08-14");
+  for (const [value, years] of [["26.08.14", []], ["14 août", []], ["14 août", [2025, 2026]], ["26.02.30", [2026]], ["08/09", [2026]], ["Hier, 10:51", [2026]]] as const) assert.equal(parseStatementDateWithContext(value, years), null, value);
 });
 
 test("Korean, English and French mappings identify expenses without selecting balances or credits", () => {
@@ -310,12 +331,13 @@ test("plain-text PDF/OCR line extraction leaves ambiguous balance columns for ma
 test("headerless PDF and OCR reader tables retain the first payment and offer virtual editable columns", () => {
   const result = previewExpenseDocument(document([["2026-09-01 Lidl -10 EUR"], ["2026-09-02 Cafe -5 EUR"]]));
   assert.deepEqual(result.rows.map((item) => [item.description, item.minorUnits, item.selected]), [["Lidl", 1000, true], ["Cafe", 500, true]]);
-  assert.deepEqual(result.headers, ["Date", "Description", "Amount", "Currency", "Type"]);
+  assert.deepEqual(result.headers, ["Date", "Description", "Amount", "Currency", "Type", "Status"]);
   const separated = previewExpenseDocument(document([["2026-09-01", "Lidl", "-10", "EUR", "completed"], ["2026-09-02", "Cafe", "-5", "EUR", "completed"]]), { headerRow: -1, mapping: { date: 0, description: 1, amount: 2, currency: 3, status: 4 } });
   assert.equal(separated.rows.length, 2); assert.equal(separated.rows[0].minorUnits, 1000);
   const unknown = previewExpenseDocument(document([["Merchant first", "2026-09-01", "-10"], ["Merchant second", "2026-09-02", "-5"]]));
   assert.equal(unknown.headerRow, -1, "a low-scoring first data row is not silently treated as a header");
-  assert.equal(unknown.rows.length, 2);
+  assert.equal(unknown.rows.length, 0, "unmapped fragments must not become empty editable payments");
+  assert.ok(unknown.issues.some(item => item.reason === "mapping_required"));
 });
 
 test("explicit different transaction IDs preserve equal real purchases", () => {

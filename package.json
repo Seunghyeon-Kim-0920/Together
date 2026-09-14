@@ -1,6 +1,6 @@
 {
   "name": "wallet-diary",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -9,7 +9,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts tests/wallet-document-import.test.ts tests/wallet-document-reader.test.ts tests/wallet-pdf.test.ts",
+    "test": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts tests/wallet-document-import.test.ts tests/wallet-document-reader.test.ts tests/wallet-pdf.test.ts tests/wallet-category-learning.test.ts",
     "android:sync": "npm run build && cap sync android",
     "ios:sync": "npm run build && cap sync ios",
     "typecheck": "tsc --noEmit",
