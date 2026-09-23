@@ -204,13 +204,13 @@ function candidateExpense(candidate: NativeCardCandidate, category: GeneralCateg
   return Object.freeze({ id, description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits, occurredOn: candidateDate(candidate), automationFingerprint, automationReversalFingerprint: automationReversalFingerprint(candidate) });
 }
 
-function duplicateEvidence(candidate: NativeCardCandidate, id = automationExpenseId(candidate)): PaymentDuplicateEvidence {
-  return { ...candidate, expenseId: id, originFingerprint: completedDraftOrigins.get(candidate) ?? automationOriginFingerprint(candidate), reversalFingerprint: automationReversalFingerprint(candidate) };
+function duplicateEvidence(candidate: NativeCardCandidate, id = automationExpenseId(candidate), category?: GeneralCategory): PaymentDuplicateEvidence {
+  return { ...candidate, ...(category ? { category } : {}), expenseId: id, originFingerprint: completedDraftOrigins.get(candidate) ?? automationOriginFingerprint(candidate), reversalFingerprint: automationReversalFingerprint(candidate) };
 }
 
 function recordPaymentReceipt(ledger: GeneralLedger, candidate: NativeCardCandidate, expenseId = automationExpenseId(candidate)): GeneralLedger {
   if (candidate.eventType !== "purchase" || candidate.manualOnly || candidate.requiresMerchant) return ledger;
-  const receipts = [...ledger.automationPaymentReceipts ?? [], paymentReceipt(duplicateEvidence(candidate, expenseId), expenseId)];
+  const receipts = [...ledger.automationPaymentReceipts ?? [], paymentReceipt(duplicateEvidence(candidate, expenseId, ledger.expenses.find((expense) => expense.id === expenseId)?.category), expenseId)];
   return Object.freeze({ ...ledger, automationPaymentReceipts: Object.freeze(receipts.slice(-MAX_AUTOMATION_PAYMENT_RECEIPTS)) });
 }
 
@@ -352,8 +352,14 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     if (candidate.eventType === "purchase") {
       const evidence = duplicateEvidence(candidate); const duplicate = findCrossSourcePayment(ledgers, evidence);
       if (duplicate) {
+        // Equal amounts in separate ledgers may be separate purchases. A
+        // trusted app assignment must never silently redirect that spend.
+        if (duplicate.ledgerIndex !== index) {
+          pending.push(Object.freeze({ ...candidate, confidence: "review", possibleDuplicate: true }));
+          continue;
+        }
         const owner = ledgers[duplicate.ledgerIndex];
-        if (owner.kind === "general") ledgers[duplicate.ledgerIndex] = joinPaymentReceipt(owner, duplicate, evidence);
+        if (owner.kind === "general") ledgers[duplicate.ledgerIndex] = joinPaymentReceipt(owner, duplicate, { ...evidence, category: resolveCategory(candidate.merchant, owner.id, candidate.categoryHint) });
         receiptsChanged = true; acknowledgedIds.add(candidate.id); continue;
       }
     }
@@ -423,8 +429,9 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
     if (receiptIdentity === "conflict") throw new Error("candidate-conflict");
     const duplicate = candidate.manualOnly ? null : findCrossSourcePayment(state.ledgers, evidence);
     if (duplicate) {
+      if (duplicate.ledgerIndex !== index) throw new Error("candidate-possible-duplicate");
       const owner = state.ledgers[duplicate.ledgerIndex]; const ledgers = [...state.ledgers];
-      if (owner.kind === "general") ledgers[duplicate.ledgerIndex] = joinPaymentReceipt(owner, duplicate, evidence);
+      if (owner.kind === "general") ledgers[duplicate.ledgerIndex] = joinPaymentReceipt(owner, duplicate, { ...evidence, category: createCategoryResolver(state.ledgers)(candidate.merchant, owner.id, candidate.categoryHint) });
       return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: false, reversed: false });
     }
     if (hasPossibleCrossSourcePayment(state.ledgers, evidence)) throw new Error("candidate-possible-duplicate");

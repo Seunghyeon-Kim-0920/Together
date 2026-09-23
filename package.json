@@ -1,6 +1,6 @@
 {
   "name": "wallet-diary",
-  "version": "1.7.3",
+  "version": "1.8.2",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -9,7 +9,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts tests/wallet-document-import.test.ts tests/wallet-document-reader.test.ts tests/wallet-pdf.test.ts tests/wallet-category-learning.test.ts",
+    "test": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts tests/wallet-document-import.test.ts tests/wallet-document-reader.test.ts tests/wallet-pdf.test.ts tests/wallet-category-learning.test.ts tests/wallet-payment-duplicates.test.ts tests/wallet-shared-travel.test.ts tests/wallet-shared-local.test.ts tests/wallet-privacy.test.ts",
+    "test:shared:emulator": "firebase emulators:exec --only firestore --project demo-wallet-diary \"tsx --test tests/wallet-shared-travel-emulator.test.ts\"",
     "android:sync": "npm run build && cap sync android",
     "ios:sync": "npm run build && cap sync ios",
     "typecheck": "tsc --noEmit",
@@ -25,6 +26,7 @@
     "@capacitor/share": "^8.0.0",
     "@capacitor/status-bar": "^8.0.3",
     "fflate": "0.8.3",
+    "firebase": "^12.19.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^1.30.0",
@@ -36,12 +38,14 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.0.0",
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "eslint": "9.39.4",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "firebase-tools": "^15.30.2",
     "tsx": "^4.23.11",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.67.0",

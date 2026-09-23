@@ -22,7 +22,7 @@ import org.json.JSONObject;
 
 final class PaymentNotificationParser {
 
-    static final int PARSER_VERSION = 6;
+    static final int PARSER_VERSION = 7;
 
     // Android uses ICU, not the desktop JDK regex engine. In particular the
     // embedded UNICODE_CHARACTER_CLASS flag (?U) is unsupported and throws
@@ -121,7 +121,16 @@ final class PaymentNotificationParser {
         "(?u)(?<![\\p{L}\\p{N}])([+−-]?[\\p{Zs}\\t]*\\(?\\d[\\d\\p{Zs}\\t\\u00a0\\u202f'.,]*\\)?)[\\p{Zs}\\t]*(" + CURRENCY_TOKEN + ")(?![\\p{L}\\p{N}])"
     );
     private static final Pattern MERCHANT_AFTER = Pattern.compile(
-        "(?iu)(?:\\bat\\b|\\bchez\\b|\\bmerchant\\b|\\bcommer[çc]ant\\b|\\b(?:paid|payment)\\s+to\\b|\\b(?:pagado|pago)\\s+(?:a|en)\\b|\\b(?:pago|pagamento)\\s+(?:a|em)\\b|\\bbei\\b|\\bpresso\\b|\\besercente\\b|\\bcomercio\\b|\\bestablecimiento\\b|가맹점|사용처|에서|店舗|加盟店|商户|商戶|商家|لدى|متجر)\\s*[:：-]?\\s*([^\\n;]{2,100})"
+        "(?iu)(?:\\bat\\b|\\bchez\\b|\\bmerchant(?:\\s+name)?\\b|\\b(?:retailer|store|business)\\s+name\\b|\\bcommer[çc]ant\\b|\\b(?:paid|payment)\\s+to\\b|\\b(?:pagado|pago)\\s+(?:a|en)\\b|\\b(?:pago|pagamento)\\s+(?:a|em)\\b|\\bbei\\b|\\bpresso\\b|\\besercente\\b|\\bcomercio\\b|\\bestablecimiento\\b|(?:이용|사용)?가맹점(?:명)?|사용처|이용처|거래처|결제처|店舗(?:名)?|加盟店(?:名)?|商户(?:名称)?|商戶(?:名稱)?|商家|لدى|متجر)\\s*[:：-]?\\s*([^\\n;]{1,100})"
+    );
+    private static final Pattern MERCHANT_PAYMENT_TO = Pattern.compile(
+        "(?iu)\\b(?:paid|payment|purchase|spent|paiement|achat|pagamento)\\b[^\\n;]{0,80}?\\s(?:to|à|a(?!\\s+[ée]t[ée]" + PHRASE_END + ")|en|em)\\s+([^\\n;]{1,100})"
+    );
+    private static final Pattern MERCHANT_KOREAN_BEFORE = Pattern.compile(
+        "(?mu)^\\s*([\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N} &+’'().*/#-]{0,79}?)에서(?=\\s|\\d)(?:[^\\n]*)$"
+    );
+    private static final Pattern MERCHANT_METADATA = Pattern.compile(
+        "(?iu)(^(?:of|for|at|to|in|from|de|du|à|n/?a|null|none|미상|알\\s*수\\s*없음|不明)$|\\b(?:ending|ends in|used with|success(?:ful(?:ly)?)?|unknown|unavailable|details|debit|credit|visa|mastercard|amex|web.?sent|reference|ref|you|your|we|our|received|credited|account|votre|vous|nous|montant)\\b|일시불|할부|누적|총 ?이용|이용 ?누계|결제 ?완료|사용 ?완료|승인|거래 ?일시|이용 ?일시|결제 ?일시|Web발신|가맹점명|사용처|이용처|거래처|결제처|카드 ?번호|계좌|잔액|금액|받았|입니다|되었습니다|알림|님(?:께서|의|이)?(?:\\s|$)|利用日時|利用金額|卡号|卡號)"
     );
     private static final Pattern COUNTERPARTY_AFTER = Pattern.compile(
         "(?iu)(?:\\b(?:sent|transferred)\\s+to\\b|\\b(?:recipient|beneficiary|payee|creditor)\\b|\\b(?:to|vers)\\b|\\b(?:bénéficiaire|destinataire|créancier)\\b|au bénéfice de|받는 ?(?:분|사람)|수취인|예금주)\\s*[:：-]?\\s*([^\\n;]{2,100})"
@@ -154,11 +163,11 @@ final class PaymentNotificationParser {
     private static final Pattern TRAILING_WHITESPACE = Pattern.compile("\\s+$");
     private static final Pattern TRAILING_DECIMAL_PUNCTUATION = Pattern.compile("[.,]+$");
     private static final Pattern NUMBER_SHAPE = Pattern.compile("\\d[\\d.,]*");
-    private static final Pattern BODY_MERCHANT_SHAPE = Pattern.compile("(?u)[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N} '&’().-]*");
-    private static final Pattern MERCHANT_SHAPE = Pattern.compile("(?u)[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N} &+’'().-]*");
+    private static final Pattern BODY_MERCHANT_SHAPE = Pattern.compile("(?u)[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N} &+’'().*/#-]*");
+    private static final Pattern MERCHANT_SHAPE = Pattern.compile("(?u)[\\p{L}\\p{N}][\\p{L}\\p{M}\\p{N} &+’'().*/#-]*");
     private static final Pattern LETTER = Pattern.compile("\\p{L}");
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
-    private static final Pattern GENERIC_MERCHANT_WORD = Pattern.compile("(?iu)\\b(card|payment|purchase|transaction|approved|paid|paiement|carte|achat|accept[ée]|zahlung|bezahlt|compra|pago|pagamento|결제|카드|승인|완료)\\b");
+    private static final Pattern GENERIC_MERCHANT_WORD = Pattern.compile("(?iu)(?<![\\p{L}\\p{M}\\p{N}])(?:card|payment|purchase|transaction|approved|paid|paiement|carte|achat|accept[ée]|zahlung|bezahlt|compra|pago|pagamento|결제|카드|승인|완료)" + PHRASE_END);
     private static final Pattern LONG_NUMBER = Pattern.compile("(?u)\\b\\d{4,}\\b");
     private static final Pattern EDGE_PUNCTUATION = Pattern.compile("^[.·•|:：,;—–-]+|[.·•|:：,;—–-]+$");
     private static final Pattern CONTROL_EXCEPT_LINE_BREAK = Pattern.compile("[\\p{Cntrl}&&[^\\n]]");
@@ -383,23 +392,31 @@ final class PaymentNotificationParser {
     }
 
     private static MerchantMatch findMerchant(String title, String body, String sourceName, String rawAmount, boolean allowCounterparty) {
-        Matcher labelled = MERCHANT_AFTER.matcher(body);
-        if (labelled.find()) {
-            String candidate = trimMerchant(labelled.group(1), rawAmount);
-            if (!candidate.isEmpty()) return new MerchantMatch(candidate, true);
+        // Some banks place the labelled merchant in the expanded title, and
+        // Korean alerts put it before "에서", not after it. Try every labelled
+        // field so an empty/status field cannot hide a later actual merchant.
+        for (String content : new String[] {body, title}) {
+            for (Pattern pattern : new Pattern[] {MERCHANT_AFTER, MERCHANT_PAYMENT_TO, MERCHANT_KOREAN_BEFORE}) {
+                Matcher labelled = pattern.matcher(content);
+                while (labelled.find()) {
+                    String candidate = trimMerchant(labelled.group(1), rawAmount);
+                    if (isUsableMerchant(candidate, sourceName)) return new MerchantMatch(candidate, true);
+                }
+            }
         }
         if (allowCounterparty) {
             Matcher counterparty = COUNTERPARTY_AFTER.matcher(body);
             if (counterparty.find()) {
                 String candidate = trimMerchant(counterparty.group(1), rawAmount);
-                if (!candidate.isEmpty()) return new MerchantMatch(candidate, true);
+                if (isUsableMerchant(candidate, sourceName)) return new MerchantMatch(candidate, true);
             }
         }
         Set<String> titleCandidates = new HashSet<>();
         for (String titleLine : LINE_BREAK.split(title)) {
-            if (!titleLine.isEmpty() && !titleLine.equalsIgnoreCase(clean(sourceName)) && !GENERIC_TITLE.matcher(titleLine).find()) {
+            if (!titleLine.isEmpty() && !titleLine.equalsIgnoreCase(clean(sourceName))) {
                 String candidate = trimMerchant(titleLine, rawAmount);
-                if (isMerchantShape(candidate)) titleCandidates.add(candidate);
+                if (!GENERIC_TITLE.matcher(candidate).find() && isMerchantShape(candidate)
+                    && isUsableMerchant(candidate, sourceName)) titleCandidates.add(candidate);
             }
         }
         if (titleCandidates.size() == 1) return new MerchantMatch(titleCandidates.iterator().next(), true);
@@ -411,19 +428,25 @@ final class PaymentNotificationParser {
         for (int index = 0; index < lines.length; index++) {
             String line = clean(lines[index]);
             boolean besideAmount = line.contains(rawAmount)
-                || index > 0 && clean(lines[index - 1]).equals(rawAmount.trim())
-                || index + 1 < lines.length && clean(lines[index + 1]).equals(rawAmount.trim());
-            if (!besideAmount || GENERIC_TITLE.matcher(line).find() || BODY_NARRATIVE.matcher(line).find()
+                || index > 0 && lines[index - 1].contains(rawAmount)
+                || index + 1 < lines.length && lines[index + 1].contains(rawAmount);
+            if (!besideAmount || BODY_NARRATIVE.matcher(line).find()
                 || SENSITIVE_TRAILING_FIELD.matcher(line).find() || EMAIL.matcher(line).find()
                 || URL.matcher(line).find() || PHONE.matcher(line).find() || IBAN.matcher(line).find()) continue;
             String candidate = trimMerchant(line, rawAmount);
-            if (candidate.isEmpty() || candidate.equalsIgnoreCase(clean(sourceName)) || candidate.length() > 80
+            if (!isUsableMerchant(candidate, sourceName) || GENERIC_TITLE.matcher(candidate).find() || candidate.length() > 80
                 || !BODY_MERCHANT_SHAPE.matcher(candidate).matches()
                 || !LETTER.matcher(candidate).find() || WHITESPACE.split(candidate).length > 8) continue;
             candidates.add(candidate);
         }
         if (candidates.size() == 1) return new MerchantMatch(candidates.iterator().next(), false);
         return null;
+    }
+
+    private static boolean isUsableMerchant(String candidate, String sourceName) {
+        return !candidate.isEmpty() && !candidate.equalsIgnoreCase(clean(sourceName))
+            && LETTER.matcher(candidate).find() && !DEFINITIVE_BALANCE_TITLE.matcher(candidate).matches()
+            && !MERCHANT_METADATA.matcher(candidate).find();
     }
 
     private static boolean isCompactMerchant(String candidate) {
@@ -453,7 +476,7 @@ final class PaymentNotificationParser {
         result = CURRENCY_AFTER.matcher(result).replaceAll(" ");
         result = GENERIC_MERCHANT_WORD.matcher(result).replaceAll(" ");
         result = LONG_NUMBER.matcher(result).replaceAll(" ");
-        result = EDGE_PUNCTUATION.matcher(WHITESPACE.matcher(result).replaceAll(" ")).replaceAll("").trim();
+        result = EDGE_PUNCTUATION.matcher(WHITESPACE.matcher(result).replaceAll(" ").trim()).replaceAll("").trim();
         return result.length() > 100 ? result.substring(0, 100).trim() : result;
     }
 

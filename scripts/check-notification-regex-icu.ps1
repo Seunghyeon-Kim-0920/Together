@@ -52,7 +52,7 @@ try {
     [NotificationIcuGate]::u_getVersion($version)
     [pscustomobject]@{ Engine = 'Windows native ICU'; Version = ($version -join '.'); Patterns = $patterns.Count; CompileFailures = $failures.Count } | ConvertTo-Json -Compress
     if ($failures.Count -gt 0) { $failures | Format-Table | Out-String | Write-Output; throw 'Android-incompatible regular expressions found.' }
-    if ($patterns.Count -lt 64) { throw 'Incomplete parser/category pattern inventory.' }
+    if ($patterns.Count -lt 67) { throw 'Incomplete parser/category pattern inventory.' }
 
     # Prove that the gate catches the exact old class-initialization failure.
     $oldPattern = '(?iuU)\b(?:available\s+credit|credit\s+(?:available|remaining))\b'
@@ -64,6 +64,14 @@ try {
     # Native-ICU matching also covers French Unicode boundaries and Korean text;
     # these are regression fixtures, never user transaction content.
     $cases = @(
+        @('MERCHANT_AFTER', '가맹점명: 카페 봄', $true),
+        @('MERCHANT_AFTER', 'Merchant name: Blue Cafe', $true),
+        @('MERCHANT_KOREAN_BEFORE', '카페 봄에서 12,000원 결제되었습니다', $true),
+        @('MERCHANT_KOREAN_BEFORE', '12,000원 결제', $false),
+        @('MERCHANT_PAYMENT_TO', 'You paid €12.34 to Blue Cafe', $true),
+        @('MERCHANT_PAYMENT_TO', 'Paiement de 12,34 € à Blue Cafe', $true),
+        @('MERCHANT_METADATA', 'Visa ending 4321', $true),
+        @('MERCHANT_METADATA', 'New Balance', $false),
         @('CATEGORY_0', 'uber eats', $true),
         @('CATEGORY_2', 'pharmacie du centre', $true),
         @('CATEGORY_3', '스타벅스 강남점', $true),

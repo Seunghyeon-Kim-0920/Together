@@ -33,12 +33,13 @@
 
 <h1>지갑의 일기 · Wallet Diary · Journal du portefeuille</h1>
 <p class="sub">개인정보처리방침 / Privacy Policy / Politique de confidentialité<br>
-최종 수정일 · Last updated · Dernière mise à jour : 2026-09-13</p>
+최종 수정일 · Last updated · Dernière mise à jour : 2026-09-23</p>
 
 <nav>
   <a href="#ko">한국어</a>
   <a href="#en">English</a>
   <a href="#fr">Français</a>
+  <a href="/delete-account.html">계정·데이터 삭제 / Account deletion / Suppression du compte</a>
 </nav>
 
 <!-- ────────────────────────────── 한국어 ────────────────────────────── -->
@@ -50,12 +51,12 @@
 
 <h3>1. 계정과 서버</h3>
 <ul>
-  <li>앱은 회원가입과 로그인이 없습니다. 개발자는 이용자용 서버를 운영하지 않습니다.</li>
-  <li>개발자는 이용자의 가계부 내용을 열람할 수 없습니다.</li>
+  <li>개인 가계부는 가입 없이 기기에 저장합니다. 실시간 공동 여행은 서비스가 연결된 버전에서 이용자가 별도로 동의한 경우에만 Firebase 익명 인증과 Cloud Firestore를 사용합니다. 서비스가 미연결된 버전에서는 서버 연결과 전송이 발생하지 않습니다.</li>
+  <li>공동 여행은 익명 기기 식별자, 표시 이름, 여행 이름·참가자, 사용자가 공유한 지출의 날짜·사용처·금액·화폐·카테고리·결제자·분담액, 수정자와 버전 정보를 서버에 저장합니다. 다른 여행 참가자와 서비스 관리자가 기술적으로 접근할 수 있습니다. 종단간 암호화 서비스는 아닙니다.</li>
 </ul>
 
 <h3>2. 기기에 저장되는 정보</h3>
-<p>아래 정보는 <strong>기기 내부 저장소(SQLite와 비공개 앱 설정)에만</strong> 저장되며 외부로 전송되지 않습니다.</p>
+<p>아래 정보는 기기 내부 저장소(SQLite와 비공개 앱 설정)에 저장됩니다. 개인 가계부·자동기록 설정·알림 원문은 서버로 보내지 않습니다. 이용자가 선택한 파일 공유 및 1항의 공동 여행 정보만 외부로 전달될 수 있습니다.</p>
 <ul>
   <li>가계부 이름, 지출 내용·금액·화폐·날짜·카테고리</li>
   <li>여행 가계부의 참가자 이름, 결제자, 분담 금액</li>
@@ -84,20 +85,20 @@
 <p>PDF 저장이나 동행에게 보내기는 <strong>이용자가 직접 실행할 때만</strong> 동작하며, 이용자가 고른 앱이나 저장 위치로만 전달됩니다. 본인 선택, 신뢰 앱 목록, 예산, 자동기록 식별자는 공유 파일에 포함되지 않습니다.</p>
 
 <h3>6. 광고·분석·제3자 제공</h3>
-<p>앱에는 광고가 없습니다. 개발자는 가계부 내용을 판매하거나 외부로 전송하지 않습니다. 문자 인식 구성요소의 진단·사용량 분석 정보는 위 4항과 같이 Google에 전송됩니다.</p>
+<p>앱에는 광고가 없으며 가계부 내용을 판매하지 않습니다. 선택형 공동 여행은 Google Firebase를 사용하고, 인증 과정에서 기기 식별·접속 정보가 처리될 수 있습니다. 문자 인식 구성요소의 진단·사용량 정보는 4항과 같이 Google에 전송됩니다. 공유 여행 데이터는 선택한 서버 지역에서 처리되며 이용자의 국가 밖에 위치할 수 있습니다.</p>
 
 <h3>7. 권한</h3>
 <ul>
   <li><strong>알림 접근</strong> — 결제·이체 알림을 자동으로 기록하기 위해 사용합니다. 선택 사항입니다.</li>
   <li><strong>알림 표시</strong>(<code>POST_NOTIFICATIONS</code>) — 월 지출 한도 알림에 사용합니다. 선택 사항입니다.</li>
-  <li><strong>인터넷</strong> — 앱 프레임워크가 선언하는 권한입니다. 앱은 가계부 내용을 어떤 서버로도 보내지 않습니다.</li>
+  <li><strong>인터넷</strong> — 선택형 공동 여행의 인증·동기화 및 위에 설명한 구성요소 통신에 사용합니다. 개인 가계부는 오프라인에서도 사용할 수 있습니다.</li>
 </ul>
 
 <h3>8. 보관과 삭제</h3>
-<p>데이터는 이용자가 지우기 전까지 기기에 남습니다. 앱을 삭제하면 앱이 저장한 데이터도 함께 삭제됩니다. 개발자가 보관하는 사본은 없습니다. 앱을 삭제하기 전에 중요한 가계부는 PDF나 가계부 파일로 백업하세요.</p>
+<p>기기 데이터는 이용자가 지우거나 앱을 삭제할 때까지 남습니다. 앱 삭제만으로 서버의 익명 계정과 공동 여행은 삭제되지 않습니다. 공동 여행 관리자는 앱의 서버 여행 삭제 기능으로 여행 정보·지출·멤버·초대 정보를 삭제할 수 있습니다. 삭제가 중단되면 인터넷 연결 후 다시 실행하세요. 참여 종료는 접근 권한을 제거하지만 정산에 필요한 기존 지출은 여행이 삭제될 때까지 남습니다. 이미 다른 참가자가 받은 사본은 원격 삭제할 수 없습니다. 익명 연결은 앱 삭제 시 복구되지 않을 수 있으니 미리 PDF로 백업하세요. 앱 하단의 계정·데이터 삭제 요청 경로나 <a href="https://wallet-diary-c2a1a.web.app/delete-account.html">공개 삭제 요청 페이지</a>에서 서버 익명 계정과 연결된 데이터를 이메일로 삭제 요청할 수 있습니다. 본인 확인이 필요하며, 다른 참가자의 정산 기록에 영향을 주는 범위는 확인 후 처리합니다. 휴대폰에만 있는 개인 기록은 앱에서 지우거나 앱을 제거해야 합니다.</p>
 
 <h3>9. 이용자의 권리 (GDPR 등)</h3>
-<p>개발자는 이용자의 가계부 데이터를 서버에 보관하지 않습니다. 열람·정정·삭제·이동은 기기 안에서 직접 하실 수 있습니다. ML Kit 진단 정보에 관한 문의는 Google의 정책을 따릅니다.</p>
+<p>개인 기록의 열람·정정·삭제·내보내기는 기기에서 실행할 수 있습니다. 공동 여행에서는 작성자와 관리자가 지출을 변경하고 관리자가 여행을 삭제할 수 있습니다. 서버 데이터와 이용자 권리에 관한 요청은 아래 문의처로 보내주세요. ML Kit 및 Firebase의 진단·인증 처리에는 Google의 정책도 적용됩니다.</p>
 
 <h3>10. 아동</h3>
 <p>앱은 아동을 대상으로 하지 않으며 아동으로부터 의도적으로 정보를 수집하지 않습니다.</p>
@@ -117,12 +118,12 @@
 
 <h3>1. Accounts and servers</h3>
 <ul>
-  <li>The app has no sign-up and no login. The developer operates no server for users.</li>
-  <li>The developer cannot see your ledger contents.</li>
+  <li>Personal ledgers work on-device without registration. In versions connected to the service, optional live shared trips use Firebase anonymous authentication and Cloud Firestore only after separate consent. Unconfigured versions do not connect or upload data.</li>
+  <li>Shared trips store an anonymous device identity, display name, trip name and participants, approved expenses (date, merchant, amount, currency, category, payer and splits), editor identity and revisions. Trip members and service administrators can technically access this data. This is not an end-to-end encrypted service.</li>
 </ul>
 
 <h3>2. Information stored on your device</h3>
-<p>The following is stored <strong>only in on-device storage</strong> (SQLite and private app settings) and is never transmitted.</p>
+<p>The following is stored on-device (SQLite and private app settings). Personal ledgers, automation settings and raw notifications are not uploaded. Only user-initiated file exports and the shared-trip data described in section 1 may leave the device.</p>
 <ul>
   <li>Ledger names, expense descriptions, amounts, currencies, dates and categories</li>
   <li>Travel-ledger participant names, payers and split amounts</li>
@@ -151,20 +152,20 @@
 <p>Saving a PDF or sending a ledger to a travel companion happens <strong>only when you start it</strong>, and only to the app or location you choose. Your own-participant selection, trusted app list, budget and automation identifiers are excluded from shared files.</p>
 
 <h3>6. Advertising, analytics and third parties</h3>
-<p>The app contains no advertising. The developer does not sell or transmit ledger contents. The text-recognition component sends diagnostics and usage analytics to Google as described in section 4.</p>
+<p>The app contains no advertising and does not sell ledger contents. Optional shared trips use Google Firebase; authentication may process device identifiers and connection information. The text-recognition component sends diagnostics and usage data to Google as described in section 4. Shared data is processed in the configured server region, which may be outside your country.</p>
 
 <h3>7. Permissions</h3>
 <ul>
   <li><strong>Notification access</strong> — used to record payment and transfer alerts automatically. Optional.</li>
   <li><strong>Post notifications</strong> (<code>POST_NOTIFICATIONS</code>) — used for monthly spending limit alerts. Optional.</li>
-  <li><strong>Internet</strong> — declared by the app framework. The app sends no ledger content to any server.</li>
+  <li><strong>Internet</strong> — used for optional shared-trip authentication and synchronization and the component communications described above. Personal ledgers remain usable offline.</li>
 </ul>
 
 <h3>8. Retention and deletion</h3>
-<p>Data stays on your device until you delete it. Uninstalling the app deletes the data it stored. The developer holds no copy. Back up important ledgers as a PDF or ledger file before uninstalling.</p>
+<p>Local data remains until you delete it or uninstall the app. Uninstalling does not delete the anonymous server account or shared trips. A trip owner can delete its cloud metadata, expenses, memberships and invitations through the app. Retry if deletion is interrupted. Leaving removes access but retains existing expenses needed for settlement until the trip is deleted. Copies already downloaded by others cannot be deleted remotely. Anonymous access may be lost after uninstalling; back up important ledgers as PDFs first. Use Account &amp; data deletion at the bottom of the app, or the <a href="https://wallet-diary-c2a1a.web.app/delete-account.html">public deletion request page</a>, to email a request to delete the server account and associated data. Verification may be needed; we will review effects on other participants' settlement before processing. Personal records stored only on the phone must be deleted in the app or by uninstalling.</p>
 
 <h3>9. Your rights (GDPR and similar)</h3>
-<p>The developer does not store your ledger data on a server. Access, correction, deletion and portability are performed by you on the device. Questions about ML Kit diagnostic data are governed by Google's policies.</p>
+<p>You can access, correct, delete and export personal records on-device. Shared expenses can be changed by their author and the trip owner; the owner can delete the trip. Contact the address below for requests concerning server data and your rights. Google’s policies also apply to ML Kit and Firebase diagnostic and authentication processing.</p>
 
 <h3>10. Children</h3>
 <p>The app is not directed to children and does not knowingly collect information from them.</p>
@@ -184,12 +185,12 @@
 
 <h3>1. Comptes et serveurs</h3>
 <ul>
-  <li>L'application ne comporte ni inscription ni connexion. Le développeur n'exploite aucun serveur destiné aux utilisateurs.</li>
-  <li>Le développeur ne peut pas consulter le contenu de vos carnets.</li>
+  <li>Les carnets personnels fonctionnent sur l’appareil sans inscription. Dans les versions connectées au service, les voyages partagés facultatifs utilisent l’authentification anonyme Firebase et Cloud Firestore après un consentement distinct. Les versions non configurées ne se connectent pas et n’envoient aucune donnée.</li>
+  <li>Les voyages partagés enregistrent une identité anonyme d’appareil, un nom affiché, le nom du voyage et ses participants, les dépenses validées (date, commerçant, montant, devise, catégorie, payeur et répartition), l’auteur des modifications et les versions. Les membres et les administrateurs du service peuvent techniquement accéder à ces données. Le service n’est pas chiffré de bout en bout.</li>
 </ul>
 
 <h3>2. Informations conservées sur votre appareil</h3>
-<p>Les éléments suivants sont enregistrés <strong>uniquement dans le stockage local</strong> (SQLite et réglages privés de l'application) et ne sont jamais transmis.</p>
+<p>Les éléments suivants sont enregistrés sur l’appareil (SQLite et réglages privés). Les carnets personnels, réglages d’automatisation et notifications brutes ne sont pas téléversés. Seuls les fichiers que vous choisissez de partager et les données du voyage partagé décrites à la section 1 peuvent quitter l’appareil.</p>
 <ul>
   <li>Noms des carnets, libellés, montants, devises, dates et catégories des dépenses</li>
   <li>Noms des participants, payeurs et parts de répartition des carnets de voyage</li>
@@ -218,20 +219,20 @@
 <p>L'enregistrement d'un PDF ou l'envoi d'un carnet à un compagnon de voyage n'a lieu <strong>que si vous le déclenchez</strong>, et uniquement vers l'application ou l'emplacement que vous choisissez. Votre identité de participant, la liste des applications de confiance, le budget et les identifiants d'automatisation sont exclus des fichiers partagés.</p>
 
 <h3>6. Publicité, analyse et tiers</h3>
-<p>L’application ne contient pas de publicité. Le développeur ne vend ni ne transmet le contenu des carnets. Le composant de reconnaissance de texte transmet à Google les diagnostics et statistiques d’utilisation décrits à la section 4.</p>
+<p>L’application ne contient pas de publicité et ne vend pas le contenu des carnets. Les voyages partagés facultatifs utilisent Google Firebase ; l’authentification peut traiter des identifiants d’appareil et des informations de connexion. Le composant de reconnaissance de texte transmet à Google les diagnostics et données d’utilisation décrits à la section 4. Les données partagées sont traitées dans la région de serveur configurée, éventuellement hors de votre pays.</p>
 
 <h3>7. Autorisations</h3>
 <ul>
   <li><strong>Accès aux notifications</strong> — pour enregistrer automatiquement les alertes de paiement et de virement. Facultatif.</li>
   <li><strong>Affichage de notifications</strong> (<code>POST_NOTIFICATIONS</code>) — pour les alertes de plafond mensuel. Facultatif.</li>
-  <li><strong>Internet</strong> — déclarée par le framework applicatif. L'application n'envoie aucun contenu de carnet à un serveur.</li>
+  <li><strong>Internet</strong> — pour l’authentification et la synchronisation facultatives des voyages partagés et les communications décrites ci-dessus. Les carnets personnels restent utilisables hors ligne.</li>
 </ul>
 
 <h3>8. Conservation et suppression</h3>
-<p>Les données restent sur votre appareil jusqu'à ce que vous les supprimiez. La désinstallation supprime les données enregistrées par l'application. Le développeur n'en conserve aucune copie. Sauvegardez les carnets importants en PDF ou en fichier de carnet avant de désinstaller.</p>
+<p>Les données locales restent jusqu’à leur suppression ou la désinstallation. Désinstaller ne supprime ni le compte anonyme ni les voyages sur le serveur. Le propriétaire peut supprimer les informations, dépenses, adhésions et invitations du voyage via l’application ; recommencez si la suppression est interrompue. Quitter un voyage retire l’accès, mais conserve les dépenses nécessaires au règlement jusqu’à la suppression du voyage. Les copies téléchargées par les autres ne peuvent pas être effacées à distance. L’accès anonyme peut être perdu après désinstallation : sauvegardez d’abord vos carnets en PDF. Utilisez « Suppression du compte et des données » au bas de l'application ou la <a href="https://wallet-diary-c2a1a.web.app/delete-account.html">page publique de demande de suppression</a> pour demander par courriel l'effacement du compte sur le serveur et des données associées. Une vérification peut être nécessaire ; les effets sur les comptes des autres participants seront examinés avant traitement. Les données personnelles conservées uniquement sur le téléphone doivent être supprimées dans l'application ou en la désinstallant.</p>
 
 <h3>9. Vos droits (RGPD et équivalents)</h3>
-<p>Le développeur ne conserve pas vos carnets sur un serveur. L’accès, la rectification, l’effacement et la portabilité s’exercent directement sur l’appareil. Les questions relatives aux données de diagnostic ML Kit relèvent des politiques de Google.</p>
+<p>Vous pouvez consulter, corriger, supprimer et exporter vos données personnelles sur l’appareil. Les dépenses partagées peuvent être modifiées par leur auteur et le propriétaire, qui peut supprimer le voyage. Contactez l’adresse ci-dessous pour les demandes concernant les données du serveur et vos droits. Les politiques de Google s’appliquent aussi aux diagnostics et à l’authentification ML Kit et Firebase.</p>
 
 <h3>10. Enfants</h3>
 <p>L'application ne s'adresse pas aux enfants et ne collecte pas sciemment d'informations les concernant.</p>

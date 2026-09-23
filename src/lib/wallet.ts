@@ -1,4 +1,5 @@
 import { MAX_MERCHANT_CATEGORY_PREFERENCES } from "./categoryInference";
+import { parseSharedLocal } from "./sharedTravelLocal";
 import type { MerchantCategoryPreference } from "./types";
 import { currencyDigits } from "./currency";
 import { legacyPublicExpenseId, publicExpenseId } from "./expenseIdentity";
@@ -62,15 +63,25 @@ function parseAutomationPaymentReceipts(value: unknown, ledgerCurrency: string):
     if (!isRecord(entry)) return null;
     const expenseId = text(entry.expenseId, 100); const merchant = text(entry.merchant, 500); const minorUnits = positiveMinor(entry.minorUnits);
     if (!expenseId || !merchant || !minorUnits || entry.currency !== ledgerCurrency || ids.has(expenseId) || !Array.isArray(entry.sources) || !entry.sources.length || entry.sources.length > 8) return null;
+    const restoredFromExpenseId = entry.restoredFromExpenseId === undefined ? undefined : text(entry.restoredFromExpenseId, 100);
+    if (entry.restoredFromExpenseId !== undefined && (!restoredFromExpenseId || restoredFromExpenseId === expenseId)) return null;
+    if (entry.separatedSourceIds !== undefined && (!Array.isArray(entry.separatedSourceIds) || entry.separatedSourceIds.length > 64)) return null;
+    const separatedSourceIds: readonly string[] = entry.separatedSourceIds ?? [];
+    if (separatedSourceIds.some((id) => typeof id !== "string" || !/^card-auto-[0-9a-f]{16}$/.test(id)) || new Set(separatedSourceIds).size !== separatedSourceIds.length) return null;
     const sources: AutomationPaymentReceipt["sources"][number][] = []; const packages = new Set<string>();
     for (const source of entry.sources) {
       if (!isRecord(source)) return null;
       const sourceId = text(source.expenseId, 100); const packageName = text(source.packageName, 200); const occurredAt = timestamp(source.occurredAt);
       const originFingerprint = text(source.originFingerprint, 40); const reversalFingerprint = text(source.reversalFingerprint, 42);
       if (!sourceId || !/^card-auto-[0-9a-f]{16}$/.test(sourceId) || sourceIds.has(sourceId) || !packageName || !isValidPackageName(packageName) || packages.has(packageName) || !occurredAt || !/^\d{4}-\d{2}-\d{2}T/.test(occurredAt) || !date(occurredAt.slice(0, 10)) || !originFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(originFingerprint) || !reversalFingerprint || !/^card-reversal-[0-9a-f]{16}$/.test(reversalFingerprint)) return null;
-      sources.push(Object.freeze({ expenseId: sourceId, packageName, occurredAt, originFingerprint, reversalFingerprint })); sourceIds.add(sourceId); packages.add(packageName);
+      const hasSnapshot = source.merchant !== undefined || source.category !== undefined || source.occurredOn !== undefined;
+      const sourceMerchant = text(source.merchant, 500); const occurredOn = date(source.occurredOn);
+      if (separatedSourceIds.includes(sourceId) || hasSnapshot && (!sourceMerchant || !occurredOn || !GENERAL_CATEGORIES.includes(source.category as never))) return null;
+      sources.push(Object.freeze({ expenseId: sourceId, packageName, occurredAt, originFingerprint, reversalFingerprint,
+        ...(hasSnapshot ? { merchant: sourceMerchant!, category: source.category as GeneralExpense["category"], occurredOn: occurredOn! } : {}) })); sourceIds.add(sourceId); packages.add(packageName);
     }
-    ids.add(expenseId); receipts.push(Object.freeze({ expenseId, merchant, minorUnits, currency: ledgerCurrency, sources: Object.freeze(sources) }));
+    ids.add(expenseId); receipts.push(Object.freeze({ expenseId, merchant, minorUnits, currency: ledgerCurrency, sources: Object.freeze(sources),
+      ...(separatedSourceIds.length ? { separatedSourceIds: Object.freeze([...separatedSourceIds]) } : {}), ...(restoredFromExpenseId ? { restoredFromExpenseId } : {}) }));
   }
   return Object.freeze(receipts);
 }
@@ -156,6 +167,8 @@ export function parseLedger(value: unknown): Ledger | null {
   const privateHistory = statementImportHistory.length ? { statementImportHistory } : {};
   const expenseIds = new Set<string>();
   if (value.kind === "travel") {
+    const sharedSync = value.sharedSync === undefined ? undefined : parseSharedLocal(value.sharedSync);
+    if (sharedSync === null) return null;
     const participants = parseParticipants(value.participants);
     if (!participants || !Array.isArray(value.currencies) || value.currencies.length < 1 || value.currencies.length > 20) return null;
     const currencies = value.currencies.map(currency);
@@ -171,7 +184,7 @@ export function parseLedger(value: unknown): Ledger | null {
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "travel", createdAt, updatedAt, currencies: Object.freeze(currencies as string[]), defaultCurrency, participants, selfParticipantId, expenses: Object.freeze(expenses), ...privateHistory } satisfies TravelLedger);
+    return Object.freeze({ id, title, kind: "travel", createdAt, updatedAt, currencies: Object.freeze(currencies as string[]), defaultCurrency, participants, selfParticipantId, expenses: Object.freeze(expenses), ...(sharedSync ? { sharedSync } : {}), ...privateHistory } satisfies TravelLedger);
   }
   if (value.kind === "general") {
     const ledgerCurrency = currency(value.currency);

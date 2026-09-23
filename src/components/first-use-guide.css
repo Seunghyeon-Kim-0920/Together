@@ -1,0 +1,30 @@
+.first-use-guide { padding: 26px 4px 8px; }
+.first-use-progress { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 0; margin: 0 0 28px; list-style: none; }
+.first-use-progress li { display: grid; gap: 7px; justify-items: center; text-align: center; color: #637083; }
+.first-use-progress li > span { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid #d9e0e5; border-radius: 50%; font-size: 12px; font-weight: 800; }
+.first-use-progress li.reached { color: var(--jade-dark); }
+.first-use-progress li.reached > span { background: var(--jade-soft); border-color: #b8ddce; }
+.first-use-progress li[aria-current="step"] > span { color: #fff; border-color: var(--jade-dark); background: var(--jade-dark); }
+.first-use-progress small { font-size: 11px; line-height: 1.35; }
+.first-use-progress svg { width: 16px; height: 16px; }
+.first-use-mark { display: grid; place-items: center; width: 62px; height: 62px; margin-bottom: 17px; background: var(--jade-soft); border: 1px solid #d4eee1; border-radius: 20px; color: var(--jade-dark); }
+.first-use-mark svg { width: 29px; height: 29px; }
+.first-use-guide h2 { margin: 0; font-size: 25px; line-height: 1.25; letter-spacing: -.04em; }
+.first-use-guide h2:focus { outline: none; }
+.first-use-intro { color: #536174; margin: 12px 0 23px; font-size: 14px; line-height: 1.7; }
+.first-use-guide .type-row { min-height: 92px; }
+.first-use-guide .type-description small { font-size: 12px; line-height: 1.55; }
+.first-use-guide .field-label { margin-top: 18px; }
+.first-use-guide input, .first-use-guide select { min-height: 48px; font-size: 16px; }
+.first-use-notebook { display: grid; gap: 8px; padding: 18px; border: 1px solid #c4e4d4; border-radius: 16px; background: #f6fbf8; overflow-wrap: anywhere; }
+.first-use-notebook span { color: var(--jade-dark); font-size: 12px; font-weight: 750; }
+.first-use-notebook strong { font-size: 21px; }
+.first-use-notebook small { color: #536174; font-size: 13px; }
+.first-use-note { margin: 14px 0 0; color: #536174; font-size: 13px; line-height: 1.65; }
+.first-use-actions { display: flex; gap: 10px; margin-top: 25px; }
+.first-use-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 49px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 13px; background: #fff; font-weight: 750; font-size: 14px; line-height: 1.4; }
+.first-use-actions button.primary-button { flex: 1; color: #fff; border-color: var(--jade-dark); background: var(--jade-dark); }
+.first-use-actions svg { width: 17px; height: 17px; flex-shrink: 0; }
+.first-use-private { display: flex; align-items: flex-start; gap: 7px; margin: 23px 0 0; color: #637083; font-size: 12px; line-height: 1.6; }
+.first-use-private svg { flex-shrink: 0; width: 16px; height: 16px; margin-top: 2px; }
+.first-use-error { padding: 12px; border-radius: 10px; background: #fff2e7; color: #814718; font-size: 13px; line-height: 1.6; }

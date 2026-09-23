@@ -603,6 +603,103 @@ public class PaymentNotificationParserTest {
         }
     }
 
+    @Test
+    public void merchantBeforeKoreanPaymentSuffixIsNotLostOrReplacedByTheAmount() {
+        for (String merchant : new String[] {"스타벅스", "카페 봄 강남점", "CU 역삼점"}) {
+            JSONObject candidate = parse("kr.any.bank", "카드 결제", merchant + "에서 12,000원 결제되었습니다", "merchant-suffix", 920L, true, "KRW");
+            assertNotNull(merchant, candidate);
+            assertEquals(merchant, candidate.optString("merchant"));
+            assertEquals(false, candidate.optBoolean("requiresMerchant"));
+            assertEquals(12000L, candidate.optLong("minorUnits"));
+        }
+    }
+
+    @Test
+    public void labelledMerchantNamesAndExpandedTitlesAreRecognizedAcrossLanguages() {
+        String[][] rows = {
+            {"Merchant name: Blue Cafe", "Blue Cafe"},
+            {"Store name: Blue Cafe", "Blue Cafe"},
+            {"가맹점명: 카페 봄", "카페 봄"},
+            {"이용가맹점명: 카페 봄", "카페 봄"},
+            {"거래처: 카페 봄", "카페 봄"},
+            {"店舗名: 東京商店", "東京商店"},
+            {"商户名称: 上海商店", "上海商店"},
+        };
+        for (String[] row : rows) {
+            JSONObject body = parse("com.world.bank", "Card payment", row[0] + "\n-12,34 €", "merchant-label-body", 921L);
+            JSONObject title = parse("com.world.bank", "Card payment\n" + row[0], "-12,34 €", "merchant-label-title", 921L);
+            assertNotNull(row[0], body);
+            assertNotNull(row[0], title);
+            assertEquals(row[0], row[1], body.optString("merchant"));
+            assertEquals(row[0], row[1], title.optString("merchant"));
+        }
+    }
+
+    @Test
+    public void paymentProseBetweenVerbAmountAndMerchantDoesNotHideMerchant() {
+        for (String text : new String[] {"You paid €12.34 to Blue Cafe", "Payment of €12.34 to Blue Cafe", "Paiement de 12,34 € à Blue Cafe", "Paiement de 12,34 € chez Blue Cafe", "Paiement de 12,34 € a été effectué à Blue Cafe"}) {
+            JSONObject candidate = parse("com.world.bank", "Card payment", text, "merchant-prose", 922L);
+            assertNotNull(text, candidate);
+            assertEquals(text, "Blue Cafe", candidate.optString("merchant"));
+        }
+    }
+
+    @Test
+    public void standaloneMerchantBesidePaymentAmountWithStatusIsKeptForReview() {
+        for (String text : new String[] {
+            "김*진님\n12,000원 일시불\n카페 봄\n09/19 12:34",
+            "카페 봄\n12,000원 결제 완료",
+            "SQ *Blue Cafe\nPayment completed -12,34 €",
+        }) {
+            JSONObject candidate = parse("com.world.bank", "카드 결제", text, "merchant-payment-line", 923L, true, "KRW");
+            assertNotNull(text, candidate);
+            assertEquals(text, text.startsWith("SQ") ? "SQ *Blue Cafe" : "카페 봄", candidate.optString("merchant"));
+            assertEquals("review", candidate.optString("confidence"));
+        }
+    }
+
+    @Test
+    public void invalidMerchantFieldDoesNotHideLaterValidField() {
+        JSONObject candidate = parse("com.world.bank", "Card payment", "Merchant: unknown\n-12,34 €\nMerchant name: Blue Cafe", "merchant-fallback", 924L);
+        assertNotNull(candidate);
+        assertEquals("Blue Cafe", candidate.optString("merchant"));
+    }
+
+    @Test
+    public void inlineMerchantWithPaymentStatusIsNotDiscardedAsAGenericTitle() {
+        for (String[] row : new String[][] {
+            {"Blue Cafe - card payment", "-12,34 €", "Blue Cafe"},
+            {"카페 봄 12,000원 승인", "", "카페 봄"},
+            {"카드 결제", "카페 봄 12,000원 승인", "카페 봄"},
+        }) {
+            JSONObject candidate = parse("com.world.bank", row[0], row[1], "merchant-inline", 924L, true, "KRW");
+            assertNotNull(row[0] + " " + row[1], candidate);
+            assertEquals(row[0] + " " + row[1], row[2], candidate.optString("merchant"));
+        }
+    }
+
+    @Test
+    public void metadataBesideAmountNeverBecomesMerchant() {
+        for (String text : new String[] {
+            "Card payment -12,34 €\nVisa ending 4321",
+            "Card payment -12,34 €\nPayment successful",
+            "Card payment -12,34 €\nReference ABC-123",
+            "12,000원 결제\n김민지님\n일시불",
+            "12,000원 결제\n누적 이용\n카드번호 1234",
+            "Merchant name: remaining balance\nCard payment -12,34 €",
+            "Merchant name: N/A\nCard payment -12,34 €",
+            "Merchant name: null\nCard payment -12,34 €",
+            "가맹점명: 알 수 없음\n12,000원 결제",
+            "Card payment of -12,34 €",
+        }) {
+            JSONObject candidate = parse("com.world.bank", "Card payment", text, "merchant-metadata", 925L, true, "EUR");
+            assertNotNull(text, candidate);
+            assertEquals(text, "", candidate.optString("merchant"));
+            assertEquals(text, true, candidate.optBoolean("requiresMerchant"));
+            assertEquals("review", candidate.optString("confidence"));
+        }
+    }
+
     private static JSONObject parse(String packageName, String title, String text, String key, long time) {
         return parse(packageName, title, text, key, time, true, "EUR");
     }

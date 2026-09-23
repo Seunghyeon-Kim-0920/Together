@@ -328,6 +328,13 @@ button:disabled { cursor: default; opacity: .44; }
 .automation-card-body > button { text-align: start; overflow-wrap: anywhere; }
 .app-footer { padding-top: 28px; text-align: center; }
 .app-footer button { background: none; border: 0; padding: 12px; color: var(--muted); text-decoration: underline; font-size: 12px; min-height: 44px; }
+.privacy-deletion { padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: var(--soft, #f5f7fb); overflow-wrap: anywhere; }
+.privacy-deletion h3 { margin: 0 0 8px; font-size: 17px; }
+.privacy-deletion p { margin: 8px 0; font-size: 14px; line-height: 1.6; }
+.privacy-deletion code { user-select: all; }
+.privacy-deletion a { color: var(--jade-dark); }
+.privacy-deletion .wide-secondary { padding: 10px; text-decoration: none; }
+.privacy-deletion > a:last-child { display: inline-block; margin-top: 12px; }
 .privacy-policy { font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
 .privacy-policy h3 { margin-top: 24px; font-size: 16px; }
 .privacy-policy ul { padding-left: 22px; }

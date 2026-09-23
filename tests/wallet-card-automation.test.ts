@@ -6,6 +6,7 @@ import type { GeneralLedger, WalletState } from "../src/lib/types";
 import { createLedger, mergeGeneralLedgerMutation, parseWalletStateStrict, replaceExpenseById } from "../src/lib/wallet";
 import { moveGeneralExpenseToTravel } from "../src/lib/moveExpense";
 import { createLedgerSharePayload, parseLedgerSharePayload } from "../src/lib/share";
+import { getAutomationPaymentHistory, undoPaymentMerge } from "../src/lib/paymentDuplicates";
 
 const candidate: NativeCardCandidate = Object.freeze({ id: "native-1", queueToken: null, packageName: "com.revolut.revolut", sourceName: "Revolut", merchant: "Lidl Paris", minorUnits: 1299, currency: "EUR", occurredAt: "2026-08-30T10:15:00+02:00", occurredOn: "2026-08-30", confidence: "high", eventType: "purchase", manualOnly: false });
 
@@ -290,24 +291,27 @@ test("late issuer delivery survives restart and expense edits without recreating
   assert.equal((merged.state.ledgers[0] as GeneralLedger).automationPaymentReceipts?.[0].sources.length, 2);
 });
 
-test("cross-source matching handles wallet prefixes and branch suffixes but not unrelated shops", () => {
+test("cross-source matching pairs exact money even when merchant labels differ completely", () => {
   const result = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate, walletAlert(googleWallet, { merchant: "Google Pay * LIDL" })]);
   assert.equal(result.insertedIds.length, 1);
   assert.equal(result.pending.length, 0);
   const different = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate, walletAlert(googleWallet, { merchant: "Lidlina" })]);
-  assert.equal(different.insertedIds.length, 2);
+  assert.equal(different.insertedIds.length, 1);
+  assert.equal(different.acknowledgedIds.length, 2);
+  assert.equal(different.pending.length, 0);
 });
 
-test("cross-source pairing is global even when the bank and wallet target different ledgers", () => {
+test("equal-price alerts assigned to different ledgers await review instead of losing a purchase", () => {
   const bankLedger = configuredLedger();
   const second = Object.freeze({ ...createLedger("general", "Wallet spending", "EUR"), automationSources: Object.freeze([{ packageName: googleWallet, displayName: "Wallet", trustedDirectApp: true as const }]) });
   const state = Object.freeze({ ...wallet(bankLedger), ledgers: Object.freeze([bankLedger, second]) });
   const result = applyHighConfidenceCardAutomation(state, [candidate, walletAlert()]);
   assert.deepEqual(result.state.ledgers.map((ledger) => ledger.expenses.length), [1, 0]);
-  assert.equal(result.acknowledgedIds.length, 2);
-  const reversed = applyHighConfidenceCardAutomation(result.state, [Object.freeze({ ...walletAlert(), eventType: "reversal" as const })]);
-  assert.deepEqual(reversed.state.ledgers.map((ledger) => ledger.expenses.length), [0, 0]);
-  assert.equal(reversed.reversedIds.length, 1);
+  assert.equal(result.acknowledgedIds.length, 1);
+  assert.equal(result.pending[0]?.possibleDuplicate, true);
+  assert.throws(() => confirmCardCandidate(result.state, second.id, result.pending[0]), /candidate-possible-duplicate/);
+  const distinct = confirmCardCandidate(result.state, second.id, result.pending[0], { asNewTransaction: true });
+  assert.deepEqual(distinct.state.ledgers.map((ledger) => ledger.expenses.length), [1, 1]);
 });
 
 test("manual confirmation of an untrusted wallet counterpart cannot duplicate the saved issuer expense", () => {
@@ -353,7 +357,7 @@ test("long delays and several same-price matches require an explicit separate-pa
   assert.equal(ambiguous.state.ledgers[0].expenses.length, 2);
 });
 
-test("wallet pairing does not merge other currencies, outgoing transfers, or two issuing banks", () => {
+test("cross-source pairing excludes other currencies and transfers but includes different issuing apps", () => {
   const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate]);
   const transfer = walletAlert(googleWallet, { eventType: "outgoing_transfer" });
   const transferResult = applyHighConfidenceCardAutomation(first.state, [transfer]);
@@ -362,7 +366,42 @@ test("wallet pairing does not merge other currencies, outgoing transfers, or two
   const usd = walletAlert(googleWallet, { currency: "USD" });
   assert.equal(applyHighConfidenceCardAutomation(first.state, [usd]).pending.length, 1);
   const otherBank = Object.freeze({ ...candidate, id: "another-bank", packageName: "com.other.bank" });
-  assert.equal(confirmCardCandidate(first.state, first.state.ledgers[0].id, otherBank).inserted, true);
+  assert.equal(confirmCardCandidate(first.state, first.state.ledgers[0].id, otherBank).inserted, false);
+});
+
+test("three worldwide payment apps with different names pair once and survive replay and issuer cancellation", () => {
+  const alerts = [candidate, walletAlert(googleWallet, { merchant: "European Retail SARL" }), walletAlert("com.example.issuer", { id: "third-app", merchant: "FR PARIS 182" })];
+  const base = pairedLedger();
+  const ledger = Object.freeze({ ...base, automationSources: Object.freeze([...base.automationSources, { packageName: "com.example.issuer", displayName: "Bank", trustedDirectApp: true as const }]) });
+  for (const ordered of [alerts, [...alerts].reverse()]) {
+    const result = applyHighConfidenceCardAutomation(wallet(ledger), ordered);
+    assert.equal(result.insertedIds.length, 1);
+    assert.equal(result.acknowledgedIds.length, 3);
+    assert.equal(result.pending.length, 0);
+    assert.equal((result.state.ledgers[0] as GeneralLedger).automationPaymentReceipts?.[0].sources.length, 3);
+    const restored = parseWalletStateStrict(JSON.parse(JSON.stringify(result.state))); assert.ok(restored);
+    assert.equal(applyHighConfidenceCardAutomation(restored, alerts).state, restored);
+    const cancelled = applyHighConfidenceCardAutomation(restored, [{ ...candidate, eventType: "reversal" }]);
+    assert.equal(cancelled.state.ledgers[0].expenses.length, 0);
+    assert.equal(applyHighConfidenceCardAutomation(cancelled.state, alerts).state.ledgers[0].expenses.length, 0);
+  }
+});
+
+test("different cents and a later equal payment at a different merchant are separate transactions", () => {
+  const base = wallet(pairedLedger());
+  for (const other of [walletAlert(googleWallet, { minorUnits: 1298 }), walletAlert(googleWallet, { minorUnits: 1300 }), walletAlert(googleWallet, { occurredAt: "2026-08-30T11:15:00+02:00", merchant: "Other shop" })]) {
+    const result = applyHighConfidenceCardAutomation(base, [candidate, other]);
+    assert.equal(result.state.ledgers[0].expenses.length, 2);
+    assert.equal(result.pending.length, 0);
+  }
+});
+
+test("a same-price second source event is not consumed again even under a different merchant name", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate, walletAlert()]);
+  const second = { ...candidate, id: "different-real-purchase", merchant: "Another shop" };
+  const result = applyHighConfidenceCardAutomation(first.state, [second]);
+  assert.equal(result.state.ledgers[0].expenses.length, 2);
+  assert.equal(result.insertedIds.length, 1);
 });
 
 test("an issuer cancellation can reverse its wallet-first payment and stale alerts remain ignored", () => {
@@ -413,6 +452,46 @@ test("notification receipts validate strictly and concurrent user edits preserve
     { ...receipt, sources: [receipt.sources[0], receipt.sources[0]] },
     { ...receipt, sources: [{ ...receipt.sources[0], occurredAt: "2026-02-30T10:00:00Z" }] },
   ]) assert.equal(parseWalletStateStrict(wallet(Object.freeze({ ...merged, automationPaymentReceipts: [corrupt] }))), null);
+});
+
+test("native purchase snapshots survive undo, reload, replay and cancellation without remerging separated charges", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate, walletAlert()]);
+  const primaryId = automationExpenseId(candidate); const counterpartId = automationExpenseId(walletAlert());
+  const owner = first.state.ledgers[0] as GeneralLedger;
+  assert.ok(owner.automationPaymentReceipts?.[0].sources.every((source) => source.merchant && source.category && source.occurredOn));
+  const restored = undoPaymentMerge(first.state, owner.id, primaryId, counterpartId);
+  const reloaded = parseWalletStateStrict(JSON.parse(JSON.stringify(restored.state))); assert.ok(reloaded);
+  const replayed = applyHighConfidenceCardAutomation(reloaded, [walletAlert(), candidate]);
+  assert.equal(replayed.state, reloaded);
+  assert.equal(replayed.state.ledgers[0].expenses.length, 2);
+  assert.deepEqual(replayed.insertedIds, []); assert.deepEqual(replayed.pending, []);
+  assert.equal(replayed.acknowledgedIds.length, 2);
+  const confirmedReplay = confirmCardCandidate(replayed.state, owner.id, walletAlert());
+  assert.equal(confirmedReplay.state, replayed.state); assert.equal(confirmedReplay.inserted, false);
+  const reversal = Object.freeze({ ...walletAlert(), eventType: "reversal" as const, queueToken: "cancelled-after-undo" });
+  const cancelled = applyHighConfidenceCardAutomation(replayed.state, [reversal]);
+  assert.deepEqual(cancelled.reversedIds, [walletAlert().id]);
+  assert.deepEqual(cancelled.state.ledgers[0].expenses.map((expense) => expense.id), [primaryId]);
+  const stale = applyHighConfidenceCardAutomation(cancelled.state, [walletAlert(), candidate]);
+  assert.equal(stale.state.ledgers[0].expenses.length, 1);
+  assert.equal(stale.pending.length, 0);
+  const again = undoPaymentMerge(stale.state, owner.id, primaryId, counterpartId);
+  assert.equal(again.state, stale.state);
+  const history = getAutomationPaymentHistory(stale.state.ledgers[0] as GeneralLedger);
+  assert.equal(history.find((entry) => entry.expenseId === counterpartId)?.status, "removed");
+});
+
+test("a merged notification cannot be restored after its primary expense has been moved to a travel ledger", () => {
+  const merged = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [candidate, walletAlert()]);
+  const owner = merged.state.ledgers[0] as GeneralLedger;
+  const travel = Object.freeze({ ...createLedger("travel", "Shared trip", "EUR"), participants: Object.freeze([{ id: "me", name: "Me" }]), selfParticipantId: "me" });
+  const state = Object.freeze({ ...merged.state, ledgers: Object.freeze([...merged.state.ledgers, travel]) });
+  const moved = moveGeneralExpenseToTravel(state, { sourceLedgerId: owner.id, expenseId: automationExpenseId(candidate), targetLedgerId: travel.id, paidBy: "me", participantIds: ["me"], category: "food" });
+  assert.throws(() => undoPaymentMerge(moved, owner.id, automationExpenseId(candidate), automationExpenseId(walletAlert())), /payment-undo-unavailable/);
+  assert.ok(getAutomationPaymentHistory(moved.ledgers[0] as GeneralLedger).every((entry) => entry.sources.every((source) => !source.canRestore)));
+  const replay = applyHighConfidenceCardAutomation(moved, [candidate, walletAlert()]);
+  assert.deepEqual(replay.state.ledgers.map((ledger) => ledger.expenses.length), [0, 1]);
+  assert.deepEqual(replay.insertedIds, []);
 });
 
 test("travel ledgers never receive automated expenses", () => {

@@ -63,8 +63,8 @@ test("headerless PDF dates, merchant and amount on separate lines retain their a
 });
 
 test("merchant-first cards join detached signs and currency and exclude failed payments and credits", () => {
-  const result = previewExpenseDocument(document([], { tables: [], text: "Demo Card\nAoût 2026\nBlue Cafe\n14 août, 19:45\n−\n8 , 38\n€\nGreen Market\n13 août, 11:36\n- 7,37 €\nBlue Cafe\n12 août, 10:34\nVotre paiement a échoué car vous avez atteint la limite journalière.\nPrix barré\n-\n1,04\n€\nEmployer credit\n11 août, 12:00\n+\n180,00\n€\nJuillet 2026\nOld Cafe\n31 juillet, 17:42\n-2,78 €" }));
-  assert.deepEqual(result.rows.map(row => [row.description, row.occurredOn, row.minorUnits, row.selected]), [["Blue Cafe", "2026-08-14", 838, true], ["Green Market", "2026-08-13", 737, true], ["Old Cafe", "2026-07-31", 278, true]]);
+  const result = previewExpenseDocument(document([], { tables: [], text: "Demo Card\nAoût 2024\nBlue Cafe\n21 août, 19:45\n−\n9 , 42\n€\nGreen Market\n20 août, 11:36\n- 6,51 €\nBlue Cafe\n19 août, 10:34\nVotre paiement a échoué car vous avez atteint la limite journalière.\nPrix barré\n-\n1,06\n€\nSalary credited\n18 août, 12:00\n+\n190,00\n€\nJuillet 2024\nOld Cafe\n28 juillet, 17:42\n-3,27 €" }));
+  assert.deepEqual(result.rows.map(row => [row.description, row.occurredOn, row.minorUnits, row.selected]), [["Blue Cafe", "2024-08-21", 942, true], ["Green Market", "2024-08-20", 651, true], ["Old Cafe", "2024-07-28", 327, true]]);
   assert.deepEqual(result.excluded.map(row => row.reason).sort(), ["failed", "income"]);
 });
 

@@ -62,12 +62,21 @@ export interface AutomationPaymentReceipt {
   readonly merchant: string;
   readonly currency: string;
   readonly minorUnits: number;
+  /** Explicit local corrections: these native source ids must never rejoin. */
+  readonly separatedSourceIds?: readonly string[];
+  /** A restored notification remains auditable without exposing raw text. */
+  readonly restoredFromExpenseId?: string;
   readonly sources: readonly {
     readonly expenseId: string;
     readonly packageName: string;
     readonly occurredAt: string;
     readonly originFingerprint: string;
     readonly reversalFingerprint: string;
+    /** Immutable display fields captured before any later expense edits.
+     * All three are absent on receipts written before merge-undo existed. */
+    readonly merchant?: string;
+    readonly category?: GeneralCategory;
+    readonly occurredOn?: string;
   }[];
 }
 
@@ -94,6 +103,8 @@ export interface TravelLedger extends LedgerBase {
   readonly participants: readonly Participant[];
   readonly selfParticipantId: string | null;
   readonly expenses: readonly TravelExpense[];
+  /** Private opt-in collaboration identity, cloud baseline and durable outbox. */
+  readonly sharedSync?: import("./sharedTravelLocal").SharedTravelLocalState;
 }
 
 export interface GeneralLedger extends LedgerBase {

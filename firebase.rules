@@ -1,0 +1,146 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function id(value) { return value is string && value.matches('^[A-Za-z0-9_-]{1,100}$'); }
+    function text(value, max) { return value is string && value.size() > 0 && value.size() <= max && value.matches('.*[^ ].*'); }
+    function tripPath(tripId) { return /databases/$(database)/documents/sharedTrips/$(tripId); }
+    function owner(tripId) { return signedIn() && get(tripPath(tripId)).data.ownerUid == request.auth.uid; }
+    function active(tripId) { return get(tripPath(tripId)).data.deleted == false; }
+    function member(tripId) {
+      return signedIn() && active(tripId)
+        && exists(/databases/$(database)/documents/sharedTrips/$(tripId)/members/$(request.auth.uid))
+        && !exists(/databases/$(database)/documents/sharedTrips/$(tripId)/blocked/$(request.auth.uid));
+    }
+    // Round-trip rejects non-string values and delimiter injection.
+    // Bounded whole-list checks avoid the 1000-expression rule limit.
+    function stringList(values, pattern) {
+      let joined = values.join('|');
+      return joined.matches(pattern) && joined.split('[|]') == values;
+    }
+    function allIds(values) {
+      return values is list && values.size() <= 20 && values.toSet().size() == values.size()
+        && (values.size() == 0 || stringList(values, '^[A-Za-z0-9_-]{1,100}([|][A-Za-z0-9_-]{1,100}){0,19}$'));
+    }
+    function allNames(values) {
+      return values is list && values.size() <= 20
+        && (values.size() == 0 || stringList(values, '^[^|]{1,80}([|][^|]{1,80}){0,19}$'));
+    }
+    function currencies(values) {
+      return values is list && values.size() > 0 && values.size() <= 20 && values.toSet().size() == values.size()
+        && stringList(values, '^[A-Z]{3}([|][A-Z]{3}){0,19}$');
+    }
+    function validTrip(data) {
+      return data.keys().hasAll(['schema', 'ownerUid', 'title', 'participantIds', 'participantNames', 'currencies', 'defaultCurrency', 'revision', 'deleted', 'updatedAt'])
+        && data.keys().hasOnly(['schema', 'ownerUid', 'title', 'participantIds', 'participantNames', 'currencies', 'defaultCurrency', 'revision', 'deleted', 'updatedAt'])
+        && data.schema == 1 && id(data.ownerUid) && text(data.title, 80)
+        && allIds(data.participantIds) && data.participantIds.size() > 0 && allNames(data.participantNames) && data.participantIds.size() == data.participantNames.size()
+        && currencies(data.currencies) && data.defaultCurrency in data.currencies
+        && data.revision is int && data.revision > 0 && data.revision < 2000000000
+        && data.deleted is bool && data.updatedAt == request.time;
+    }
+    function validShares(values, amount) {
+      let p = values.concat([0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
+      return values is list && values.size() > 0 && values.size() <= 20
+        && p[0] is int && p[0] >= 0
+        && p[1] is int && p[1] >= 0
+        && p[2] is int && p[2] >= 0
+        && p[3] is int && p[3] >= 0
+        && p[4] is int && p[4] >= 0
+        && p[5] is int && p[5] >= 0
+        && p[6] is int && p[6] >= 0
+        && p[7] is int && p[7] >= 0
+        && p[8] is int && p[8] >= 0
+        && p[9] is int && p[9] >= 0
+        && p[10] is int && p[10] >= 0
+        && p[11] is int && p[11] >= 0
+        && p[12] is int && p[12] >= 0
+        && p[13] is int && p[13] >= 0
+        && p[14] is int && p[14] >= 0
+        && p[15] is int && p[15] >= 0
+        && p[16] is int && p[16] >= 0
+        && p[17] is int && p[17] >= 0
+        && p[18] is int && p[18] >= 0
+        && p[19] is int && p[19] >= 0
+        && amount == p[0] + p[1] + p[2] + p[3] + p[4] + p[5] + p[6] + p[7] + p[8] + p[9] + p[10] + p[11] + p[12] + p[13] + p[14] + p[15] + p[16] + p[17] + p[18] + p[19];
+    }
+    function calendarDate(value) {
+      let parts = value.split('-');
+      let year = int(parts[0]);
+      let month = int(parts[1]);
+      let day = int(parts[2]);
+      let leap = year % 400 == 0 || (year % 4 == 0 && year % 100 != 0);
+      let maximum = month == 2 ? (leap ? 29 : 28) : (month in [4, 6, 9, 11] ? 30 : 31);
+      return year >= 1 && month >= 1 && month <= 12 && day >= 1 && day <= maximum;
+    }
+    function validExpense(data, tripId) {
+      let trip = get(tripPath(tripId)).data;
+      let base = ['schema', 'authorUid', 'updatedBy', 'revision', 'mutationId', 'deleted', 'updatedAt'];
+      let details = ['description', 'category', 'currency', 'minorUnits', 'paidBy', 'participantIds', 'shareMinorUnits', 'occurredOn'];
+      return data.keys().hasAll(base) && data.schema == 1 && id(data.authorUid) && data.updatedBy == request.auth.uid
+        && data.revision is int && data.revision > 0 && data.revision < 2000000000 && id(data.mutationId)
+        && data.updatedAt == request.time && data.deleted is bool
+        && ((data.deleted && data.keys().hasOnly(base)) || (!data.deleted && data.keys().hasOnly(base.concat(details)) && data.keys().hasAll(details)
+          && text(data.description, 200) && data.category in ['accommodation', 'transport', 'food', 'activities', 'shopping', 'insurance', 'other']
+          && data.currency in trip.currencies && data.minorUnits is int && data.minorUnits > 0 && data.minorUnits <= 1000000000000
+          && data.paidBy in trip.participantIds && allIds(data.participantIds) && data.participantIds.size() > 0 && data.participantIds.toSet().hasOnly(trip.participantIds)
+          && validShares(data.shareMinorUnits, data.minorUnits) && data.participantIds.size() == data.shareMinorUnits.size()
+          && data.occurredOn is string && data.occurredOn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && calendarDate(data.occurredOn)));
+    }
+    match /sharedTrips/{tripId} {
+      allow get: if signedIn() && (!exists(tripPath(tripId)) || owner(tripId) || member(tripId));
+      allow list: if false;
+      allow create: if signedIn() && id(tripId) && validTrip(request.resource.data) && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.revision == 1 && !request.resource.data.deleted
+        && getAfter(/databases/$(database)/documents/sharedTrips/$(tripId)/members/$(request.auth.uid)).data.role == 'owner';
+      allow update: if owner(tripId) && validTrip(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'revision', 'deleted', 'updatedAt'])
+        && request.resource.data.revision == resource.data.revision + 1
+        && (!resource.data.deleted || request.resource.data.deleted);
+      allow delete: if owner(tripId) && resource.data.deleted;
+      match /members/{uid} {
+        allow get: if signedIn() && (uid == request.auth.uid || member(tripId) || owner(tripId));
+        allow list: if member(tripId) || owner(tripId);
+        allow create: if signedIn() && uid == request.auth.uid && request.resource.data.schema == 1 && text(request.resource.data.displayName, 80)
+          && request.resource.data.joinedAt == request.time
+          && ((request.resource.data.keys().hasOnly(['schema', 'role', 'displayName', 'joinedAt']) && request.resource.data.role == 'owner'
+            && getAfter(tripPath(tripId)).data.ownerUid == uid && getAfter(tripPath(tripId)).data.deleted == false)
+          || (request.resource.data.keys().hasOnly(['schema', 'role', 'displayName', 'inviteToken', 'joinedAt']) && request.resource.data.role == 'member'
+            && active(tripId) && !exists(/databases/$(database)/documents/sharedTrips/$(tripId)/blocked/$(uid))
+            && request.resource.data.inviteToken.matches('^[a-f0-9]{64}$')
+            && get(/databases/$(database)/documents/sharedTrips/$(tripId)/invites/$(request.resource.data.inviteToken)).data.expiresAt > request.time));
+        allow update: if false;
+        allow delete: if owner(tripId) || (signedIn() && uid == request.auth.uid && resource.data.role == 'member');
+      }
+      match /invites/{token} {
+        allow get: if owner(tripId) || (signedIn() && active(tripId) && token.matches('^[a-f0-9]{64}$') && resource.data.expiresAt > request.time);
+        allow list: if owner(tripId);
+        allow create: if owner(tripId) && active(tripId) && token.matches('^[a-f0-9]{64}$')
+          && request.resource.data.keys().hasOnly(['schema', 'ownerUid', 'expiresAt', 'createdAt'])
+          && request.resource.data.schema == 1 && request.resource.data.ownerUid == request.auth.uid
+          && request.resource.data.createdAt == request.time && request.resource.data.expiresAt is timestamp
+          && request.resource.data.expiresAt > request.time && request.resource.data.expiresAt <= request.time + duration.value(25, 'h');
+        allow update: if false;
+        allow delete: if owner(tripId);
+      }
+      match /blocked/{uid} {
+        allow read: if owner(tripId);
+        allow create, update: if owner(tripId) && uid != request.auth.uid && id(uid)
+          && request.resource.data.keys().hasOnly(['schema', 'blockedAt']) && request.resource.data.schema == 1 && request.resource.data.blockedAt == request.time;
+        allow delete: if owner(tripId);
+      }
+      match /expenses/{expenseId} {
+        allow read: if member(tripId) || owner(tripId);
+        allow create: if request.resource.data.authorUid == request.auth.uid && request.resource.data.revision == 1
+          && member(tripId) && id(expenseId) && validExpense(request.resource.data, tripId);
+        allow update: if (resource.data.authorUid == request.auth.uid || owner(tripId))
+          && member(tripId) && validExpense(request.resource.data, tripId)
+          && request.resource.data.authorUid == resource.data.authorUid && request.resource.data.revision == resource.data.revision + 1
+          && request.resource.data.mutationId != resource.data.mutationId;
+        allow delete: if owner(tripId) && !active(tripId);
+      }
+    }
+    // No personal ledger, notification, card, balance or profile collection is readable/writable.
+    match /{document=**} { allow read, write: if false; }
+  }
+}
