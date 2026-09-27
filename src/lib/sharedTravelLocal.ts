@@ -1,4 +1,4 @@
-import { SharedTravelError, sharedId, validateSharedExpense, type SharedExpenseMutation, type SharedExpenseRecord, type SharedMember, type SharedTrip, type SharedTripSnapshot } from "./sharedTravel";
+import { SharedTravelError, sharedId, validParticipantMembers, validateSharedExpense, type SharedExpenseMutation, type SharedExpenseRecord, type SharedMember, type SharedTrip, type SharedTripSnapshot } from "./sharedTravel";
 import type { TravelExpense, TravelLedger, WalletState } from "./types";
 
 /** Private, durably saved in the same SQLite transaction as the visible ledger.
@@ -14,12 +14,14 @@ export interface SharedTravelLocalState {
 }
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const participantFor = (trip: SharedTrip, uid: string): string | undefined => Object.hasOwn(trip.participantMembers ?? {}, uid) ? trip.participantMembers![uid] : undefined;
 
 export function parseSharedLocal(value: unknown): SharedTravelLocalState | null {
   if (!record(value) || value.version !== 1 || !sharedId(value.tripId) || !sharedId(value.uid) || !record(value.trip)) return null;
   const trip = value.trip as unknown as SharedTrip;
   if (trip.id !== value.tripId || !sharedId(trip.ownerUid) || typeof trip.title !== "string" || !trip.title.trim() || trip.title.length > 80 || !Number.isInteger(trip.revision) || trip.revision < 1 || typeof trip.deleted !== "boolean" || !Array.isArray(trip.participants) || trip.participants.length > 20 || !Array.isArray(trip.currencies) || !trip.currencies.length || trip.currencies.length > 20 || !trip.currencies.every((code) => typeof code === "string" && /^[A-Z]{3}$/.test(code)) || new Set(trip.currencies).size !== trip.currencies.length || !trip.currencies.includes(trip.defaultCurrency)) return null;
   if (!trip.participants.every((p) => record(p) && sharedId(p.id) && typeof p.name === "string" && p.name.trim() && p.name.length <= 80) || new Set(trip.participants.map((p) => p.id)).size !== trip.participants.length) return null;
+  if (trip.participantMembers !== undefined && !validParticipantMembers(trip.participantMembers, trip.participants.map((p) => p.id))) return null;
   if (!Array.isArray(value.records) || value.records.length > 5000 || !Array.isArray(value.pending) || value.pending.length > 5000 || !Array.isArray(value.members) || value.members.length > 100) return null;
   const records: SharedExpenseRecord[] = []; const recordIds = new Set<string>();
   for (const r of value.records) {
@@ -38,19 +40,21 @@ export function parseSharedLocal(value: unknown): SharedTravelLocalState | null 
     if (!record(m) || !sharedId(m.uid) || memberIds.has(m.uid) || typeof m.displayName !== "string" || !m.displayName.trim() || m.displayName.length > 80 || (m.role !== "member" && m.role !== "owner")) return null;
     members.push({ uid: m.uid, displayName: m.displayName, role: m.role }); memberIds.add(m.uid);
   }
-  return { version: 1, tripId: value.tripId, uid: value.uid, trip: { id: trip.id, ownerUid: trip.ownerUid, title: trip.title, participants: trip.participants.map((p) => ({ id: p.id, name: p.name })), currencies: [...trip.currencies], defaultCurrency: trip.defaultCurrency, revision: trip.revision, deleted: trip.deleted }, records, pending, members };
+  return { version: 1, tripId: value.tripId, uid: value.uid, trip: { id: trip.id, ownerUid: trip.ownerUid, title: trip.title, participants: trip.participants.map((p) => ({ id: p.id, name: p.name })), currencies: [...trip.currencies], defaultCurrency: trip.defaultCurrency, revision: trip.revision, deleted: trip.deleted, ...(trip.participantMembers !== undefined ? { participantMembers: { ...trip.participantMembers } } : {}) }, records, pending, members };
 }
 
 export function connectSharedLedger(ledger: TravelLedger, trip: SharedTrip, uid: string, snapshot?: SharedTripSnapshot): TravelLedger {
   if (ledger.sharedSync || trip.deleted || !sharedId(uid) || snapshot && (snapshot.trip.id !== trip.id || snapshot.trip.deleted || snapshot.fromCache)) throw new SharedTravelError("invalid-data");
+  // Another member may join between accepting an invite and loading the full snapshot.
+  const connectedTrip = snapshot?.trip ?? trip;
   const pending = snapshot ? [] : ledger.expenses.map((expense) => {
-    validateSharedExpense(expense, trip);
+    validateSharedExpense(expense, connectedTrip);
     return { id: expense.id, expense, expectedRevision: 0, mutationId: crypto.randomUUID(), conflict: false };
   });
-  const sync: SharedTravelLocalState = { version: 1, tripId: trip.id, uid, trip, records: snapshot?.expenses ?? [], members: snapshot?.members ?? [], pending };
+  const sync: SharedTravelLocalState = { version: 1, tripId: connectedTrip.id, uid, trip: connectedTrip, records: snapshot?.expenses ?? [], members: snapshot?.members ?? [], pending };
   if (!parseSharedLocal(sync)) throw new SharedTravelError("invalid-data");
-  return { ...ledger, title: trip.title, participants: trip.participants, currencies: trip.currencies, defaultCurrency: trip.defaultCurrency,
-    selfParticipantId: trip.participants.some((p) => p.id === ledger.selfParticipantId) ? ledger.selfParticipantId : null,
+  return { ...ledger, title: connectedTrip.title, participants: connectedTrip.participants, currencies: connectedTrip.currencies, defaultCurrency: connectedTrip.defaultCurrency,
+    selfParticipantId: participantFor(connectedTrip, uid) ?? (connectedTrip.participants.some((p) => p.id === ledger.selfParticipantId) ? ledger.selfParticipantId : null),
     expenses: snapshot ? snapshot.expenses.flatMap((r) => r.expense ? [r.expense] : []) : ledger.expenses, sharedSync: sync, updatedAt: new Date().toISOString() };
 }
 
@@ -87,7 +91,12 @@ export function queueSharedWalletChanges(before: WalletState, desired: WalletSta
 export function receiveSharedSnapshot(ledger: TravelLedger, snapshot: SharedTripSnapshot): TravelLedger {
   const sync = ledger.sharedSync;
   if (!sync || sync.tripId !== snapshot.trip.id || snapshot.fromCache) return ledger;
-  if (!same(sync.trip.participants, snapshot.trip.participants) || !same(sync.trip.currencies, snapshot.trip.currencies)) throw new SharedTravelError("invalid-data");
+  const trip = snapshot.trip.revision >= sync.trip.revision ? snapshot.trip : sync.trip;
+  // Joining may append people, but cannot rename/remove/reorder existing settlement
+  // identities or reassign a device. Existing expense shares remain untouched.
+  if (!Array.isArray(trip.participants) || !same(sync.trip.participants, trip.participants.slice(0, sync.trip.participants.length))
+    || !same(sync.trip.currencies, trip.currencies) || sync.trip.defaultCurrency !== trip.defaultCurrency || sync.trip.ownerUid !== trip.ownerUid
+    || Object.entries(sync.trip.participantMembers ?? {}).some(([uid, participantId]) => participantFor(trip, uid) !== participantId)) throw new SharedTravelError("invalid-data");
   const records = new Map(sync.records.map((r) => [r.id, r]));
   for (const r of snapshot.expenses) if ((records.get(r.id)?.revision ?? 0) <= r.revision) records.set(r.id, r);
   const pending = new Map(sync.pending.map((op) => [op.id, op]));
@@ -98,7 +107,9 @@ export function receiveSharedSnapshot(ledger: TravelLedger, snapshot: SharedTrip
     else if (op) { if (r.revision > op.expectedRevision) pending.set(r.id, { ...op, conflict: true }); continue; }
     if (r.expense) expenses.set(r.id, r.expense); else expenses.delete(r.id);
   }
-  const next = { ...ledger, expenses: [...expenses.values()], sharedSync: { ...sync, trip: snapshot.trip.revision >= sync.trip.revision ? snapshot.trip : sync.trip, members: snapshot.members, records: [...records.values()], pending: [...pending.values()] } };
+  const selfParticipantId = !participantFor(sync.trip, sync.uid) && participantFor(trip, sync.uid) ? participantFor(trip, sync.uid)! : ledger.selfParticipantId;
+  const next = { ...ledger, title: trip.title, participants: trip.participants, selfParticipantId, expenses: [...expenses.values()], sharedSync: { ...sync, trip, members: snapshot.members, records: [...records.values()], pending: [...pending.values()] } };
+  if (!parseSharedLocal(next.sharedSync)) throw new SharedTravelError("invalid-data");
   return same(next, ledger) ? ledger : next;
 }
 

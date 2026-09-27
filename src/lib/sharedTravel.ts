@@ -12,6 +12,8 @@ export interface SharedTrip {
   readonly id: string; readonly ownerUid: string; readonly title: string;
   readonly participants: readonly Participant[]; readonly currencies: readonly string[];
   readonly defaultCurrency: string; readonly revision: number; readonly deleted: boolean;
+  /** Stable account-to-settlement identity; absent on trips created before 1.8.5. */
+  readonly participantMembers?: Readonly<Record<string, string>>;
 }
 export interface SharedMember { readonly uid: string; readonly displayName: string; readonly role: "owner" | "member"; }
 export interface SharedExpenseRecord {
@@ -34,6 +36,7 @@ export interface SharedTravelClient {
   createInvite(tripId: string): Promise<string>;
   revokeInvite(inviteCode: string): Promise<void>;
   joinTrip(inviteCode: string, displayName: string): Promise<{ trip: SharedTrip; joined: boolean }>;
+  ensureParticipant(tripId: string, preferredParticipantId?: string | null): Promise<SharedTrip>;
   getSnapshot(tripId: string): Promise<SharedTripSnapshot>;
   listenTrip(tripId: string, onSnapshot: (snapshot: SharedTripSnapshot) => void, onError: (error: SharedTravelError) => void): () => void;
   publishExpense(tripId: string, mutation: SharedExpenseMutation): Promise<SharedExpenseRecord>;
@@ -70,12 +73,40 @@ export function toSharedTripData(ledger: TravelLedger, ownerUid: string, nextRev
   return data;
 }
 export function parseSharedTrip(id: string, value: unknown): SharedTrip | null {
-  if (!sharedId(id) || !object(value) || !keys(value, ["schema", "ownerUid", "title", "participantIds", "participantNames", "currencies", "defaultCurrency", "revision", "deleted", "updatedAt"]) || value.schema !== 1 || !sharedId(value.ownerUid) || !nonempty(value.title, 80) || !revision(value.revision) || typeof value.deleted !== "boolean" || !Array.isArray(value.participantIds) || !Array.isArray(value.participantNames) || value.participantIds.length !== value.participantNames.length || value.participantIds.length > MAX_SHARED_PARTICIPANTS || !value.participantIds.every(sharedId) || new Set(value.participantIds).size !== value.participantIds.length || !value.participantNames.every((name) => nonempty(name, 80)) || !Array.isArray(value.currencies) || !value.currencies.length || value.currencies.length > 20 || !value.currencies.every(currency) || new Set(value.currencies).size !== value.currencies.length || !currency(value.defaultCurrency) || !value.currencies.includes(value.defaultCurrency)) return null;
+  if (!sharedId(id) || !object(value) || !keys(value, ["schema", "ownerUid", "title", "participantIds", "participantNames", "participantMembers", "currencies", "defaultCurrency", "revision", "deleted", "updatedAt"]) || value.schema !== 1 || !sharedId(value.ownerUid) || !nonempty(value.title, 80) || !revision(value.revision) || typeof value.deleted !== "boolean" || !Array.isArray(value.participantIds) || !Array.isArray(value.participantNames) || value.participantIds.length !== value.participantNames.length || value.participantIds.length > MAX_SHARED_PARTICIPANTS || !value.participantIds.every(sharedId) || new Set(value.participantIds).size !== value.participantIds.length || !value.participantNames.every((name) => nonempty(name, 80)) || !Array.isArray(value.currencies) || !value.currencies.length || value.currencies.length > 20 || !value.currencies.every(currency) || new Set(value.currencies).size !== value.currencies.length || !currency(value.defaultCurrency) || !value.currencies.includes(value.defaultCurrency)) return null;
   const names = value.participantNames as string[];
-  // Match the server's list encoding and reject a trip that could never add expenses
-  // after participants become immutable at connection time.
+  // Match the server's bounded list encoding.
   if (!names.length || names.some((name) => name.includes("|"))) return null;
-  return { id, ownerUid: value.ownerUid, title: value.title, participants: value.participantIds.map((participantId, index) => ({ id: participantId as string, name: names[index] })), currencies: value.currencies as string[], defaultCurrency: value.defaultCurrency, revision: value.revision, deleted: value.deleted };
+  if (value.participantMembers !== undefined && !validParticipantMembers(value.participantMembers, value.participantIds as string[])) return null;
+  return { id, ownerUid: value.ownerUid, title: value.title, participants: value.participantIds.map((participantId, index) => ({ id: participantId as string, name: names[index] })), currencies: value.currencies as string[], defaultCurrency: value.defaultCurrency, revision: value.revision, deleted: value.deleted, ...(value.participantMembers !== undefined ? { participantMembers: { ...value.participantMembers as Record<string, string> } } : {}) };
+}
+
+export function validParticipantMembers(value: unknown, participantIds: readonly string[]): value is Record<string, string> {
+  if (!object(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= MAX_SHARED_PARTICIPANTS && entries.every(([uid, participantId]) => sharedId(uid) && sharedId(participantId) && participantIds.includes(participantId)) && new Set(Object.values(value)).size === entries.length;
+}
+
+/** Called inside a Firestore transaction so simultaneous joins cannot claim the same person. */
+export function registerSharedParticipant(trip: SharedTrip, uid: string, displayName: string, preferredParticipantId?: string | null): SharedTrip {
+  const name = displayName.trim();
+  if (!sharedId(uid) || !nonempty(name, 80) || name.includes("|") || trip.deleted) throw new SharedTravelError("invalid-data");
+  if (Object.hasOwn(trip.participantMembers ?? {}, uid)) return trip;
+  const claimed = new Set(Object.values(trip.participantMembers ?? {}));
+  const preferred = trip.ownerUid === uid ? trip.participants.find((person) => person.id === preferredParticipantId && !claimed.has(person.id)) : undefined;
+  // Reuse one exact, unclaimed name; never merge two connected people merely because their names match.
+  const matches = trip.participants.filter((person) => person.name === name);
+  const existing = preferred ?? (matches.length === 1 && !claimed.has(matches[0].id) ? matches[0] : undefined);
+  let participants = trip.participants;
+  let participantId = existing?.id;
+  if (!participantId) {
+    if (participants.length >= MAX_SHARED_PARTICIPANTS) throw new SharedTravelError("limit");
+    // Firebase anonymous UIDs fit this prefix; reject custom overlong UIDs rather than truncate identity.
+    participantId = `member_${uid}`;
+    if (!sharedId(participantId) || participants.some((person) => person.id === participantId)) throw new SharedTravelError("invalid-data");
+    participants = [...participants, { id: participantId, name }];
+  }
+  return { ...trip, participants, participantMembers: { ...trip.participantMembers, [uid]: participantId }, revision: trip.revision + 1 };
 }
 export function toSharedExpenseData(expense: TravelExpense, trip: SharedTrip, authorUid: string, updatedBy: string, nextRevision: number, mutationId: string): Record<string, unknown> {
   validateSharedExpense(expense, trip);

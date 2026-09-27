@@ -36,6 +36,7 @@ yarn-error.log*
 /.firebase/
 /outputs/
 /work/
+/tools/category-eval/results/
 
 # native build products and private signing material
 /android/.gradle/

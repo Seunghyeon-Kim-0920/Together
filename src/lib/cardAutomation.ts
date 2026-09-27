@@ -31,10 +31,12 @@ export interface NativeCardCandidate {
   readonly minorUnits: number;
   readonly currency: string;
   readonly occurredAt: string;
+  /** Actual notification post time, separate from the provider's transaction time. */
+  readonly deliveredAt?: string;
   readonly occurredOn: string;
   readonly confidence: CardCandidateConfidence;
   readonly eventType: CardCandidateEventType;
-  /** Messaging, email, browser, and social aggregators must always be reviewed. */
+  /** Relayed or multi-payment/summary notifications must always be reviewed. */
   readonly manualOnly: boolean;
   /** A payment amount was detected but a merchant must be supplied by the user. */
   readonly requiresMerchant?: boolean;
@@ -99,17 +101,17 @@ function localCalendarDate(timestamp: string): string {
 export function parseNativeCardCandidate(value: unknown): NativeCardCandidate | null {
   if (!isRecord(value)) return null;
   const requiresMerchant = value.requiresMerchant === undefined ? false : value.requiresMerchant;
-  const id = boundedText(value.id, 200); const packageName = boundedText(value.packageName, 200); const sourceName = boundedText(value.sourceName, 80); const merchant = requiresMerchant === true && value.merchant === "" ? "" : boundedText(value.merchant, 500); const occurredAt = validTimestamp(value.occurredAt); const currency = typeof value.currency === "string" ? value.currency.trim().toUpperCase() : "";
+  const id = boundedText(value.id, 200); const packageName = boundedText(value.packageName, 200); const sourceName = boundedText(value.sourceName, 80); const merchant = requiresMerchant === true && value.merchant === "" ? "" : boundedText(value.merchant, 500); const occurredAt = validTimestamp(value.occurredAt); const deliveredAt = value.deliveredAt === undefined ? undefined : validTimestamp(value.deliveredAt); const currency = typeof value.currency === "string" ? value.currency.trim().toUpperCase() : "";
   // Older native queue entries did not have a content token. Keep those
   // readable while still rejecting malformed non-null tokens.
   const queueToken = value.queueToken === undefined || value.queueToken === null ? null : boundedText(value.queueToken, 200);
   const eventType = value.eventType === undefined ? "purchase" : value.eventType;
   const manualOnly = value.manualOnly === undefined ? false : value.manualOnly;
-  if (!id || (value.queueToken !== undefined && value.queueToken !== null && !queueToken) || !packageName || !PACKAGE_NAME.test(packageName) || !sourceName || merchant === null || !occurredAt || !Number.isSafeInteger(value.minorUnits) || (value.minorUnits as number) <= 0 || !/^[A-Z]{3}$/.test(currency) || (value.confidence !== "high" && value.confidence !== "review") || !CARD_CANDIDATE_EVENT_TYPES.includes(eventType as CardCandidateEventType) || typeof manualOnly !== "boolean" || typeof requiresMerchant !== "boolean") return null;
+  if (!id || (value.queueToken !== undefined && value.queueToken !== null && !queueToken) || !packageName || !PACKAGE_NAME.test(packageName) || !sourceName || merchant === null || !occurredAt || (value.deliveredAt !== undefined && !deliveredAt) || !Number.isSafeInteger(value.minorUnits) || (value.minorUnits as number) <= 0 || !/^[A-Z]{3}$/.test(currency) || (value.confidence !== "high" && value.confidence !== "review") || !CARD_CANDIDATE_EVENT_TYPES.includes(eventType as CardCandidateEventType) || typeof manualOnly !== "boolean" || typeof requiresMerchant !== "boolean") return null;
   const occurredOn = value.occurredOn === undefined ? localCalendarDate(occurredAt) : validCalendarDate(value.occurredOn);
   if (!occurredOn) return null;
   const categoryHint = GENERAL_CATEGORIES.includes(value.categoryHint as GeneralCategory) ? value.categoryHint as GeneralCategory : undefined;
-  return Object.freeze({ ...(categoryHint ? { categoryHint } : {}), id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, occurredOn, confidence: requiresMerchant ? "review" : value.confidence, eventType: eventType as CardCandidateEventType, manualOnly, ...(requiresMerchant ? { requiresMerchant: true } : {}) });
+  return Object.freeze({ ...(categoryHint ? { categoryHint } : {}), id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, ...(deliveredAt ? { deliveredAt } : {}), occurredOn, confidence: requiresMerchant ? "review" : value.confidence, eventType: eventType as CardCandidateEventType, manualOnly, ...(requiresMerchant ? { requiresMerchant: true } : {}) });
 }
 
 export function completeCandidateMerchant(candidate: NativeCardCandidate, merchant: string): NativeCardCandidate {
@@ -209,7 +211,10 @@ function duplicateEvidence(candidate: NativeCardCandidate, id = automationExpens
 }
 
 function recordPaymentReceipt(ledger: GeneralLedger, candidate: NativeCardCandidate, expenseId = automationExpenseId(candidate)): GeneralLedger {
-  if (candidate.eventType !== "purchase" || candidate.manualOnly || candidate.requiresMerchant) return ledger;
+  // Manual-only sources reach this function only after explicit user
+  // confirmation. Their receipt is still needed to avoid a later issuer alert
+  // recording that confirmed purchase for a second time.
+  if (candidate.eventType === "reversal" || candidate.requiresMerchant) return ledger;
   const receipts = [...ledger.automationPaymentReceipts ?? [], paymentReceipt(duplicateEvidence(candidate, expenseId, ledger.expenses.find((expense) => expense.id === expenseId)?.category), expenseId)];
   return Object.freeze({ ...ledger, automationPaymentReceipts: Object.freeze(receipts.slice(-MAX_AUTOMATION_PAYMENT_RECEIPTS)) });
 }
@@ -285,7 +290,9 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
   const appliedReversals = new Set(state.ledgers.flatMap((ledger) => ledger.kind === "general" ? ledger.automationReversalIds : []));
   // Purchases are processed before reversals regardless of notification order,
   // so a delayed or out-of-order cancellation wins within the same batch.
-  const orderedCandidates = [...candidates].sort((left, right) => Number(left.eventType === "reversal") - Number(right.eventType === "reversal"));
+  const orderedCandidates = [...candidates].sort((left, right) => Number(left.eventType === "reversal") - Number(right.eventType === "reversal")
+    || Number(Boolean(left.requiresMerchant)) - Number(Boolean(right.requiresMerchant))
+    || Number(left.confidence !== "high") - Number(right.confidence !== "high"));
   for (const candidate of orderedCandidates) {
     const expenseId = automationExpenseId(candidate);
     const origin = automationOriginFingerprint(candidate);
@@ -299,7 +306,7 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
         pending.push(identityConflictCandidate(candidate)); continue;
       }
     }
-    if (candidate.eventType === "purchase") {
+    if (candidate.eventType !== "reversal") {
       const receiptIdentity = paymentReceiptIdentity(ledgers, duplicateEvidence(candidate));
       if (receiptIdentity === "same") { acknowledgedIds.add(candidate.id); continue; }
       if (receiptIdentity === "conflict") { pending.push(identityConflictCandidate(candidate)); continue; }
@@ -333,12 +340,28 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
       pending.push(Object.freeze({ ...candidate, confidence: "review", currencyReview: true })); continue;
     }
     const owners = ownerIndexes(ledgers, candidate);
-    if (candidate.manualOnly || candidate.requiresMerchant) { pending.push(candidate.confidence === "review" ? candidate : Object.freeze({ ...candidate, confidence: "review" })); continue; }
-    if (candidate.eventType === "purchase") {
-      const evidence = duplicateEvidence(candidate);
-      if (!findCrossSourcePayment(ledgers, evidence) && hasPossibleCrossSourcePayment(ledgers, evidence)) {
-        pending.push(Object.freeze({ ...candidate, confidence: "review", possibleDuplicate: true })); continue;
+    // A trusted issuer can describe the same wallet charge with a missing
+    // merchant. Reconcile compatible purchases before the new-expense
+    // confidence gate; conflicting debit types still require duplicate review.
+    const evidence = candidate.eventType !== "reversal" ? duplicateEvidence(candidate) : null;
+    const duplicate = evidence ? findCrossSourcePayment(ledgers, evidence) : null;
+    if (duplicate && evidence && !candidate.manualOnly && owners.length === 1) {
+      const owner = ledgers[owners[0]];
+      if (owner.kind === "general" && owner.automationSources.some((source) => source.packageName === candidate.packageName)) {
+        if (duplicate.ledgerIndex !== owners[0]) {
+          pending.push(Object.freeze({ ...candidate, confidence: "review", possibleDuplicate: true })); continue;
+        }
+        ledgers[owners[0]] = joinPaymentReceipt(owner, duplicate, { ...evidence,
+          category: resolveCategory(candidate.merchant || duplicate.receipt.merchant, owner.id, candidate.categoryHint) });
+        receiptsChanged = true; acknowledgedIds.add(candidate.id); continue;
       }
+    }
+    if (candidate.manualOnly || candidate.requiresMerchant) {
+      const possibleDuplicate = evidence && !duplicate && hasPossibleCrossSourcePayment(ledgers, evidence);
+      pending.push(Object.freeze({ ...candidate, confidence: "review", ...(possibleDuplicate ? { possibleDuplicate: true } : {}) })); continue;
+    }
+    if (evidence && !duplicate && hasPossibleCrossSourcePayment(ledgers, evidence)) {
+      pending.push(Object.freeze({ ...candidate, confidence: "review", possibleDuplicate: true })); continue;
     }
     if (candidate.confidence !== "high" || owners.length !== 1) { pending.push(candidate); continue; }
     const index = owners[0]; const ledger = ledgers[index];
@@ -348,20 +371,6 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     if (!knownLinkedReversal && !ledger.automationSources.some((source) => source.packageName === candidate.packageName)) {
       pending.push(Object.freeze({ ...candidate, confidence: "review" }));
       continue;
-    }
-    if (candidate.eventType === "purchase") {
-      const evidence = duplicateEvidence(candidate); const duplicate = findCrossSourcePayment(ledgers, evidence);
-      if (duplicate) {
-        // Equal amounts in separate ledgers may be separate purchases. A
-        // trusted app assignment must never silently redirect that spend.
-        if (duplicate.ledgerIndex !== index) {
-          pending.push(Object.freeze({ ...candidate, confidence: "review", possibleDuplicate: true }));
-          continue;
-        }
-        const owner = ledgers[duplicate.ledgerIndex];
-        if (owner.kind === "general") ledgers[duplicate.ledgerIndex] = joinPaymentReceipt(owner, duplicate, { ...evidence, category: resolveCategory(candidate.merchant, owner.id, candidate.categoryHint) });
-        receiptsChanged = true; acknowledgedIds.add(candidate.id); continue;
-      }
     }
     if (candidate.eventType === "reversal") {
       const matches = reversalMatchIndexes(ledger.expenses, candidate, ledger.automationPaymentReceipts);
@@ -423,11 +432,11 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
     const updated = Object.freeze({ ...ledger, automationReversalIds, expenses: Object.freeze(ledger.expenses.filter((_, expenseIndex) => expenseIndex !== matches[0])), updatedAt: new Date().toISOString() }); const ledgers = [...state.ledgers]; ledgers[index] = updated;
     return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: false, reversed: true });
   }
-  if (candidate.eventType === "purchase" && !options.asNewTransaction) {
+  if (!options.asNewTransaction) {
     const evidence = duplicateEvidence(candidate); const receiptIdentity = paymentReceiptIdentity(state.ledgers, evidence);
     if (receiptIdentity === "same") return Object.freeze({ state, inserted: false, reversed: false });
     if (receiptIdentity === "conflict") throw new Error("candidate-conflict");
-    const duplicate = candidate.manualOnly ? null : findCrossSourcePayment(state.ledgers, evidence);
+    const duplicate = findCrossSourcePayment(state.ledgers, evidence);
     if (duplicate) {
       if (duplicate.ledgerIndex !== index) throw new Error("candidate-possible-duplicate");
       const owner = state.ledgers[duplicate.ledgerIndex]; const ledgers = [...state.ledgers];
@@ -440,12 +449,15 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
   const identity = recordedIdentity(recorded, expenseId, origin);
   const movedIdentity = movedExpenseIds.has(expenseId) ? movedExpenseIds.has(origin) ? "same" : "conflict" : "none";
   const reversedIdentity = appliedReversals.has(expenseId) ? appliedReversals.has(origin) ? "same" : "conflict" : "none";
-  const receiptIdentity = candidate.eventType === "purchase" ? paymentReceiptIdentity(state.ledgers, duplicateEvidence(candidate)) : "none";
+  const receiptIdentity = paymentReceiptIdentity(state.ledgers, duplicateEvidence(candidate));
   const hasIdentityConflict = identity === "conflict" || movedIdentity === "conflict" || reversedIdentity === "conflict" || receiptIdentity === "conflict";
-  const hasKnownIdentity = identity === "same" || movedIdentity === "same" || reversedIdentity === "same";
+  const hasKnownIdentity = identity === "same" || movedIdentity === "same" || reversedIdentity === "same" || receiptIdentity === "same";
+  // A stale add-as-new dialog cannot replay a source already merged into a
+  // durable receipt. Deliberate separation uses undoPaymentMerge instead.
+  if (receiptIdentity === "same" && !hasIdentityConflict) return Object.freeze({ state, inserted: false, reversed: false });
   if ((candidate.identityConflict || hasIdentityConflict) && !options.asNewTransaction) throw new Error("candidate-conflict");
   if (options.asNewTransaction) {
-    const possibleDuplicate = candidate.eventType === "purchase" && !candidate.manualOnly && hasPossibleCrossSourcePayment(state.ledgers, duplicateEvidence(candidate));
+    const possibleDuplicate = hasPossibleCrossSourcePayment(state.ledgers, duplicateEvidence(candidate));
     if (possibleDuplicate && !hasIdentityConflict) {
       if (hasKnownIdentity) return Object.freeze({ state, inserted: false, reversed: false });
       if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");

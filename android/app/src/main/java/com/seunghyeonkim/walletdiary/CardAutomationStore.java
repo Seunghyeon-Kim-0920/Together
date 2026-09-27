@@ -144,7 +144,7 @@ final class CardAutomationStore {
             JSONObject item = pending.optJSONObject(index);
             if (item == null) continue;
             if (id.equals(item.optString("id"))) {
-                next.put(candidate);
+                next.put(preserveFirstDeliveryTime(item, candidate));
                 exists = true;
             } else {
                 next.put(item);
@@ -158,6 +158,18 @@ final class CardAutomationStore {
         return !exists;
     }
 
+    static JSONObject preserveFirstDeliveryTime(JSONObject existing, JSONObject updated) {
+        // Reposting the same content must not move its original delivery time
+        // closer to an unrelated later purchase. A changed token is a new
+        // purchase/reversal revision and keeps its own delivery time.
+        if (existing.optString("queueToken").equals(updated.optString("queueToken"))
+            && !existing.optString("deliveredAt").isEmpty()) {
+            try { updated.put("deliveredAt", existing.optString("deliveredAt")); }
+            catch (JSONException ignored) {}
+        }
+        return updated;
+    }
+
     static synchronized boolean addPendingIfAllowed(Context context, String packageName, JSONObject candidate) {
         return isAllowedPackage(context, packageName) && addPending(context, candidate);
     }
@@ -166,7 +178,7 @@ final class CardAutomationStore {
         try {
             JSONArray stored = new JSONArray(preferences(context).getString(KEY_PENDING, "[]"));
             JSONArray current = retainAllowedEvents(retainCurrentParserEvents(stored), configuration(context), context.getPackageName());
-            if (current.length() != stored.length()) preferences(context).edit().putString(KEY_PENDING, current.toString()).commit();
+            if (!current.toString().equals(stored.toString())) preferences(context).edit().putString(KEY_PENDING, current.toString()).commit();
             return current;
         } catch (JSONException ignored) {
             return new JSONArray();
@@ -177,7 +189,15 @@ final class CardAutomationStore {
         JSONArray current = new JSONArray();
         for (int index = 0; index < events.length(); index++) {
             JSONObject item = events.optJSONObject(index);
-            if (item != null && item.optInt("parserVersion", 0) >= 3 && item.optInt("parserVersion", 0) <= PaymentNotificationParser.PARSER_VERSION) current.put(item);
+            if (item != null && item.optInt("parserVersion", 0) >= 3 && item.optInt("parserVersion", 0) <= PaymentNotificationParser.PARSER_VERSION) {
+                // Before v8, multi-payment summaries were review-only but
+                // indistinguishable from an ordinary merchant review. Do not
+                // let the new reconciliation path auto-ack those old drafts.
+                if (item.optInt("parserVersion", 0) < 8 && "review".equals(item.optString("confidence")) && !item.optBoolean("manualOnly")) {
+                    try { current.put(new JSONObject(item.toString()).put("manualOnly", true)); }
+                    catch (JSONException ignored) { /* Fail closed; never promote an unsafe legacy draft. */ }
+                } else current.put(item);
+            }
         }
         return current;
     }

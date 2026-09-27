@@ -41,6 +41,43 @@ test("different merchant names only auto-pair within the inclusive two-minute sp
   for (const seconds of [-121, 121]) assert.equal(findCrossSourcePayment(ledgers, evidence(`late-${seconds}`, wallet, seconds)), null);
 });
 
+test("actual Android delivery time pairs concurrent cross-app alerts even if notification when differs", () => {
+  const first = evidence("issuer", bank, 0, { deliveredAt: "2026-09-10T10:20:00Z" });
+  const second = evidence("wallet", wallet, 900, { deliveredAt: "2026-09-10T10:20:08Z" });
+  const match = findCrossSourcePayment(ledgersWith(paymentReceipt(first)), second);
+  assert.ok(match);
+  const joined = joinPaymentReceipt(ledgerWith(paymentReceipt(first)), { ...match, ledgerIndex: 0 }, second);
+  assert.equal(joined.automationPaymentReceipts?.[0].sources.length, 2);
+  assert.deepEqual(joined.automationPaymentReceipts?.[0].sources.map((source) => source.deliveredAt), [first.deliveredAt, second.deliveredAt]);
+});
+
+test("when delivery evidence is present on both sides, old transaction timestamps cannot create a false match", () => {
+  const first = evidence("first", bank, 0, { deliveredAt: "2026-09-10T10:00:00Z" });
+  const second = evidence("second", wallet, 0, { deliveredAt: "2026-09-10T11:00:00Z" });
+  const ledgers = ledgersWith(paymentReceipt(first));
+  assert.equal(findCrossSourcePayment(ledgers, second), null);
+  assert.equal(hasPossibleCrossSourcePayment(ledgers, second), false);
+});
+
+test("an unusually large provider transaction-time disagreement waits for review despite simultaneous posts", () => {
+  const first = evidence("first", bank, 0, { deliveredAt: "2026-09-10T12:00:00Z" });
+  const second = evidence("second", wallet, 90 * 60, { deliveredAt: "2026-09-10T12:00:10Z" });
+  const ledgers = ledgersWith(paymentReceipt(first));
+  assert.equal(findCrossSourcePayment(ledgers, second), null);
+  assert.equal(hasPossibleCrossSourcePayment(ledgers, second), true);
+});
+
+test("a mixed legacy receipt recognizes a later simultaneous alert but requires review", () => {
+  const legacy = evidence("legacy", bank, 0);
+  const modern = evidence("modern", wallet, 30, { deliveredAt: "2026-09-10T11:00:00Z" });
+  const first = ledgerWith(paymentReceipt(legacy));
+  const match = findCrossSourcePayment([first], modern); assert.ok(match);
+  const joined = joinPaymentReceipt(first, match, modern);
+  const third = evidence("third", "com.third.payment", 900, { deliveredAt: "2026-09-10T11:00:10Z", merchant: "Third label" });
+  assert.equal(findCrossSourcePayment([joined], third), null);
+  assert.equal(hasPossibleCrossSourcePayment([joined], third), true);
+});
+
 test("one cent, a different currency, or another day cannot collapse to an equal-value payment", () => {
   const ledgers = ledgersWith(paymentReceipt(evidence("first", bank)));
   for (const override of [{ minorUnits: 1233 }, { minorUnits: 1235 }, { currency: "USD" }, { currency: "KRW" }]) {
@@ -50,7 +87,7 @@ test("one cent, a different currency, or another day cannot collapse to an equal
   assert.equal(findCrossSourcePayment(ledgers, evidence("another-day", wallet, 86_400)), null);
 });
 
-test("a receipt never consumes a second distinct event from an already paired app", () => {
+test("a same-app repost is not automatically consumed or allowed to bypass duplicate review", () => {
   const first = evidence("card-first", bank);
   const counterpart = evidence("wallet-first", wallet, 10);
   const base = ledgerWith(paymentReceipt(first));
@@ -58,8 +95,30 @@ test("a receipt never consumes a second distinct event from an already paired ap
   const joined = joinPaymentReceipt(base, location, counterpart);
   assert.equal(findCrossSourcePayment([joined], evidence("card-second", bank, 30)), null);
   assert.equal(findCrossSourcePayment([joined], evidence("wallet-second", wallet, 35)), null);
-  assert.equal(hasPossibleCrossSourcePayment([joined], evidence("card-second", bank, 30)), false);
+  assert.equal(hasPossibleCrossSourcePayment([joined], evidence("card-second", bank, 30)), true);
+  assert.equal(hasPossibleCrossSourcePayment([joined], evidence("card-second-renamed", bank, 30, { merchant: "Different shop label" })), true);
   assert.equal(joined.automationPaymentReceipts?.[0].sources.length, 2);
+});
+
+test("a wallet purchase and another debit type require review rather than silently losing a separate transfer", () => {
+  for (const eventType of ["outgoing_transfer", "direct_debit", "standing_order"] as const) {
+    const debit = evidence("debit", bank, 0, { eventType, merchant: "Same Shop" });
+    const purchase = evidence("wallet", "com.google.android.apps.walletnfcrel", 15, { eventType: "purchase", merchant: "Same Shop" });
+    for (const [first, second] of [[debit, purchase], [purchase, debit]]) {
+      assert.equal(findCrossSourcePayment(ledgersWith(paymentReceipt(first)), second), null);
+      assert.equal(hasPossibleCrossSourcePayment(ledgersWith(paymentReceipt(first)), second), true);
+    }
+    assert.equal(findCrossSourcePayment(ledgersWith(paymentReceipt(debit)), { ...purchase, occurredAt: new Date(epoch + 180_000).toISOString() }), null);
+    assert.equal(findCrossSourcePayment(ledgersWith(paymentReceipt(debit)), { ...purchase, eventType: "reversal" }), null);
+    assert.equal(findCrossSourcePayment(ledgersWith(paymentReceipt(debit)), { ...purchase, packageName: "com.other.bank" }), null);
+  }
+});
+
+test("a debit receipt preserves its type through joining and legacy purchase receipts remain compatible", () => {
+  const debit = evidence("debit", bank, 0, { eventType: "direct_debit" });
+  assert.equal(paymentReceipt(debit).sources[0].eventType, "direct_debit");
+  assert.throws(() => paymentReceipt({ ...debit, eventType: "reversal" }), /payment-receipt-reversal/);
+  assert.ok(findCrossSourcePayment(ledgersWith(paymentReceipt(evidence("old", bank))), evidence("new", wallet, 1, { eventType: "purchase" })));
 });
 
 test("multiple equal-price receipts stay ambiguous even if one notification is closer", () => {
@@ -282,6 +341,7 @@ test("partial or corrupted immutable receipt snapshots and conflicting exclusion
     { ...receipt, sources: [receipt.sources[0], { ...source, merchant: "" }] },
     { ...receipt, sources: [receipt.sources[0], { ...source, category: "invalid" }] },
     { ...receipt, sources: [receipt.sources[0], { ...source, occurredOn: "2026-02-30" }] },
+    { ...receipt, sources: [receipt.sources[0], { ...source, deliveredAt: "2026-02-30T10:00:00Z" }] },
     { ...receipt, sources: [receipt.sources[0], { ...source, category: undefined }] },
     { ...receipt, separatedSourceIds: [source.expenseId] },
     { ...receipt, separatedSourceIds: ["bad-id"] },

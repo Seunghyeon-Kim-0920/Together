@@ -128,7 +128,8 @@ test("moved notification payments stay deduplicated and later reversals cannot d
   assert.equal(confirmCardCandidate(moved, source.id, purchase).state, moved);
   const repost = Object.freeze({ ...purchase, id: "new-post-id" });
   assert.deepEqual(applyHighConfidenceCardAutomation(moved, [repost]).pending.map((item) => item.id), [repost.id]);
-  const another = confirmCardCandidate(moved, source.id, repost).state;
+  assert.throws(() => confirmCardCandidate(moved, source.id, repost), /candidate-possible-duplicate/);
+  const another = confirmCardCandidate(moved, source.id, repost, { asNewTransaction: true }).state;
   const reversal = Object.freeze({ ...purchase, id: "later-cancellation", eventType: "reversal" as const });
   const result = applyHighConfidenceCardAutomation(another, [reversal]);
   assert.equal(result.state, another); assert.deepEqual(result.pending.map((item) => item.id), [reversal.id]);

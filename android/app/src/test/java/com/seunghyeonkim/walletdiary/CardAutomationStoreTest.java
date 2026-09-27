@@ -74,6 +74,18 @@ public class CardAutomationStoreTest {
     }
 
     @Test
+    public void sameNotificationRevisionKeepsItsFirstDeliveryTime() throws Exception {
+        JSONObject original = new JSONObject().put("id", "stable-id").put("queueToken", "purchase")
+            .put("deliveredAt", "2026-09-24T10:00:00Z");
+        JSONObject reposted = new JSONObject().put("id", "stable-id").put("queueToken", "purchase")
+            .put("deliveredAt", "2026-09-24T11:00:00Z");
+        assertEquals("2026-09-24T10:00:00Z", CardAutomationStore.preserveFirstDeliveryTime(original, reposted).getString("deliveredAt"));
+        JSONObject changed = new JSONObject().put("id", "stable-id").put("queueToken", "reversal")
+            .put("deliveredAt", "2026-09-24T11:00:00Z");
+        assertEquals("2026-09-24T11:00:00Z", CardAutomationStore.preserveFirstDeliveryTime(original, changed).getString("deliveredAt"));
+    }
+
+    @Test
     public void updateDropsCandidatesCreatedByTheOldAmountParser() throws Exception {
         JSONArray stored = new JSONArray()
             .put(new JSONObject().put("id", "legacy-balance"))
@@ -81,6 +93,20 @@ public class CardAutomationStoreTest {
         JSONArray current = CardAutomationStore.retainCurrentParserEvents(stored);
         assertEquals(1, current.length());
         assertEquals("current-payment", current.getJSONObject(0).getString("id"));
+    }
+
+    @Test
+    public void legacyReviewDraftsRemainManualAfterTheNewReconciliationUpgrade() throws Exception {
+        JSONObject legacy = new JSONObject().put("id", "old-summary").put("parserVersion", 7).put("confidence", "review").put("manualOnly", false);
+        JSONObject clear = new JSONObject().put("id", "old-clear").put("parserVersion", 7).put("confidence", "high").put("manualOnly", false);
+        JSONObject modern = new JSONObject().put("id", "new-merchant-draft").put("parserVersion", 8).put("confidence", "review").put("manualOnly", false);
+        JSONArray retained = CardAutomationStore.retainCurrentParserEvents(new JSONArray().put(legacy).put(clear).put(modern));
+        assertEquals(3, retained.length());
+        assertEquals(true, retained.getJSONObject(0).getBoolean("manualOnly"));
+        assertEquals(false, retained.getJSONObject(1).getBoolean("manualOnly"));
+        assertEquals(false, retained.getJSONObject(2).getBoolean("manualOnly"));
+        assertEquals(false, legacy.getBoolean("manualOnly"));
+        assertEquals(retained.toString(), CardAutomationStore.retainCurrentParserEvents(retained).toString());
     }
 
     @Test

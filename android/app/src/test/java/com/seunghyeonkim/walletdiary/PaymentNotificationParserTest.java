@@ -363,6 +363,19 @@ public class PaymentNotificationParserTest {
     }
 
     @Test
+    public void transactionTimeAndNotificationDeliveryTimeRemainSeparate() {
+        JSONObject result = PaymentNotificationParser.parse(
+            "com.google.android.apps.walletnfcrel", "Google Wallet", "Card payment",
+            "€12.34 at Lidl", "", "", 1_700_000_000_000L,
+            1_700_000_900_000L, "wallet-time", true, false, "EUR"
+        );
+        assertNotNull(result);
+        assertEquals("2023-11-14T22:13:20.000Z", result.optString("occurredAt"));
+        assertEquals("2023-11-14T22:28:20.000Z", result.optString("deliveredAt"));
+        assertEquals("2023-11-14", result.optString("occurredOn"));
+    }
+
+    @Test
     public void discoversPreviouslyUnknownCompactDebitAppsWithoutWhitelist() {
         for (String packageName : new String[] {"hr.lunc.client", "kr.example.newbank", "fr.example.nouvellebanque", "jp.example.bank", "com.somewhere.newcard"}) {
             JSONObject result = parse(packageName, "Lidl", "-1,24 €", "new-app", 500L, false, "EUR");
@@ -645,7 +658,7 @@ public class PaymentNotificationParserTest {
     }
 
     @Test
-    public void standaloneMerchantBesidePaymentAmountWithStatusIsKeptForReview() {
+    public void trustedExplicitPaymentUsesTheUniqueStandaloneMerchant() {
         for (String text : new String[] {
             "김*진님\n12,000원 일시불\n카페 봄\n09/19 12:34",
             "카페 봄\n12,000원 결제 완료",
@@ -654,8 +667,207 @@ public class PaymentNotificationParserTest {
             JSONObject candidate = parse("com.world.bank", "카드 결제", text, "merchant-payment-line", 923L, true, "KRW");
             assertNotNull(text, candidate);
             assertEquals(text, text.startsWith("SQ") ? "SQ *Blue Cafe" : "카페 봄", candidate.optString("merchant"));
-            assertEquals("review", candidate.optString("confidence"));
+            assertEquals("high", candidate.optString("confidence"));
         }
+    }
+
+    @Test
+    public void standaloneMerchantCanFollowDateAndCardMetadataInTrustedSinglePayments() {
+        // Synthetic layouts, not captured notifications or confirmed app templates.
+        for (String source : new String[] {"Swile", "하나카드", "KB국민카드", "삼성카드", "현대카드", "NH농협카드", "신한카드"}) {
+            JSONObject candidate = PaymentNotificationParser.parse("com.synthetic.card", source, source,
+                "카드 결제 12,000원\n카드번호 1234\n09/26 12:34\n카페 봄\n잔액 100,000원", "", "", 930L,
+                "separated-merchant", true, false, "KRW");
+            assertNotNull(source, candidate);
+            assertEquals(source, "카페 봄", candidate.optString("merchant"));
+            assertEquals(source, "high", candidate.optString("confidence"));
+            assertEquals(source, false, candidate.optBoolean("requiresMerchant"));
+        }
+        JSONObject unknown = parse("com.synthetic.card", "Card payment", "€12.34\nDate: 26 Sep 2026\nCard ending 1234\nBlue Cafe", "unknown-body", 931L, false, "EUR");
+        assertEquals("Blue Cafe", unknown.optString("merchant"));
+        assertEquals("review", unknown.optString("confidence"));
+    }
+
+    @Test
+    public void narrativeMerchantExtractionSupportsFrenchAndKoreanNotificationPrefixes() {
+        for (String body : new String[] {
+            "[신한카드] 카페 봄에서 12,000원 결제되었습니다",
+            "[Web발신] [결제] 김*지님 카페 봄에서 12,000원 결제되었습니다",
+        }) {
+            JSONObject candidate = parse("com.synthetic.card", "카드 결제", body, "prefix-merchant", 932L, true, "KRW");
+            assertNotNull(body, candidate);
+            assertEquals(body, "카페 봄", candidate.optString("merchant"));
+            assertEquals("high", candidate.optString("confidence"));
+        }
+        JSONObject french = parse("hr.lunc.client", "Swile", "Vous avez dépensé 12,34 € à Blue Cafe", "french-merchant", 933L);
+        assertNotNull(french);
+        assertEquals("Blue Cafe", french.optString("merchant"));
+        assertEquals("high", french.optString("confidence"));
+    }
+
+    @Test
+    public void wholeBodyInferenceRejectsMetadataAndMultipleMerchants() {
+        for (String body : new String[] {
+            "Card payment €12.34\nDate: 26 Sep 2026\nCardholder: Jane Doe\nReference: ABC-123",
+            "Card payment €12.34\n26 Sep 2026\nName: Jane Doe\nAddress: 1 Example Road",
+            "카드 결제 12,000원\n09/26 12:34\n고객명: 김민지\n성명: 김민지\n카드번호 1234",
+            "Card payment €12.34\nCard ending 1234\nBlue Cafe\nGreen Cafe",
+            "Card payment €12.34 at Blue Cafe\nCard payment €12.34 at Green Cafe",
+        }) {
+            JSONObject candidate = parse("com.synthetic.card", "Card payment", body, "metadata-or-ambiguous", 934L);
+            assertNotNull(body, candidate);
+            assertEquals(body, "", candidate.optString("merchant"));
+            assertEquals(body, true, candidate.optBoolean("requiresMerchant"));
+            assertEquals(body, "review", candidate.optString("confidence"));
+        }
+        JSONObject approval = parse("com.synthetic.card", "KB국민카드", "12,000원 일시불 승인\n카페 봄", "approval-review", 935L, true, "KRW");
+        assertEquals("review", approval.optString("confidence"));
+        JSONObject unsigned = parse("hr.lunc.client", "Swile", "Lidl\n1,24 €", "unsigned-review", 936L);
+        assertEquals("review", unsigned.optString("confidence"));
+    }
+
+    @Test
+    public void expandedSinglePaymentKeepsTrustWhileTransactionListsRequireReview() {
+        CharSequence[] single = {"Blue Cafe", "Date: 26 Sep 2026", "Card payment €12.34", "Remaining balance €500.00"};
+        assertEquals(false, PaymentNotificationParser.hasMultiplePaymentLines(single, "EUR"));
+        JSONObject payment = PaymentNotificationParser.parse("com.synthetic.card", "Bank", "Card payment", "",
+            NotificationTextContent.expandedBody(null, single, null), "", 937L, "expanded-single",
+            !PaymentNotificationParser.hasMultiplePaymentLines(single, "EUR"), false, "EUR");
+        assertNotNull(payment);
+        assertEquals("Blue Cafe", payment.optString("merchant"));
+        assertEquals("high", payment.optString("confidence"));
+        assertEquals(true, PaymentNotificationParser.hasMultiplePaymentLines(new CharSequence[] {"€12.34 at Blue Cafe", "€12.34 at Green Cafe"}, "EUR"));
+        assertEquals(true, PaymentNotificationParser.hasMultiplePaymentLines(new CharSequence[] {"09/25 €12.34 at Blue Cafe", "09/26 €12.34 at Blue Cafe"}, "EUR"));
+        assertEquals(true, PaymentNotificationParser.hasMultiplePaymentLines(new CharSequence[] {"Card payment €12.34", "Card payment €12.34", null}, "EUR"));
+        JSONObject summary = PaymentNotificationParser.parse("com.synthetic.card", "Bank", "Card payment", "€12.34 at Blue Cafe",
+            "", "", 937L, "summary", true, true, "EUR");
+        assertEquals("review", summary.optString("confidence"));
+        assertEquals(true, summary.optBoolean("manualOnly"));
+    }
+
+    @Test
+    public void merchantCasingAndUnicodeSpacingInRepeatedLabelsRemainOneMerchant() {
+        JSONObject candidate = parse("com.synthetic.card", "Merchant: BLUE CAFE",
+            "Card payment €12.34 at Blue\u00a0Cafe", "same-labelled-merchant", 941L);
+        assertNotNull(candidate);
+        assertEquals("Blue Cafe", candidate.optString("merchant"));
+        assertEquals(false, candidate.optBoolean("requiresMerchant"));
+        assertEquals("high", candidate.optString("confidence"));
+        JSONObject different = parse("com.synthetic.card", "Merchant: Blue Cafe North",
+            "Card payment €12.34 at Blue Cafe South", "different-labelled-merchants", 941L);
+        assertEquals(true, different.optBoolean("requiresMerchant"));
+    }
+
+    @Test
+    public void statusOnlyPaymentTextCannotBecomeTheMerchant() {
+        for (String body : new String[] {"12,000원 결제 성공", "12,000원 결제 정상 처리", "12,000원 결제 완료", "Card payment €12.34\nSuccess", "카드 결제 12,000원\n성공"}) {
+            JSONObject candidate = parse("com.synthetic.card", "Card payment", body, "status-not-merchant", 942L);
+            assertNotNull(body, candidate);
+            assertEquals(body, "", candidate.optString("merchant"));
+            assertEquals(body, true, candidate.optBoolean("requiresMerchant"));
+            assertEquals(body, "review", candidate.optString("confidence"));
+        }
+    }
+
+    @Test
+    public void explicitKoreanCardApprovalWithAdjacentMaskedDigitsKeepsTheMerchant() {
+        for (String source : new String[] {"하나카드", "KB국민카드", "삼성카드", "현대카드", "NH농협카드", "신한카드"}) {
+            for (String mask : new String[] {"1234", "(1234)", "****1234"}) {
+                JSONObject candidate = PaymentNotificationParser.parse("com.synthetic.card", source, source,
+                    "[Web발신]\n" + source + mask + "승인\n김*지님\n12,000원 일시불\n카페 봄\n09/26 12:34", "", "", 942L,
+                    "masked-card-approval", true, false, "KRW");
+                assertNotNull(source + mask, candidate);
+                assertEquals(source + mask, "purchase", candidate.optString("eventType"));
+                assertEquals(source + mask, "카페 봄", candidate.optString("merchant"));
+                assertEquals(source + mask, "high", candidate.optString("confidence"));
+            }
+        }
+    }
+
+    @Test
+    public void recurringDebitRecognitionUsesCompletedMeaningNotBankAllowLists() {
+        // Synthetic language examples: not captured or verified provider templates.
+        String[][] rows = {
+            {"Direct debit completed", "€12.34\nCreditor: Example Energy", "EUR", "direct_debit"},
+            {"Autopay completed", "€12.34\nPayee: Example Energy", "EUR", "direct_debit"},
+            {"Auto debit processed", "€12.34\nPayee: Example Energy", "EUR", "direct_debit"},
+            {"Automatic payment successful", "€12.34\nPayee: Example Energy", "EUR", "direct_debit"},
+            {"Recurring payment paid", "€12.34\nPayee: Example Energy", "EUR", "direct_debit"},
+            {"Prélèvement effectué", "12,34 €\nCréancier: Example Energy", "EUR", "direct_debit"},
+            {"Lastschrift ausgeführt", "12,34 €\nGläubiger: Example Energy", "EUR", "direct_debit"},
+            {"Adeudo domiciliado realizado", "12,34 €\nAcreedor: Example Energy", "EUR", "direct_debit"},
+            {"Débito automático efetuado", "12,34 €\nCredor: Example Energy", "EUR", "direct_debit"},
+            {"Addebito diretto eseguito", "12,34 €\nCreditore: Example Energy", "EUR", "direct_debit"},
+            {"Automatische incasso uitgevoerd", "12,34 €\nIncassant: Example Energy", "EUR", "direct_debit"},
+            {"口座振替完了", "1,234円\n引落先: Example Energy", "JPY", "direct_debit"},
+            {"自动扣款成功", "CNY 12.34\n收款方: Example Energy", "CNY", "direct_debit"},
+            {"자동이체 완료", "12,340원\n납부처: Example Energy", "KRW", "direct_debit"},
+            {"정기이체 출금 완료", "12,340원\n받는 분: Example Energy", "KRW", "standing_order"},
+            {"Dauerauftrag ausgeführt", "12,34 €\nEmpfänger: Example Energy", "EUR", "standing_order"},
+            {"Orden permanente completada", "12,34 €\nBeneficiario: Example Energy", "EUR", "standing_order"},
+            {"Transferência periódica efetuada", "12,34 €\nBeneficiário: Example Energy", "EUR", "standing_order"},
+            {"Bonifico periodico eseguito", "12,34 €\nBeneficiario: Example Energy", "EUR", "standing_order"},
+            {"Periodieke overboeking uitgevoerd", "12,34 €\nOntvanger: Example Energy", "EUR", "standing_order"},
+        };
+        for (String[] row : rows) {
+            for (boolean trusted : new boolean[] {false, true}) {
+                JSONObject candidate = parse("com.synthetic.unlisted.bank", row[0], row[1], "international-recurring", 943L, trusted, row[2]);
+                assertNotNull(row[0], candidate);
+                assertEquals(row[0], row[3], candidate.optString("eventType"));
+                assertEquals(row[0], "Example Energy", candidate.optString("merchant"));
+                assertEquals(row[0], trusted ? "high" : "review", candidate.optString("confidence"));
+            }
+        }
+    }
+
+    @Test
+    public void trustedCompletedRecurringDebitCanHaveOneStandaloneCounterparty() {
+        for (String source : new String[] {"하나은행", "KB국민은행", "NH농협", "신한은행", "우리은행", "Revolut", "Synthetic New Bank"}) {
+            JSONObject candidate = PaymentNotificationParser.parse("com.synthetic.bank", source, source,
+                "자동이체 완료 12,340원\n09/26 12:34\nExample Energy\n잔액 100,000원", "", "", 944L,
+                "recurring-standalone", true, false, "KRW");
+            assertNotNull(source, candidate);
+            assertEquals(source, "direct_debit", candidate.optString("eventType"));
+            assertEquals(source, "Example Energy", candidate.optString("merchant"));
+            assertEquals(source, "high", candidate.optString("confidence"));
+        }
+    }
+
+    @Test
+    public void recurringDebitFutureFailureCancellationAndIncomeNeverBecomeExpenses() {
+        for (String title : new String[] {
+            "Direct debit", "Autopay", "Auto debit", "Recurring payment", "Lastschrift", "Dauerauftrag", "자동이체", "口座振替", "自动扣款",
+            "Autopay scheduled", "Automatic payment created", "Recurring payment registered", "Auto debit failed",
+            "Direct debit cancelled", "Lastschrift geplant", "Lastschrift wird abgebucht", "Lastschrift fehlgeschlagen", "Lastschrift zurückgegeben", "Lastschrift Gutschrift",
+            "Adeudo domiciliado programado", "Adeudo domiciliado rechazado", "Débito automático agendado", "Débito automático recusado", "Débito automático recebido",
+            "Addebito diretto in attesa", "Addebito diretto rifiutato", "Addebito diretto accredito",
+            "Automatische incasso gepland", "Automatische incasso mislukt", "Automatische incasso geannuleerd", "Automatische incasso ontvangen",
+            "口座振替予定", "口座振替取消", "口座振替失敗", "口座振替入金", "自动扣款将于明天", "自动扣款失败", "自动扣款取消", "自动扣款收到",
+            "자동이체 예정", "자동이체 취소", "자동이체 실패", "자동이체 입금 완료", "정기이체 등록",
+        }) {
+            assertNull(title, parse("com.synthetic.bank", title, "€12.34\nExample Energy", "not-executed-recurring", 945L));
+        }
+        for (String title : new String[] {"Autopay scheduled", "Lastschrift geplant", "Addebito diretto in attesa", "口座振替予定", "自动扣款失败", "자동이체 취소"}) {
+            assertNull(title, parse("com.synthetic.bank", title, "-€12.34\nExample Energy", "negative-not-executed", 945L));
+        }
+        JSONObject compactDebit = parse("com.synthetic.bank", "Lastschrift", "-€12.34\nExample Energy", "negative-recurring", 945L);
+        assertNotNull(compactDebit);
+        assertEquals("direct_debit", compactDebit.optString("eventType"));
+    }
+
+    @Test
+    public void sentInCardNotificationDoesNotMakeThePurchaseATransfer() {
+        JSONObject payment = parse("com.synthetic.card", "Card payment", "€12.34 at Blue Cafe\nSent: 09/26 12:34", "card-sent", 938L);
+        assertNotNull(payment);
+        assertEquals("purchase", payment.optString("eventType"));
+        assertEquals("Blue Cafe", payment.optString("merchant"));
+        assertEquals("high", payment.optString("confidence"));
+        JSONObject transfer = parse("com.synthetic.card", "Payment completed", "€12.34 sent to Alice", "real-sent", 939L);
+        assertNotNull(transfer);
+        assertEquals("outgoing_transfer", transfer.optString("eventType"));
+        JSONObject explicitTransfer = parse("com.synthetic.card", "Transfer completed via credit card", "€12.34 sent to Alice", "explicit-transfer", 940L);
+        assertNotNull(explicitTransfer);
+        assertEquals("outgoing_transfer", explicitTransfer.optString("eventType"));
     }
 
     @Test

@@ -72,12 +72,15 @@ function parseAutomationPaymentReceipts(value: unknown, ledgerCurrency: string):
     for (const source of entry.sources) {
       if (!isRecord(source)) return null;
       const sourceId = text(source.expenseId, 100); const packageName = text(source.packageName, 200); const occurredAt = timestamp(source.occurredAt);
+      const deliveredAt = source.deliveredAt === undefined ? undefined : timestamp(source.deliveredAt);
+      const eventType = source.eventType;
+      if (eventType !== undefined && eventType !== "purchase" && eventType !== "outgoing_transfer" && eventType !== "direct_debit" && eventType !== "standing_order") return null;
       const originFingerprint = text(source.originFingerprint, 40); const reversalFingerprint = text(source.reversalFingerprint, 42);
-      if (!sourceId || !/^card-auto-[0-9a-f]{16}$/.test(sourceId) || sourceIds.has(sourceId) || !packageName || !isValidPackageName(packageName) || packages.has(packageName) || !occurredAt || !/^\d{4}-\d{2}-\d{2}T/.test(occurredAt) || !date(occurredAt.slice(0, 10)) || !originFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(originFingerprint) || !reversalFingerprint || !/^card-reversal-[0-9a-f]{16}$/.test(reversalFingerprint)) return null;
+      if (!sourceId || !/^card-auto-[0-9a-f]{16}$/.test(sourceId) || sourceIds.has(sourceId) || !packageName || !isValidPackageName(packageName) || packages.has(packageName) || !occurredAt || !/^\d{4}-\d{2}-\d{2}T/.test(occurredAt) || !date(occurredAt.slice(0, 10)) || source.deliveredAt !== undefined && (!deliveredAt || !/^\d{4}-\d{2}-\d{2}T/.test(deliveredAt) || !date(deliveredAt.slice(0, 10))) || !originFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(originFingerprint) || !reversalFingerprint || !/^card-reversal-[0-9a-f]{16}$/.test(reversalFingerprint)) return null;
       const hasSnapshot = source.merchant !== undefined || source.category !== undefined || source.occurredOn !== undefined;
       const sourceMerchant = text(source.merchant, 500); const occurredOn = date(source.occurredOn);
       if (separatedSourceIds.includes(sourceId) || hasSnapshot && (!sourceMerchant || !occurredOn || !GENERAL_CATEGORIES.includes(source.category as never))) return null;
-      sources.push(Object.freeze({ expenseId: sourceId, packageName, occurredAt, originFingerprint, reversalFingerprint,
+      sources.push(Object.freeze({ expenseId: sourceId, packageName, occurredAt, ...(deliveredAt ? { deliveredAt } : {}), ...(eventType ? { eventType } : {}), originFingerprint, reversalFingerprint,
         ...(hasSnapshot ? { merchant: sourceMerchant!, category: source.category as GeneralExpense["category"], occurredOn: occurredOn! } : {}) })); sourceIds.add(sourceId); packages.add(packageName);
     }
     ids.add(expenseId); receipts.push(Object.freeze({ expenseId, merchant, minorUnits, currency: ledgerCurrency, sources: Object.freeze(sources),

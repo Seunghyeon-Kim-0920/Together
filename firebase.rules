@@ -30,14 +30,69 @@ service cloud.firestore {
       return values is list && values.size() > 0 && values.size() <= 20 && values.toSet().size() == values.size()
         && stringList(values, '^[A-Z]{3}([|][A-Z]{3}){0,19}$');
     }
+    function participantMembers(data) { return data.get('participantMembers', {}); }
+    function validParticipantMembers(data) {
+      let links = participantMembers(data);
+      return links is map && allIds(links.keys()) && allIds(links.values())
+        && links.values().toSet().hasOnly(data.participantIds);
+    }
     function validTrip(data) {
       return data.keys().hasAll(['schema', 'ownerUid', 'title', 'participantIds', 'participantNames', 'currencies', 'defaultCurrency', 'revision', 'deleted', 'updatedAt'])
-        && data.keys().hasOnly(['schema', 'ownerUid', 'title', 'participantIds', 'participantNames', 'currencies', 'defaultCurrency', 'revision', 'deleted', 'updatedAt'])
+        && data.keys().hasOnly(['schema', 'ownerUid', 'title', 'participantIds', 'participantNames', 'participantMembers', 'currencies', 'defaultCurrency', 'revision', 'deleted', 'updatedAt'])
         && data.schema == 1 && id(data.ownerUid) && text(data.title, 80)
         && allIds(data.participantIds) && data.participantIds.size() > 0 && allNames(data.participantNames) && data.participantIds.size() == data.participantNames.size()
+        && validParticipantMembers(data)
         && currencies(data.currencies) && data.defaultCurrency in data.currencies
         && data.revision is int && data.revision > 0 && data.revision < 2000000000
         && data.deleted is bool && data.updatedAt == request.time;
+    }
+    // Keep ID/name pairs intact when a member links one uniquely named, unclaimed person.
+    function namedParticipant(data, participantId, displayName) {
+      let ids = data.participantIds.concat(['','','','','','','','','','','','','','','','','','','','']);
+      let names = data.participantNames.concat(['','','','','','','','','','','','','','','','','','','','']);
+      return data.participantNames.removeAll([displayName]).size() == data.participantNames.size() - 1
+        && ((ids[0] == participantId && names[0] == displayName)
+          || (ids[1] == participantId && names[1] == displayName)
+          || (ids[2] == participantId && names[2] == displayName)
+          || (ids[3] == participantId && names[3] == displayName)
+          || (ids[4] == participantId && names[4] == displayName)
+          || (ids[5] == participantId && names[5] == displayName)
+          || (ids[6] == participantId && names[6] == displayName)
+          || (ids[7] == participantId && names[7] == displayName)
+          || (ids[8] == participantId && names[8] == displayName)
+          || (ids[9] == participantId && names[9] == displayName)
+          || (ids[10] == participantId && names[10] == displayName)
+          || (ids[11] == participantId && names[11] == displayName)
+          || (ids[12] == participantId && names[12] == displayName)
+          || (ids[13] == participantId && names[13] == displayName)
+          || (ids[14] == participantId && names[14] == displayName)
+          || (ids[15] == participantId && names[15] == displayName)
+          || (ids[16] == participantId && names[16] == displayName)
+          || (ids[17] == participantId && names[17] == displayName)
+          || (ids[18] == participantId && names[18] == displayName)
+          || (ids[19] == participantId && names[19] == displayName));
+    }
+    function registersOwnParticipant(tripId) {
+      let before = participantMembers(resource.data);
+      let after = participantMembers(request.resource.data);
+      let participantId = after.get(request.auth.uid, '');
+      let displayName = get(/databases/$(database)/documents/sharedTrips/$(tripId)/members/$(request.auth.uid)).data.displayName;
+      return member(tripId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participantIds', 'participantNames', 'participantMembers', 'revision', 'updatedAt'])
+        && after is map && after.size() <= 20 && id(request.auth.uid) && id(participantId)
+        && !(request.auth.uid in before) && request.auth.uid in after
+        && after.diff(before).affectedKeys().hasOnly([request.auth.uid])
+        && !(participantId in before.values())
+        && ((participantId == 'member_' + request.auth.uid
+            && resource.data.participantIds.size() < 20
+            && !(participantId in resource.data.participantIds)
+            && displayName.matches('^[^|]{1,80}$')
+            && request.resource.data.participantIds == resource.data.participantIds.concat([participantId])
+            && request.resource.data.participantNames == resource.data.participantNames.concat([displayName]))
+          || (participantId in resource.data.participantIds
+            && request.resource.data.participantIds == resource.data.participantIds
+            && request.resource.data.participantNames == resource.data.participantNames
+            && (resource.data.ownerUid == request.auth.uid || namedParticipant(resource.data, participantId, displayName))));
     }
     function validShares(values, amount) {
       let p = values.concat([0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
@@ -92,11 +147,19 @@ service cloud.firestore {
       allow list: if false;
       allow create: if signedIn() && id(tripId) && validTrip(request.resource.data) && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.revision == 1 && !request.resource.data.deleted
+        && participantMembers(request.resource.data).keys().hasOnly([request.auth.uid])
         && getAfter(/databases/$(database)/documents/sharedTrips/$(tripId)/members/$(request.auth.uid)).data.role == 'owner';
-      allow update: if owner(tripId) && validTrip(request.resource.data)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'revision', 'deleted', 'updatedAt'])
+      // Existing fields were validated at creation and each branch preserves everything
+      // outside its bounded delta. Validate that delta to keep registration writes
+      // within the rule expression budget.
+      allow update: if signedIn() && request.resource.data.updatedAt == request.time
+        && request.resource.data.revision is int && request.resource.data.revision < 2000000000
         && request.resource.data.revision == resource.data.revision + 1
-        && (!resource.data.deleted || request.resource.data.deleted);
+        && ((owner(tripId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'revision', 'deleted', 'updatedAt'])
+            && text(request.resource.data.title, 80) && request.resource.data.deleted is bool
+            && (!resource.data.deleted || request.resource.data.deleted))
+          || registersOwnParticipant(tripId));
       allow delete: if owner(tripId) && resource.data.deleted;
       match /members/{uid} {
         allow get: if signedIn() && (uid == request.auth.uid || member(tripId) || owner(tripId));

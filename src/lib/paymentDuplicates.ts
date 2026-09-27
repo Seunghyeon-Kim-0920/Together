@@ -5,11 +5,15 @@ import { MAX_AUTOMATION_PAYMENT_RECEIPTS, MAX_EXPENSES_PER_LEDGER } from "./wall
 // exact money across distinct notification apps, without a package allow-list.
 // This window covers the WHOLE receipt: a third alert cannot extend it.
 const SAME_PAYMENT_WINDOW_MS = 2 * 60_000;
+const POSSIBLE_PAYMENT_WINDOW_MS = 15 * 60_000;
+const MAX_TRANSACTION_TIME_SKEW_MS = 60 * 60_000;
 
 export interface PaymentDuplicateEvidence {
   readonly expenseId: string;
   readonly packageName: string;
   readonly occurredAt: string;
+  readonly deliveredAt?: string;
+  readonly eventType?: "purchase" | "outgoing_transfer" | "direct_debit" | "standing_order" | "reversal";
   readonly originFingerprint: string;
   readonly reversalFingerprint: string;
   readonly merchant: string;
@@ -42,6 +46,25 @@ function sameMerchant(left: string, right: string, differenceMs: number): boolea
     && shorter.every((token, index) => token === longer[index]);
 }
 
+function comparisonTimes(receipt: AutomationPaymentReceipt, evidence: PaymentDuplicateEvidence): { readonly candidate: number; readonly sources: readonly number[]; readonly usesDelivery: boolean } {
+  // Notification.when is controlled by each payment app and can describe a
+  // different point in the transaction. When both sides have Android's actual
+  // post time, compare that instead. A receipt migrated from an older version
+  // may contain both old and new sources; use its known delivery times rather
+  // than letting one legacy source force every new alert back to event time.
+  const useDelivery = Boolean(evidence.deliveredAt && receipt.sources.some((source) => source.deliveredAt));
+  return { candidate: Date.parse(useDelivery ? evidence.deliveredAt! : evidence.occurredAt), usesDelivery: useDelivery,
+    sources: receipt.sources.flatMap((source) => useDelivery && !source.deliveredAt ? [] : [Date.parse(useDelivery ? source.deliveredAt! : source.occurredAt)]) };
+}
+
+function compatiblePaymentTypes(receipt: AutomationPaymentReceipt, evidence: PaymentDuplicateEvidence): boolean {
+  // A real standing order can coincide with a wallet purchase for the same
+  // amount. Different debit types still go through duplicate review, but do
+  // not silently discard a potentially separate outgoing payment.
+  return (evidence.eventType ?? "purchase") === "purchase"
+    && receipt.sources.every((source) => (source.eventType ?? "purchase") === "purchase");
+}
+
 export function paymentReceiptIdentity(ledgers: WalletState["ledgers"], evidence: PaymentDuplicateEvidence): "none" | "same" | "conflict" {
   let found = false;
   for (const ledger of ledgers) if (ledger.kind === "general") for (const receipt of ledger.automationPaymentReceipts ?? []) {
@@ -57,14 +80,24 @@ export function paymentReceiptIdentity(ledgers: WalletState["ledgers"], evidence
  * receipt that already consumed a different event from that same issuer. */
 export function findCrossSourcePayment(ledgers: WalletState["ledgers"], evidence: PaymentDuplicateEvidence): PaymentReceiptLocation | null {
   const candidates: PaymentReceiptLocation[] = [];
-  const deliveredAt = Date.parse(evidence.occurredAt);
   for (const [ledgerIndex, ledger] of ledgers.entries()) if (ledger.kind === "general") {
     for (const [receiptIndex, receipt] of (ledger.automationPaymentReceipts ?? []).entries()) {
-      if (receipt.currency !== evidence.currency || receipt.minorUnits !== evidence.minorUnits || receipt.sources.length >= 8
+      if (receipt.currency !== evidence.currency || receipt.minorUnits !== evidence.minorUnits || receipt.sources.length >= 8 || !compatiblePaymentTypes(receipt, evidence)
         || receipt.separatedSourceIds?.includes(evidence.expenseId)
         || receipt.sources.some((source) => source.packageName === evidence.packageName)) continue;
-      const timestamps = [deliveredAt, ...receipt.sources.map((source) => Date.parse(source.occurredAt))];
+      const times = comparisonTimes(receipt, evidence);
+      const timestamps = [times.candidate, ...times.sources];
       const spanMs = Math.max(...timestamps) - Math.min(...timestamps);
+      if (times.usesDelivery) {
+        // A mixed pre-upgrade receipt lacks the complete delivery window.
+        // A further app alert may be related, but should wait for review.
+        if (receipt.sources.some((source) => !source.deliveredAt)) continue;
+        // Two delayed historical alerts can be posted together even though
+        // they describe different purchases. Keep such a pair for review.
+        const transactionTimes = [Date.parse(evidence.occurredAt), ...receipt.sources.map((source) => Date.parse(source.occurredAt))];
+        const transactionSpanMs = Math.max(...transactionTimes) - Math.min(...transactionTimes);
+        if (!Number.isFinite(transactionSpanMs) || transactionSpanMs > MAX_TRANSACTION_TIME_SKEW_MS) continue;
+      }
       if (Number.isFinite(spanMs) && (spanMs <= SAME_PAYMENT_WINDOW_MS || sameMerchant(receipt.merchant, evidence.merchant, spanMs))) candidates.push({ ledgerIndex, receiptIndex, receipt });
     }
   }
@@ -76,30 +109,37 @@ export function findCrossSourcePayment(ledgers: WalletState["ledgers"], evidence
 /** Longer delays and multiple equally plausible receipts need a decision.
  * This never deletes or merges an expense on merchant/amount alone. */
 export function hasPossibleCrossSourcePayment(ledgers: WalletState["ledgers"], evidence: PaymentDuplicateEvidence): boolean {
-  const deliveredAt = Date.parse(evidence.occurredAt);
-  return ledgers.some((ledger) => ledger.kind === "general" && (ledger.automationPaymentReceipts ?? []).some((receipt) =>
-    receipt.currency === evidence.currency && receipt.minorUnits === evidence.minorUnits
-    && !receipt.separatedSourceIds?.includes(evidence.expenseId)
-    && !receipt.sources.some((source) => source.packageName === evidence.packageName)
-    && (receipt.sources.some((source) => Math.abs(deliveredAt - Date.parse(source.occurredAt)) <= SAME_PAYMENT_WINDOW_MS)
+  return ledgers.some((ledger) => ledger.kind === "general" && (ledger.automationPaymentReceipts ?? []).some((receipt) => {
+    if (evidence.eventType === "reversal" || receipt.currency !== evidence.currency || receipt.minorUnits !== evidence.minorUnits
+      || receipt.separatedSourceIds?.includes(evidence.expenseId)
+      || receipt.sources.some((source) => source.expenseId === evidence.expenseId)) return false;
+    const times = comparisonTimes(receipt, evidence);
+    // A slower issuer notification is not proof of the same purchase, but it
+    // must not become a second automatic expense without user review either.
+    return times.sources.some((time) => Math.abs(times.candidate - time) <= POSSIBLE_PAYMENT_WINDOW_MS)
       || sameMerchant(receipt.merchant, evidence.merchant, 0)
-        && Math.abs(deliveredAt - Date.parse(receipt.sources[0].occurredAt)) <= 24 * 60 * 60_000)));
+        && Math.abs(times.candidate - times.sources[0]) <= 24 * 60 * 60_000;
+  }));
 }
 
 export function paymentReceipt(evidence: PaymentDuplicateEvidence, expenseId = evidence.expenseId): AutomationPaymentReceipt {
+  if (evidence.eventType === "reversal") throw new Error("payment-receipt-reversal");
   return Object.freeze({ expenseId, merchant: evidence.merchant, currency: evidence.currency, minorUnits: evidence.minorUnits, sources: Object.freeze([paymentReceiptSource(evidence)]) });
 }
 
 function paymentReceiptSource(evidence: PaymentDuplicateEvidence): AutomationPaymentReceipt["sources"][number] {
+  if (evidence.eventType === "reversal") throw new Error("payment-receipt-reversal");
   return Object.freeze({ expenseId: evidence.expenseId, packageName: evidence.packageName, occurredAt: evidence.occurredAt, originFingerprint: evidence.originFingerprint, reversalFingerprint: evidence.reversalFingerprint,
-    ...(evidence.category && evidence.occurredOn ? { merchant: evidence.merchant, category: evidence.category, occurredOn: evidence.occurredOn } : {}) });
+    ...(evidence.deliveredAt ? { deliveredAt: evidence.deliveredAt } : {}),
+    ...(evidence.eventType ? { eventType: evidence.eventType } : {}),
+    ...(evidence.merchant && evidence.category && evidence.occurredOn ? { merchant: evidence.merchant, category: evidence.category, occurredOn: evidence.occurredOn } : {}) });
 }
 
 export function joinPaymentReceipt(ledger: GeneralLedger, location: PaymentReceiptLocation, evidence: PaymentDuplicateEvidence): GeneralLedger {
   const receipts = [...ledger.automationPaymentReceipts ?? []];
   const current = receipts[location.receiptIndex];
   // Recheck the durable receipt rather than applying a stale UI location.
-  if (!current || current.expenseId !== location.receipt.expenseId || current.currency !== evidence.currency || current.minorUnits !== evidence.minorUnits
+  if (!current || current.expenseId !== location.receipt.expenseId || current.currency !== evidence.currency || current.minorUnits !== evidence.minorUnits || !compatiblePaymentTypes(current, evidence)
     || current.sources.length >= 8 || current.separatedSourceIds?.includes(evidence.expenseId)
     || current.sources.some((source) => source.expenseId === evidence.expenseId || source.packageName === evidence.packageName)) throw new Error("payment-merge-conflict");
   receipts[location.receiptIndex] = Object.freeze({ ...current, sources: Object.freeze([...current.sources, paymentReceiptSource(evidence)]) });

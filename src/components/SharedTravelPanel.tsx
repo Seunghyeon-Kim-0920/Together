@@ -82,6 +82,9 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
       client = await getSharedTravelClient();
       if (disposed) return;
       if (client.uid !== uid) { halted = true; setPhase("identity"); return; }
+      // Also repair memberships created by earlier app versions, without requiring another invitation.
+      await client.ensureParticipant(tripId, getLatest().selfParticipantId);
+      if (disposed) return;
       unsubscribe = client.listenTrip(tripId, (snapshot) => { latestSnapshot = snapshot; void run(); }, fail);
       latestSnapshot = await client.getSnapshot(tripId);
       await run();
@@ -100,7 +103,7 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
       const client = await getSharedTravelClient();
       if (uid && client.uid !== uid) throw new SharedTravelError("permission-denied");
       await task(client);
-    } catch (error) { const code = normalizeSharedError(error).code; onNotify(s(locale, deletion ? "deleteFailed" : code === "quota" ? "quota" : code === "permission-denied" ? "permission" : "error"), "error"); }
+    } catch (error) { const code = normalizeSharedError(error).code; onNotify(s(locale, deletion ? "deleteFailed" : code === "limit" ? "limit" : code === "quota" ? "quota" : code === "permission-denied" ? "permission" : "error"), "error"); }
     finally { actionLock.current = false; setBusy(false); }
   };
   const connect = (join: boolean) => action(async (client) => {

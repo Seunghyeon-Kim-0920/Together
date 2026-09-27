@@ -58,6 +58,97 @@ test("joining uses the remote snapshot and never silently uploads pre-existing l
   assert.equal(joined.sharedSync?.records.length, 1);
 });
 
+test("joining uses the latest snapshot participants and mapped payer even when the accepted invite header was older", () => {
+  const latest: SharedTrip = { ...trip, title: "Latest shared holiday", revision: 3,
+    participants: [...trip.participants, { id: "person-c", name: "Me" }], participantMembers: { [uid]: "person-c" } };
+  const newPayment: TravelExpense = { ...expense(), paidBy: "person-c", shares: [{ participantId: "person-c", minorUnits: 1234 }] };
+  const joined = connectSharedLedger(localLedger(), trip, uid, snapshot([remote(newPayment)], { trip: latest }));
+  assert.equal(joined.title, latest.title);
+  assert.deepEqual(joined.participants, latest.participants);
+  assert.equal(joined.selfParticipantId, "person-c");
+  assert.deepEqual(joined.sharedSync!.trip, latest);
+  assert.deepEqual(joined.expenses, [newPayment]);
+  assert.deepEqual(joined.sharedSync!.pending, []);
+  const reloaded = parseWalletStateStrict(JSON.parse(JSON.stringify(wallet(joined)))); assert.ok(reloaded);
+  assert.deepEqual((reloaded.ledgers[0] as TravelLedger).sharedSync, joined.sharedSync);
+});
+
+test("legacy storage stays readable and optional participant mappings round-trip without accepting invalid identities", () => {
+  const legacy = connected();
+  const oldParsed = parseSharedLocal(JSON.parse(JSON.stringify(legacy.sharedSync))); assert.ok(oldParsed);
+  assert.equal(Object.hasOwn(oldParsed.trip, "participantMembers"), false);
+  const mapped = { ...legacy.sharedSync!, trip: { ...trip, participantMembers: { [uid]: "person-b", [trip.ownerUid]: "person-a" } } };
+  assert.deepEqual(parseSharedLocal(JSON.parse(JSON.stringify(mapped))), mapped);
+  for (const invalidMapping of [null, [], "person-a", { [uid]: "missing-person" }, { "invalid/uid": "person-a" },
+    { [uid]: "person-a", [trip.ownerUid]: "person-a" }, { [uid]: 1 }]) {
+    assert.equal(parseSharedLocal({ ...mapped, trip: { ...trip, participantMembers: invalidMapping } }), null);
+  }
+});
+
+test("incoming joins append settlement people and keep existing expense shares and offline changes exactly intact", () => {
+  const initial = connected([remote(expense())]);
+  const offline = changed(initial, [expense(), expense("offline-expense", "Already split", 1001)]);
+  const nextTrip: SharedTrip = { ...trip, revision: 2, title: "Joined holiday",
+    participants: [...trip.participants, { id: "person-c", name: "Me" }], participantMembers: { [uid]: "person-c" } };
+  const before = JSON.stringify(offline);
+  const updated = receiveSharedSnapshot(offline, snapshot([remote(expense())], { trip: nextTrip }));
+  assert.equal(JSON.stringify(offline), before);
+  assert.deepEqual(updated.participants, nextTrip.participants);
+  assert.equal(updated.title, "Joined holiday");
+  assert.equal(updated.selfParticipantId, "person-c");
+  assert.deepEqual(updated.expenses, offline.expenses);
+  assert.deepEqual(updated.expenses.map((item) => item.shares), offline.expenses.map((item) => item.shares));
+  assert.deepEqual(updated.sharedSync!.pending, offline.sharedSync!.pending);
+  assert.deepEqual(updated.sharedSync!.records, offline.sharedSync!.records);
+  assert.ok(parseWalletStateStrict(JSON.parse(JSON.stringify(wallet(updated)))));
+});
+
+test("first device mapping selects self, but later joins preserve the user's explicit payer selection", () => {
+  const mappingTrip: SharedTrip = { ...trip, revision: 2, participantMembers: { [uid]: "person-b" } };
+  const mapped = receiveSharedSnapshot(connected(), snapshot([], { trip: mappingTrip }));
+  assert.equal(mapped.selfParticipantId, "person-b");
+  const manuallySelected = { ...mapped, selfParticipantId: "person-a" };
+  const nextTrip: SharedTrip = { ...mappingTrip, revision: 3,
+    participants: [...trip.participants, { id: "person-c", name: "C" }], participantMembers: { ...mappingTrip.participantMembers, "third-device": "person-c" } };
+  const updated = receiveSharedSnapshot(manuallySelected, snapshot([], { trip: nextTrip }));
+  assert.equal(updated.selfParticipantId, "person-a");
+  assert.deepEqual(updated.participants, nextTrip.participants);
+});
+
+test("a delayed older trip header cannot undo joined people or their device mappings", () => {
+  const latest: SharedTrip = { ...trip, title: "Joined title", revision: 3,
+    participants: [...trip.participants, { id: "person-c", name: "Me" }], participantMembers: { [uid]: "person-c" } };
+  const joined = receiveSharedSnapshot(connected([remote(expense())]), snapshot([remote(expense())], { trip: latest }));
+  const stale = receiveSharedSnapshot(joined, snapshot([remote(expense("expense-one", "New expense revision"), 2)]));
+  assert.deepEqual(stale.participants, latest.participants);
+  assert.equal(stale.title, latest.title);
+  assert.equal(stale.selfParticipantId, "person-c");
+  assert.deepEqual(stale.sharedSync!.trip, latest);
+  assert.equal(stale.expenses[0].description, "New expense revision");
+});
+
+test("remote participant changes cannot rename, delete, reorder, or remap existing settlement identities", () => {
+  const mappedTrip: SharedTrip = { ...trip, participantMembers: { [uid]: "person-b" } };
+  const initial = connectSharedLedger(localLedger(), mappedTrip, uid, snapshot([remote(expense())], { trip: mappedTrip }));
+  const before = JSON.stringify(initial);
+  const invalidUpdates: Partial<SharedTrip>[] = [
+    { participants: [{ ...trip.participants[0], name: "Renamed" }, trip.participants[1]] },
+    { participants: [trip.participants[0]] },
+    { participants: [trip.participants[1], trip.participants[0]] },
+    { participantMembers: undefined },
+    { participantMembers: {} },
+    { participantMembers: { [uid]: "person-a" } },
+    { participantMembers: { [uid]: "person-b", "another-device": "person-b" } },
+    { currencies: ["EUR"] },
+    { defaultCurrency: "GBP" },
+    { ownerUid: "new-owner" },
+  ];
+  for (const update of invalidUpdates) {
+    assert.throws(() => receiveSharedSnapshot(initial, snapshot([remote(expense())], { trip: { ...mappedTrip, revision: 2, ...update } })), /invalid-data/);
+    assert.equal(JSON.stringify(initial), before);
+  }
+});
+
 test("local outbox coalesces offline edits without changing its baseline and retains explicit deletion before first upload", () => {
   const initial = connected();
   const added = changed(initial, [expense()]); const creation = added.sharedSync!.pending[0];

@@ -70,6 +70,10 @@ export interface AutomationPaymentReceipt {
     readonly expenseId: string;
     readonly packageName: string;
     readonly occurredAt: string;
+    /** Android notification post time; older receipts may not have it. */
+    readonly deliveredAt?: string;
+    /** Receipts before v1.8.4 were created for purchases only. */
+    readonly eventType?: "purchase" | "outgoing_transfer" | "direct_debit" | "standing_order";
     readonly originFingerprint: string;
     readonly reversalFingerprint: string;
     /** Immutable display fields captured before any later expense edits.

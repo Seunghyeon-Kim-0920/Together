@@ -186,7 +186,10 @@ public final class PaymentNotificationListenerService extends NotificationListen
             String message = text(extras.getCharSequence(Notification.EXTRA_TEXT));
             String subText = text(extras.getCharSequence(Notification.EXTRA_SUB_TEXT));
             CharSequence[] lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
-            boolean expandedLines = lines != null && lines.length > 1;
+            // A merchant, date and amount on separate lines are still one
+            // payment. Withhold auto-posting for multiple payment rows, not
+            // simply for the number of text lines supplied by the bank.
+            boolean multiplePaymentLines = PaymentNotificationParser.hasMultiplePaymentLines(lines, currencyHint);
             String bigText = NotificationTextContent.expandedBody(extras.getCharSequence(Notification.EXTRA_BIG_TEXT), lines, extras.getCharSequence(Notification.EXTRA_INFO_TEXT));
             String eventKey = notificationKey;
             long eventTime = postedAt;
@@ -221,9 +224,10 @@ public final class PaymentNotificationListenerService extends NotificationListen
                 bigText,
                 subText,
                 eventTime,
+                statusBarNotification.getPostTime(),
                 eventKey,
-                explicitlyConfigured && !expandedLines && !groupSummary,
-                manualOnly,
+                explicitlyConfigured && !multiplePaymentLines && !groupSummary,
+                manualOnly || groupSummary || multiplePaymentLines,
                 currencyHint
             );
             CardAutomationStore.recordCheck(getApplicationContext(), packageName, sourceName, candidate != null);

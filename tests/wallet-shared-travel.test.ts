@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeSharedError, parseSharedExpense, parseSharedTrip, SharedTravelError, toSharedExpenseData, toSharedTripData, validateSharedExpense, type SharedTravelClient } from "../src/lib/sharedTravel";
+import { normalizeSharedError, parseSharedExpense, parseSharedTrip, registerSharedParticipant, SharedTravelError, toSharedExpenseData, toSharedTripData, validateSharedExpense, type SharedTravelClient } from "../src/lib/sharedTravel";
 import { createSharedTravelClientLoader } from "../src/lib/sharedTravelClient";
 import { createLedger } from "../src/lib/wallet";
 import type { TravelExpense, TravelLedger } from "../src/lib/types";
@@ -66,4 +66,49 @@ test("quota and network failures are explicit without claiming a daily reset", (
   assert.equal(normalizeSharedError({ code: "firestore/resource-exhausted" }).code, "quota");
   assert.equal(normalizeSharedError({ code: "firestore/permission-denied" }).code, "permission-denied");
   assert.equal(normalizeSharedError(new Error("offline")).code, "unavailable");
+});
+
+test("joining registers one stable settlement identity and replay never adds another person", () => {
+  const registered = registerSharedParticipant(trip, "carol-device", " Carol ");
+  assert.deepEqual(registered.participants, [...trip.participants, { id: "member_carol-device", name: "Carol" }]);
+  assert.equal(registered.participantMembers?.["carol-device"], "member_carol-device");
+  assert.equal(registered.revision, trip.revision + 1);
+  assert.equal(registerSharedParticipant(registered, "carol-device", "Carol phone"), registered);
+  assert.deepEqual(parseSharedExpense(expense.id, toSharedExpenseData(expense, trip, "owner", "owner", 1, "prior"), registered)?.expense, expense);
+});
+
+test("one exact unclaimed name reuses the original participant and a connected namesake stays separate", () => {
+  const first = registerSharedParticipant(trip, "bob-one", "Bob");
+  assert.deepEqual(first.participants, trip.participants);
+  assert.equal(first.participantMembers?.["bob-one"], "bob");
+  const second = registerSharedParticipant(first, "bob-two", "Bob");
+  assert.equal(second.participantMembers?.["bob-two"], "member_bob-two");
+  assert.equal(second.participants.length, 3);
+  assert.equal(second.participantMembers?.["bob-one"], "bob");
+  const ambiguous = registerSharedParticipant({ ...trip, participants: [...trip.participants, { id: "other-bob", name: "Bob" }] }, "third-bob", "Bob");
+  assert.equal(ambiguous.participantMembers?.["third-bob"], "member_third-bob");
+});
+
+test("owner's selected identity is retained without giving invitees control of another person's claim", () => {
+  const owner = registerSharedParticipant(trip, "owner", "Host phone", "alice");
+  assert.equal(owner.participantMembers?.owner, "alice");
+  assert.deepEqual(owner.participants, trip.participants);
+  const member = registerSharedParticipant(owner, "mallory", "Mallory", "bob");
+  assert.equal(member.participantMembers?.mallory, "member_mallory");
+});
+
+test("settlement limit permits claiming an existing person but rejects a new twenty-first person", () => {
+  const full = { ...trip, participants: Array.from({ length: 20 }, (_, i) => ({ id: `p${i}`, name: `Person ${i}` })) };
+  assert.equal(registerSharedParticipant(full, "last-person", "Person 19").participants.length, 20);
+  assert.throws(() => registerSharedParticipant(full, "extra", "Extra"), (e) => e instanceof SharedTravelError && e.code === "limit");
+  assert.throws(() => registerSharedParticipant(trip, "bad-name", "Two|People"), SharedTravelError);
+});
+
+test("cloud mapping preserves legacy headers and rejects forged or duplicate settlement identities", () => {
+  const data = toSharedTripData(ledger, "owner");
+  assert.ok(parseSharedTrip(ledger.id, data));
+  assert.deepEqual(parseSharedTrip(ledger.id, { ...data, participantMembers: { owner: "alice", guest: "bob" } })?.participantMembers, { owner: "alice", guest: "bob" });
+  for (const invalid of [[], null, { owner: "missing" }, { owner: "alice", guest: "alice" }, { "bad/uid": "bob" }, { owner: 42 }]) {
+    assert.equal(parseSharedTrip(ledger.id, { ...data, participantMembers: invalid }), null);
+  }
 });
