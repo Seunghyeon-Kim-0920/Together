@@ -4,6 +4,7 @@ import { automationReversalFingerprint, isMovedAutomationReversal, calculateMont
 import { categoryText } from "../lib/categoryI18n";
 import { currencyDigits, formatMoney, parseMinorUnits } from "../lib/currency";
 import { designText as ux } from "../lib/designI18n";
+import { documentText } from "../lib/documentI18n";
 import { t } from "../lib/i18n";
 import { cardAutomationConnectionState, cardAutomationPlugin, type CardAutomationStatus } from "../lib/nativeCardAutomation";
 import { notificationText as n } from "../lib/notificationI18n";
@@ -12,7 +13,7 @@ import { SheetFrame } from "./Sheets";
 
 type Notify = (message: string, tone?: "success" | "error" | "info") => void;
 
-export function GeneralLedgerAutomation({ ledger, locale, selectedMonth, status, pending, busy, onImportStatements, onRefresh, onOpenAccessSettings, onRequestAlertPermission, onToggleAllPaymentApps, onRegisterSource, onRemoveSource, onConfirm, onDismiss, onChange, onNotify }: { ledger: GeneralLedger; locale: Locale; selectedMonth: string; status: CardAutomationStatus; pending: readonly NativeCardCandidate[]; busy: boolean; onImportStatements: () => void; onRefresh: () => void; onOpenAccessSettings: () => void; onRequestAlertPermission: () => void; onToggleAllPaymentApps: (enabled: boolean) => void; onRegisterSource: (source: AutomationSource) => void; onRemoveSource: (packageName: string) => void; onConfirm: (candidate: NativeCardCandidate, asNewTransaction?: boolean) => void; onDismiss: (candidate: NativeCardCandidate) => void; onChange: (ledger: GeneralLedger) => Promise<boolean>; onNotify: Notify }) {
+export function GeneralLedgerAutomation({ ledger, locale, selectedMonth, status, pending, busy, onRefresh, onOpenAccessSettings, onRequestAlertPermission, onToggleAllPaymentApps, onRegisterSource, onRemoveSource, onConfirm, onDismiss, onChange, onNotify }: { ledger: GeneralLedger; locale: Locale; selectedMonth: string; status: CardAutomationStatus; pending: readonly NativeCardCandidate[]; busy: boolean; onRefresh: () => void; onOpenAccessSettings: () => void; onRequestAlertPermission: () => void; onToggleAllPaymentApps: (enabled: boolean) => void; onRegisterSource: (source: AutomationSource) => void; onRemoveSource: (packageName: string) => void; onConfirm: (candidate: NativeCardCandidate, asNewTransaction?: boolean) => void; onDismiss: (candidate: NativeCardCandidate) => void; onChange: (ledger: GeneralLedger) => Promise<boolean>; onNotify: Notify }) {
   const [limitOpen, setLimitOpen] = useState(false);
   const [automationOpen, setAutomationOpen] = useState(false);
   const limit = useMemo(() => calculateMonthlyLimitStatus(ledger, selectedMonth), [ledger, selectedMonth]);
@@ -48,7 +49,7 @@ export function GeneralLedgerAutomation({ ledger, locale, selectedMonth, status,
       </button>
     </section>
     {limitOpen ? <MonthlyLimitSheet ledger={ledger} locale={locale} onClose={() => setLimitOpen(false)} onSave={saveLimit} onNotify={onNotify} /> : null}
-    {automationOpen ? <CardAutomationSheet ledger={ledger} locale={locale} status={status} pending={pending} busy={busy} onImportStatements={onImportStatements} onRefresh={onRefresh} onOpenAccessSettings={onOpenAccessSettings} onRequestAlertPermission={onRequestAlertPermission} onToggleAllPaymentApps={onToggleAllPaymentApps} onRegisterSource={onRegisterSource} onRemoveSource={onRemoveSource} onConfirm={onConfirm} onDismiss={onDismiss} onClose={() => setAutomationOpen(false)} /> : null}
+    {automationOpen ? <CardAutomationSheet ledger={ledger} locale={locale} status={status} pending={pending} busy={busy} onRefresh={onRefresh} onOpenAccessSettings={onOpenAccessSettings} onRequestAlertPermission={onRequestAlertPermission} onToggleAllPaymentApps={onToggleAllPaymentApps} onRegisterSource={onRegisterSource} onRemoveSource={onRemoveSource} onConfirm={onConfirm} onDismiss={onDismiss} onClose={() => setAutomationOpen(false)} /> : null}
   </>;
 }
 
@@ -71,7 +72,7 @@ function MonthlyLimitSheet({ ledger, locale, onClose, onSave, onNotify }: { ledg
   </SheetFrame>;
 }
 
-function CardAutomationSheet({ ledger, locale, status, pending, busy, onImportStatements, onRefresh, onOpenAccessSettings, onRequestAlertPermission, onToggleAllPaymentApps, onRegisterSource, onRemoveSource, onConfirm, onDismiss, onClose }: { ledger: GeneralLedger; locale: Locale; status: CardAutomationStatus; pending: readonly NativeCardCandidate[]; busy: boolean; onImportStatements: () => void; onRefresh: () => void; onOpenAccessSettings: () => void; onRequestAlertPermission: () => void; onToggleAllPaymentApps: (enabled: boolean) => void; onRegisterSource: (source: AutomationSource) => void; onRemoveSource: (packageName: string) => void; onConfirm: (candidate: NativeCardCandidate, asNewTransaction?: boolean) => void; onDismiss: (candidate: NativeCardCandidate) => void; onClose: () => void }) {
+function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh, onOpenAccessSettings, onRequestAlertPermission, onToggleAllPaymentApps, onRegisterSource, onRemoveSource, onConfirm, onDismiss, onClose }: { ledger: GeneralLedger; locale: Locale; status: CardAutomationStatus; pending: readonly NativeCardCandidate[]; busy: boolean; onRefresh: () => void; onOpenAccessSettings: () => void; onRequestAlertPermission: () => void; onToggleAllPaymentApps: (enabled: boolean) => void; onRegisterSource: (source: AutomationSource) => void; onRemoveSource: (packageName: string) => void; onConfirm: (candidate: NativeCardCandidate, asNewTransaction?: boolean) => void; onDismiss: (candidate: NativeCardCandidate) => void; onClose: () => void }) {
   const registeredPackages = useMemo(() => new Set(ledger.automationSources.map((source) => source.packageName)), [ledger.automationSources]);
   const [directAppConfirmations, setDirectAppConfirmations] = useState<ReadonlySet<string>>(() => new Set());
   const [newTransactionConfirmations, setNewTransactionConfirmations] = useState<ReadonlySet<string>>(() => new Set());
@@ -107,7 +108,7 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onImportSt
       {status.accessGranted ? <><button className={connection === "connected" ? "wide-secondary" : "primary-button"} type="button" disabled={busy || rechecking} onClick={() => void recheck()}><RefreshCw aria-hidden="true" />{n(locale, rechecking ? "reconnecting" : connection === "connected" ? "recheck" : "reconnect")}</button><p className="sheet-intro">{n(locale, "recheckHelp")}</p></> : <button className="primary-button" type="button" disabled={busy} onClick={onOpenAccessSettings}>{t(locale, "openNotificationSettings")}</button>}
       {recheckError ? <p className="exchange-error" role="alert">{n(locale, "recheckError")}</p> : null}
     </section> : null}
-    <div className="bank-connection-status"><strong>{n(locale, "bankNotConnected")}</strong><p>{n(locale, "bankConnectionHelp")}</p><button className="wide-secondary" type="button" onClick={() => { onClose(); onImportStatements(); }}>{n(locale, "importStatement")}</button></div>
+    <p className="sheet-intro">{n(locale, "statementImportHelp").replace("{action}", documentText(locale, "title"))}</p>
     {!status.supported ? <p className="automation-unsupported">{t(locale, "automationUnsupported")}</p> : <>
       <div className="permission-grid">
         <article><span>{t(locale, "notificationAccess")}</span><b className={status.accessGranted ? "granted" : ""}>{t(locale, status.accessGranted ? "accessGranted" : "accessNotGranted")}</b><button type="button" disabled={busy} onClick={onOpenAccessSettings}>{t(locale, "openNotificationSettings")}</button></article>
