@@ -101,6 +101,23 @@ try {
         @('KOREAN_APPROVAL_SIGNAL', '승인번호 123456', $false),
         @('CURRENCY_AFTER', '- 12,34 €', $true),
         @('CURRENCY_BEFORE', 'EUR - 12.34', $true),
+        @('KOREAN_LABELLED_AMOUNT', '출금12,000원', $true),
+        @('KOREAN_LABELLED_AMOUNT', '잔액188,000원', $true),
+        @('KOREAN_DESTINATION_LABEL', '입금은행: 테스트은행', $true),
+        @('KOREAN_DESTINATION_LABEL', '거래구분: 입금', $false),
+        @('KOREAN_DEBIT_CONTEXT', '출금액: 12,000원', $true),
+        @('KOREAN_DEBIT_CONTEXT', '출금계좌: ***-0000', $false),
+        @('EXECUTED_DEBIT', '출금계좌: ***-0000', $false),
+        @('KOREAN_WITHDRAWAL_RECIPIENT', '받는 분: 테스트수취인', $true),
+        @('KOREAN_WITHDRAWAL_RECIPIENT', '예금주: 테스트예금주', $false),
+        @('NOT_EXECUTED_TRANSFER', '출금 요청', $true),
+        @('NOT_EXECUTED_TRANSFER', '출금 대기', $true),
+        @('MERCHANT_FIRST_NARRATIVE', 'Café Exemple : votre paiement de 12,34 €', $true),
+        @('MERCHANT_FIRST_NARRATIVE', 'Café Exemple:paiement de 12,34 €', $true),
+        @('MERCHANT_AMOUNT_TAIL', ' 일시불 승인 09/29 12:34', $true),
+        @('MERCHANT_AMOUNT_TAIL', ' 서점 가을', $false),
+        @('MERCHANT_DECORATION', '🥐 Café Exemple', $true),
+        @('KOREAN_OWNER_FIELD', '카드명의자 김민지', $true),
         @('REVERSAL', 'Paiement annulé', $true)
     )
     foreach ($case in $cases) {
