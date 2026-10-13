@@ -2,6 +2,7 @@ package com.seunghyeonkim.walletdiary;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 
 import org.json.JSONObject;
 import org.junit.Test;
@@ -12,6 +13,69 @@ import org.junit.Test;
  */
 public class PaymentMerchantNotificationRegressionTest {
     private static final long POSTED_AT = 1_790_683_200_000L;
+
+    @Test
+    public void bracketedApprovalWithAmountInTitleFindsBodyMerchant() {
+        // Same layout as the reported receipt, with synthetic merchant/card data.
+        assertPurchase("travel Wallet", "[승인] EUR 1.39",
+            "MARCHE EXEMPLE\n10/10 18:00 | 트래블페이(0000)\n잔액 EUR 1.82",
+            "MARCHE EXEMPLE", "EUR", 139L);
+        for (String source : koreanCardSources()) {
+            assertPurchase(source, "[승인] 12,000원",
+                "카페 봄\n10/10 18:00 | " + source + "(0000)\n잔액 188,000원",
+                "카페 봄", "KRW", 12000L);
+        }
+    }
+
+    @Test
+    public void bracketedApprovalWorksAcrossCollapsedAndExpandedFields() {
+        String receipt = "MARCHE EXEMPLE\n10/10 18:00 | 트래블페이(0000)\n잔액 EUR 1.82";
+        assertPurchaseResult("expanded body", parse("travel Wallet", "[승인] EUR 1.39",
+            "MARCHE EXEMPLE", receipt, "EUR", true), "MARCHE EXEMPLE", "EUR", 139L);
+        assertPurchase("travel Wallet", "travel Wallet", "[승인] EUR 1.39\n" + receipt,
+            "MARCHE EXEMPLE", "EUR", 139L);
+        String expanded = NotificationTextContent.expandedBody(null,
+            new CharSequence[] {"MARCHE EXEMPLE", "10/10 18:00 | 트래블페이(0000)", "잔액 EUR 1.82"}, null);
+        assertPurchaseResult("text lines", parse("travel Wallet", "[승인] EUR 1.39",
+            "", expanded, "EUR", true), "MARCHE EXEMPLE", "EUR", 139L);
+        assertPurchase("travel Wallet", "[승인] EUR 1.39",
+            "MARCHE EXEMPLE\n10/10 18:00\n트래블페이(0000)\n잔액 EUR 1.82",
+            "MARCHE EXEMPLE", "EUR", 139L);
+    }
+
+    @Test
+    public void bracketedApprovalStillRequiresTrustAndUnambiguousMerchant() {
+        JSONObject unknown = parse("travel Wallet", "[승인] EUR 1.39",
+            "MARCHE EXEMPLE\n10/10 18:00 | 트래블페이(0000)\n잔액 EUR 1.82", "", "EUR", false);
+        assertNotNull(unknown);
+        assertEquals("MARCHE EXEMPLE", unknown.optString("merchant"));
+        assertEquals(false, unknown.optBoolean("requiresMerchant"));
+        assertEquals("review", unknown.optString("confidence"));
+        assertNeedsMerchantReview("only receipt metadata", parse("travel Wallet", "[승인] EUR 1.39",
+            "10/10 18:00 | 트래블페이(0000)\n잔액 EUR 1.82", "", "EUR", true));
+        assertNeedsMerchantReview("card product is not a merchant", parse("travel Wallet", "[승인] EUR 1.39",
+            "트래블페이(0000)\n잔액 EUR 1.82", "", "EUR", true));
+        assertNeedsMerchantReview("two merchants", parse("travel Wallet", "[승인] EUR 1.39",
+            "MARCHE EXEMPLE\nCAFE EXEMPLE\n10/10 18:00 | 트래블페이(0000)", "", "EUR", true));
+        assertNull(parse("travel Wallet", "[승인]", "잔액 EUR 1.82", "", "EUR", true));
+        assertNull(parse("travel Wallet", "[승인] EUR 1.39", "MARCHE EXEMPLE\n승인 대기", "", "EUR", true));
+        assertNull(parse("travel Wallet", "[승인] EUR 1.39", "MARCHE EXEMPLE\n승인 요청", "", "EUR", true));
+        assertNull(parse("travel Wallet", "[승인] EUR 1.39", "MARCHE EXEMPLE\n승인 예정", "", "EUR", true));
+        assertNull(parse("travel Wallet", "[승인] EUR 1.39", "MARCHE EXEMPLE\n결제 거절", "", "EUR", true));
+        assertNull(parse("travel Wallet", "[승인] EUR 1.39", "입금 EUR 1.39", "", "EUR", true));
+        JSONObject reversal = parse("travel Wallet", "[승인] EUR 1.39", "가맹점: MARCHE EXEMPLE\n승인 취소", "", "EUR", true);
+        assertNotNull(reversal);
+        assertEquals("reversal", reversal.optString("eventType"));
+    }
+
+    @Test
+    public void weakApprovalCanFindDistantMerchantWithoutAutoRecording() {
+        JSONObject result = parse("한국은행", "승인", "12,000원\n10/10 18:00\n카페 봄", "", "KRW", true);
+        assertNotNull(result);
+        assertEquals("카페 봄", result.optString("merchant"));
+        assertEquals(false, result.optBoolean("requiresMerchant"));
+        assertEquals("review", result.optString("confidence"));
+    }
 
     @Test
     public void frenchMerchantBeforePaymentNarrativeIsPreserved() {

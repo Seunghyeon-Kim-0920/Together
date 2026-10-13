@@ -118,6 +118,13 @@ try {
         @('MERCHANT_AMOUNT_TAIL', ' 서점 가을', $false),
         @('MERCHANT_DECORATION', '🥐 Café Exemple', $true),
         @('KOREAN_OWNER_FIELD', '카드명의자 김민지', $true),
+        @('KOREAN_CARD_PRODUCT_LINE', '트래블페이(0000)', $true),
+        @('KOREAN_CARD_PRODUCT_LINE', '하나카드(****0000)', $true),
+        @('KOREAN_CARD_PRODUCT_LINE', 'MARCHE EXEMPLE', $false),
+        @('KOREAN_CARD_PRODUCT_LINE', '카드 문구점', $false),
+        @('NOT_EXECUTED_PAYMENT', '승인 요청', $true),
+        @('NOT_EXECUTED_PAYMENT', '승인 예정', $true),
+        @('NOT_EXECUTED_PAYMENT', '[승인] EUR 1.39', $false),
         @('REVERSAL', 'Paiement annulé', $true)
     )
     foreach ($case in $cases) {

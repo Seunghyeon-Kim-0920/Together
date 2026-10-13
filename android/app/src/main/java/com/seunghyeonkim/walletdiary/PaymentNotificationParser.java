@@ -24,7 +24,7 @@ import org.json.JSONObject;
 
 final class PaymentNotificationParser {
 
-    static final int PARSER_VERSION = 9;
+    static final int PARSER_VERSION = 10;
 
     // Android uses ICU, not the desktop JDK regex engine. In particular the
     // embedded UNICODE_CHARACTER_CLASS flag (?U) is unsupported and throws
@@ -74,7 +74,7 @@ final class PaymentNotificationParser {
     );
     private static final Pattern SCHEDULED_INSTRUCTION = Pattern.compile("(?iu)(\\bscheduled\\b|programm[ée]|예약)");
     private static final Pattern NOT_EXECUTED_PAYMENT = Pattern.compile(
-        "(?iu)(\\b(?:payment request|request (?:a |for )?payment|invoice due|unpaid|amount due|payment due|upcoming payment|will be charged|will be debited|scheduled for|due on|pay now|pay by)\\b|demande de paiement|paiement à venir|sera (?:débité|prélevé)|facture à payer|결제 ?(?:예정|요청)|청구 ?예정|납부 ?예정|미납|支払予定|請求予定|付款请求|付款請求)"
+        "(?iu)(\\b(?:payment request|request (?:a |for )?payment|invoice due|unpaid|amount due|payment due|upcoming payment|will be charged|will be debited|scheduled for|due on|pay now|pay by)\\b|demande de paiement|paiement à venir|sera (?:débité|prélevé)|facture à payer|(?:결제|승인) ?(?:예정|요청)|청구 ?예정|납부 ?예정|미납|支払予定|請求予定|付款请求|付款請求)"
     );
     private static final Pattern RETURNED_OR_REJECTED_TRANSFER = Pattern.compile(
         "(?iu)(\\b(?:returned|return(?:ed)? to sender|rejected|refused|revoked|recalled|bounced|unpaid)\\b|retourn[ée]|rejet[ée]|refus[ée]|révoqu[ée]|rappel[ée]|impay[ée]|반환|반송|송금 ?거절|이체 ?거절|출금 ?거절|자동 ?이체 ?반환|정기 ?이체 ?반환|철회|abgewiesen|zurückgegeben|rechazad[oa]|devuelt[oa]|recusad[oa]|devolvid[oa]|rifiutat[oa]|respint[oa]|mislukt|geweigerd|geannuleerd|teruggeboekt|未成立|不能|取消|取り消し|취소)"
@@ -149,6 +149,11 @@ final class PaymentNotificationParser {
     );
     private static final Pattern MERCHANT_DECORATION = Pattern.compile("^[\\p{So}\\p{Sk}\\uFE0F\\u200D\\s]+|[\\p{So}\\p{Sk}\\uFE0F\\u200D\\s]+$");
     private static final Pattern KOREAN_OWNER_FIELD = Pattern.compile("예금주|계좌주|(?:카드)?명의자");
+    // Card product + masked suffix may occupy its own line in expanded alerts.
+    // Match before number cleanup, which otherwise turns it into a fake name.
+    private static final Pattern KOREAN_CARD_PRODUCT_LINE = Pattern.compile(
+        "(?u)^[\\p{L}\\p{M}\\p{N} ]{0,40}(?:카드|페이)\\s*\\([\\d*•●xX -]{2,20}\\)\\s*$"
+    );
     private static final Pattern MERCHANT_AMOUNT_TAIL = Pattern.compile(
         "(?iu)^(?:[\\d\\s/.:(),–—-]|일시불|개월|할부|승인|결제|완료|approved|completed|accepted|accept[ée]|a été|has been|was|\\p{So}|\\uFE0F)*$"
     );
@@ -315,6 +320,12 @@ final class PaymentNotificationParser {
         int bodyStart = body.isEmpty() || !combined.endsWith(body) ? 0 : combined.length() - body.length();
         AmountMatch amount = findSingleAmount(combined, currencyHint, reversal, bodyStart);
         if (amount == null || amount.minorUnits <= 0) return null;
+        // Korean card receipts can put only "[승인] <amount>" in the title,
+        // with the merchant and card/date/balance fields in the body. This is
+        // stronger evidence than an isolated approval word or approval ID.
+        // Require the complete line to contain exactly that status and the
+        // already validated non-balance amount; trust is still checked below.
+        boolean approvalReceipt = approvalSignal && hasApprovalReceiptLine(combined, amount.raw);
         if (transferContext && debitEventType == null) {
             if (amount.explicitDebit && OUTGOING_DESTINATION.matcher(combined).find()) debitEventType = "outgoing_transfer";
             else return null;
@@ -328,8 +339,11 @@ final class PaymentNotificationParser {
         // Compact debit alerts are not restricted to pre-registered apps. The
         // confidence gate below still requires the user to trust the exact app
         // before any high-confidence event may be recorded automatically.
-        boolean explicitPurchase = paymentSignal && !approvalSignal && !reversal && debitEventType == null;
-        MerchantMatch merchant = findMerchant(safeTitle, body, sourceName, amount.raw, debitEventType != null, explicitPurchase || debitEventType != null);
+        boolean explicitPurchase = paymentSignal && (!approvalSignal || approvalReceipt) && !reversal && debitEventType == null;
+        // Weak approvals can also name a merchant away from the amount. Find
+        // it for review without promoting the weak event to automatic posting.
+        MerchantMatch merchant = findMerchant(safeTitle, body, sourceName, amount.raw, debitEventType != null,
+            explicitPurchase || debitEventType != null || approvalSignal);
         boolean requiresMerchant = merchant == null || merchant.value.isEmpty();
         String merchantValue = requiresMerchant ? "" : merchant.value;
         // Merchant + amount is a common compact card notification even without
@@ -340,7 +354,7 @@ final class PaymentNotificationParser {
 
         // Newly discovered packages remain review-only until the user registers
         // that exact package. This prevents silent expenses from spoofed alerts.
-        String confidence = explicitlyConfigured && !manualOnly && !approvalSignal && !compactUnsigned && !requiresMerchant && merchant.highConfidence ? "high" : "review";
+        String confidence = explicitlyConfigured && !manualOnly && (!approvalSignal || approvalReceipt) && !compactUnsigned && !requiresMerchant && merchant.highConfidence ? "high" : "review";
         try {
             String eventType = reversal ? "reversal" : debitEventType == null ? "purchase" : debitEventType;
             String eventId = fingerprint(packageName + "|" + notificationKey + "|" + postedAt);
@@ -371,6 +385,16 @@ final class PaymentNotificationParser {
         } catch (JSONException ignored) {
             return null;
         }
+    }
+
+    private static boolean hasApprovalReceiptLine(String content, String rawAmount) {
+        for (String line : LINE_BREAK.split(content)) {
+            int amountStart = line.indexOf(rawAmount);
+            if (amountStart < 0) continue;
+            if ("[승인]".equals(line.substring(0, amountStart).trim())
+                && line.substring(amountStart + rawAmount.length()).trim().isEmpty()) return true;
+        }
+        return false;
     }
 
     private static String classifyDebitEvent(String value) {
@@ -503,6 +527,7 @@ final class PaymentNotificationParser {
         }
         Set<String> titleCandidates = new HashSet<>();
         for (String titleLine : LINE_BREAK.split(title)) {
+            if (KOREAN_CARD_PRODUCT_LINE.matcher(titleLine.trim()).matches()) continue;
             if (!titleLine.isEmpty() && !titleLine.equalsIgnoreCase(clean(sourceName))) {
                 String prefix = merchantBeforePayment(titleLine, rawAmount, sourceName);
                 if (prefix == null && hasUnstructuredAmountSuffix(titleLine, rawAmount, sourceName)) continue;
@@ -520,6 +545,7 @@ final class PaymentNotificationParser {
         String[] lines = LINE_BREAK.split(body);
         for (int index = 0; index < lines.length; index++) {
             String line = MERCHANT_NOTIFICATION_PREFIX.matcher(clean(lines[index])).replaceAll("");
+            if (KOREAN_CARD_PRODUCT_LINE.matcher(line).matches()) continue;
             boolean besideAmount = line.contains(rawAmount)
                 || index > 0 && lines[index - 1].contains(rawAmount)
                 || index + 1 < lines.length && lines[index + 1].contains(rawAmount);

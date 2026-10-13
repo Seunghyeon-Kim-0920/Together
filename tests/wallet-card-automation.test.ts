@@ -70,6 +70,65 @@ test("trusted packages cannot auto-save missing merchants or bypass malformed dr
   assert.equal(parseNativeCardCandidate({ ...candidate, occurredOn: "2026-99-99" }), null);
 });
 
+test("reparsed trusted Travel Wallet merchant drafts auto-save once and survive persisted replays", () => {
+  const source = Object.freeze({ packageName: "com.mobiletoong.travelwallet", displayName: "travel Wallet", trustedDirectApp: true as const });
+  const ledger = Object.freeze({ ...configuredLedger(), automationSources: Object.freeze([source]) });
+  const current = wallet(ledger);
+  const draft = parseNativeCardCandidate({ ...candidate, id: "synthetic-travelwallet-reparse", queueToken: "missing-merchant",
+    packageName: source.packageName, sourceName: source.displayName, merchant: "", minorUnits: 139, requiresMerchant: true });
+  assert.ok(draft);
+  const before = applyHighConfidenceCardAutomation(current, [draft]);
+  assert.equal(before.state, current);
+  assert.equal(before.pending[0].requiresMerchant, true);
+  assert.deepEqual(before.acknowledgedIds, []);
+
+  // The native queue replaces the same notification ID after parsing the
+  // still-visible alert with the updated parser. The content token changes.
+  const reparsed = parseNativeCardCandidate({ ...draft, queueToken: "merchant-found", merchant: "MARCHE EXEMPLE",
+    requiresMerchant: false, confidence: "high" });
+  assert.ok(reparsed);
+  assert.equal(reparsed.id, draft.id);
+  const after = applyHighConfidenceCardAutomation(before.state, [reparsed]);
+  assert.deepEqual(after.insertedIds, [draft.id]);
+  assert.deepEqual(after.acknowledgedIds, [draft.id]);
+  assert.deepEqual(after.pending, []);
+  assert.equal(after.state.ledgers[0].expenses.length, 1);
+  assert.equal(after.state.ledgers[0].expenses[0].description, "MARCHE EXEMPLE");
+  assert.equal(after.state.ledgers[0].expenses[0].minorUnits, 139);
+  assert.equal(after.state.ledgers[0].expenses[0].currency, "EUR");
+  const restored = parseWalletStateStrict(JSON.parse(JSON.stringify(after.state)));
+  assert.ok(restored);
+  const replay = applyHighConfidenceCardAutomation(restored, [reparsed]);
+  assert.equal(replay.state, restored);
+  assert.equal(replay.state.ledgers[0].expenses.length, 1);
+  assert.deepEqual(replay.insertedIds, []);
+  assert.deepEqual(replay.acknowledgedIds, [draft.id]);
+  assert.deepEqual(replay.pending, []);
+});
+
+test("recovering a trusted Travel Wallet merchant does not bypass foreign-currency review", () => {
+  const source = Object.freeze({ packageName: "com.mobiletoong.travelwallet", displayName: "travel Wallet", trustedDirectApp: true as const });
+  const ledger = Object.freeze({ ...createLedger("general", "생활", "KRW"), automationSources: Object.freeze([source]) });
+  const current = wallet(ledger);
+  const draft = parseNativeCardCandidate({ ...candidate, id: "synthetic-travelwallet-foreign", queueToken: "missing-merchant",
+    packageName: source.packageName, sourceName: source.displayName, merchant: "", minorUnits: 139, requiresMerchant: true });
+  assert.ok(draft);
+  const before = applyHighConfidenceCardAutomation(current, [draft]);
+  const reparsed = parseNativeCardCandidate({ ...draft, queueToken: "merchant-found", merchant: "MARCHE EXEMPLE",
+    requiresMerchant: false, confidence: "high" });
+  assert.ok(reparsed);
+  const after = applyHighConfidenceCardAutomation(before.state, [reparsed]);
+  assert.equal(after.state, current);
+  assert.deepEqual(after.insertedIds, []);
+  assert.deepEqual(after.acknowledgedIds, []);
+  assert.equal(after.pending.length, 1);
+  assert.equal(after.pending[0].currencyReview, true);
+  assert.equal(after.pending[0].requiresMerchant, undefined);
+  assert.equal(after.pending[0].merchant, "MARCHE EXEMPLE");
+  assert.deepEqual(visibleCardCandidates(current.ledgers, ledger.id, after.pending), after.pending);
+  assert.throws(() => confirmCardCandidate(current, ledger.id, after.pending[0]), /incompatible candidate/);
+});
+
 test("other currencies and ambiguous owners do not disappear from review", () => {
   const first = Object.freeze({ ...configuredLedger(), automationAllApps: true });
   const second = Object.freeze({ ...createLedger("general", "Other", "EUR"), automationAllApps: true });
