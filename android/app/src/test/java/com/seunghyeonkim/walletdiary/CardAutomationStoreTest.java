@@ -103,10 +103,58 @@ public class CardAutomationStoreTest {
         JSONArray retained = CardAutomationStore.retainCurrentParserEvents(new JSONArray().put(legacy).put(clear).put(modern));
         assertEquals(3, retained.length());
         assertEquals(true, retained.getJSONObject(0).getBoolean("manualOnly"));
-        assertEquals(false, retained.getJSONObject(1).getBoolean("manualOnly"));
-        assertEquals(false, retained.getJSONObject(2).getBoolean("manualOnly"));
+        assertEquals(true, retained.getJSONObject(1).getBoolean("manualOnly"));
+        assertEquals(true, retained.getJSONObject(2).getBoolean("manualOnly"));
         assertEquals(false, legacy.getBoolean("manualOnly"));
         assertEquals(retained.toString(), CardAutomationStore.retainCurrentParserEvents(retained).toString());
+    }
+
+    @Test
+    public void approvalRequestUpgradeQuarantinesOldDraftsWithoutDeletingOrMutatingThem() throws Exception {
+        JSONObject old = new JSONObject().put("id", "approval-or-payment").put("queueToken", "original-token")
+            .put("parserVersion", 13).put("confidence", "high").put("manualOnly", false)
+            .put("merchant", "Example Market").put("minorUnits", 1234).put("currency", "EUR");
+        JSONObject fresh = new JSONObject(old.toString()).put("parserVersion", PaymentNotificationParser.PARSER_VERSION);
+        JSONArray retained = CardAutomationStore.retainCurrentParserEvents(new JSONArray().put(old).put(fresh));
+        assertEquals(2, retained.length());
+        JSONObject review = retained.getJSONObject(0);
+        assertEquals("review", review.getString("confidence"));
+        assertEquals(true, review.getBoolean("manualOnly"));
+        assertEquals("original-token", review.getString("queueToken"));
+        assertEquals("Example Market", review.getString("merchant"));
+        assertEquals(1234, review.getInt("minorUnits"));
+        assertEquals("high", old.getString("confidence"));
+        assertEquals(false, old.getBoolean("manualOnly"));
+        assertEquals(fresh.toString(), retained.getJSONObject(1).toString());
+        assertEquals(retained.toString(), CardAutomationStore.retainCurrentParserEvents(retained).toString());
+    }
+
+    @Test
+    public void oldLeakedAuthorizationCtaIsRemovedWithoutHidingTheCompletedPayment() throws Exception {
+        JSONObject request = new JSONObject().put("id", "same-notification").put("queueToken", "request-token")
+            .put("parserVersion", 13).put("eventType", "purchase").put("merchant", "Example Charity. Tap to verify")
+            .put("minorUnits", 1234).put("currency", "EUR").put("confidence", "review");
+        JSONObject completed = new JSONObject(request.toString()).put("queueToken", "completed-token")
+            .put("merchant", "Example Charity").put("parserVersion", PaymentNotificationParser.PARSER_VERSION);
+        JSONObject unrelated = new JSONObject(request.toString()).put("id", "another-payment").put("merchant", "Verify Café");
+        JSONObject realName = new JSONObject(unrelated.toString()).put("merchant", "Example. Tap to Verify Café");
+        JSONObject otherType = new JSONObject(request.toString()).put("eventType", "reversal");
+        JSONObject modern = new JSONObject(request.toString()).put("parserVersion", PaymentNotificationParser.PARSER_VERSION);
+        JSONArray retained = CardAutomationStore.retainCurrentParserEvents(new JSONArray()
+            .put(request).put(completed).put(unrelated).put(realName).put(otherType).put(modern));
+        assertEquals(5, retained.length());
+        assertEquals("completed-token", retained.getJSONObject(0).getString("queueToken"));
+        assertEquals("Verify Café", retained.getJSONObject(1).getString("merchant"));
+        assertEquals("Example. Tap to Verify Café", retained.getJSONObject(2).getString("merchant"));
+        assertEquals("reversal", retained.getJSONObject(3).getString("eventType"));
+        assertEquals(modern.toString(), retained.getJSONObject(4).toString());
+        assertEquals("Example Charity. Tap to verify", request.getString("merchant"));
+        assertEquals(retained.toString(), CardAutomationStore.retainCurrentParserEvents(retained).toString());
+        JSONArray cleared = CardAutomationStore.retainCurrentParserEvents(new JSONArray().put(request));
+        JSONArray history = CardAutomationStore.mergeAcknowledgements(new JSONArray(), cleared, new JSONArray());
+        assertEquals(0, cleared.length());
+        assertEquals(0, history.length());
+        assertEquals(false, CardAutomationStore.containsAcknowledgement(history, completed));
     }
 
     @Test

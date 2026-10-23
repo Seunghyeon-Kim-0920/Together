@@ -22,5 +22,13 @@ public final class NotificationRegexDump {
             System.out.println("CATEGORY_" + i + "|" + Base64.getEncoder().encodeToString(
                 categories[i].pattern().getBytes(StandardCharsets.UTF_8)));
         }
+        Class<?> sms = Class.forName("com.seunghyeonkim.walletdiary.SmsPaymentPolicy");
+        for (Field field : sms.getDeclaredFields()) {
+            if (field.getType() != Pattern.class) continue;
+            field.setAccessible(true);
+            Pattern pattern = (Pattern) field.get(null);
+            System.out.println("SMS_" + field.getName() + "|" + Base64.getEncoder().encodeToString(
+                pattern.pattern().getBytes(StandardCharsets.UTF_8)));
+        }
     }
 }

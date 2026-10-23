@@ -33,7 +33,7 @@
 
 <h1>지갑의 일기 · Wallet Diary · Journal du portefeuille</h1>
 <p class="sub">개인정보처리방침 / Privacy Policy / Politique de confidentialité<br>
-최종 수정일 · Last updated · Dernière mise à jour : 2026-09-23</p>
+최종 수정일 · Last updated · Dernière mise à jour : 2026-10-23</p>
 
 <nav>
   <a href="#ko">한국어</a>
@@ -70,7 +70,8 @@
 <ul>
   <li>앱은 허용된 은행·카드·결제 앱 알림의 제목과 본문을 읽어 <strong>사용처·금액·화폐·거래 종류·시각</strong>을 추출합니다. 중복 대조 정보는 기기에 보관합니다.</li>
   <li>알림 원문은 저장하거나 전송하지 않습니다.</li>
-  <li>메신저·메일·브라우저·소셜 앱(카카오톡, 인스타그램, 메일, 인터넷 브라우저, 기본 문자 앱 등)의 알림은 읽지 않습니다. 이용자가 해당 앱을 결제 앱으로 직접 등록한 경우에만 검토 목록으로 보냅니다.</li>
+  <li>문자 알림은 별도 동의를 켠 경우에만 기본 SMS 앱이 표시한 본문과 발신자를 기기 안에서 검사합니다. 금융 거래 완료 표현이 있는 알림만 후보로 만들고, 이용자가 신뢰한 발신자만 자동 기록합니다. 발신자 표시와 앱별 발신자 식별 해시는 로컬 설정에 보관하며 공유 파일과 서버에는 보내지 않습니다. 발신자 표시는 위조될 수 있고, 신뢰는 은행의 진위를 인증하지 않습니다. 문자함·과거 문자·연락처는 읽지 않고 SMS 읽기 권한을 요청하지 않습니다. 알림이 숨겨지거나 인식하지 못하는 형식이면 가져오지 못합니다.</li>
+  <li>다른 메신저·메일·브라우저·소셜 앱의 알림은 자동 감지하지 않습니다. 이용자가 해당 앱을 직접 등록한 경우에도 검토만 가능하며 자동 기록하지 않습니다. 문자 감지를 끄면 신뢰한 문자 발신자의 감지와 미처리 문자 후보도 중단·제거됩니다. 이미 저장한 지출은 남습니다.</li>
   <li>알림 접근은 Android 설정에서 언제든 해제할 수 있고, 해제하면 즉시 중단됩니다.</li>
 </ul>
 
@@ -137,7 +138,8 @@
 <ul>
   <li>The app reads notification titles and bodies from permitted banking, card and payment apps and extracts <strong>the merchant, amount, currency, transaction type and time</strong>. Duplicate-matching information stays on your device.</li>
   <li>Raw notification text is never stored or transmitted.</li>
-  <li>Notifications from messaging, mail, browser and social apps (KakaoTalk, Instagram, mail clients, web browsers, the default SMS app and similar) are not read. They reach the review list only if you registered that app as a payment source on purpose.</li>
+  <li>SMS notification text and senders from the default SMS app are checked locally only after a separate opt-in. Only financial-completion alerts become candidates; only senders you trust may be recorded automatically. Sender labels and app-scoped sender hashes remain in local settings, excluded from shared files and servers. Sender labels can be spoofed; trust does not authenticate the bank. The SMS inbox, past messages and contacts are not read, and SMS-reading permission is not requested. Hidden notifications and unsupported formats cannot be imported.</li>
+  <li>Other messaging, mail, browser and social apps are not automatically detected. If deliberately registered, they remain review-only. Turning SMS detection off stops even trusted SMS senders and removes unprocessed SMS candidates. Previously saved expenses remain.</li>
   <li>You can revoke notification access at any time in Android settings; recording stops immediately.</li>
 </ul>
 
@@ -204,7 +206,8 @@
 <ul>
   <li>L’application lit les notifications des applications bancaires, de carte et de paiement autorisées pour extraire <strong>le commerçant, le montant, la devise, le type et la date de l’opération</strong>. Les informations de rapprochement restent sur l’appareil.</li>
   <li>Le texte brut des notifications n'est ni enregistré ni transmis.</li>
-  <li>Les notifications des applications de messagerie, de courriel, de navigation et des réseaux sociaux (KakaoTalk, Instagram, clients de messagerie, navigateurs web, application SMS par défaut, etc.) ne sont pas lues. Elles ne parviennent à la liste de vérification que si vous avez délibérément enregistré cette application comme source de paiement.</li>
+  <li>Le texte et l’expéditeur des notifications de l’application SMS par défaut ne sont analysés localement qu’après un consentement distinct. Seules les alertes d’opérations financières effectuées deviennent des suggestions ; seuls les expéditeurs approuvés peuvent être enregistrés automatiquement. Les noms et empreintes d’expéditeur propres à l’application restent dans les réglages locaux, exclus des fichiers partagés et des serveurs. Un nom peut être usurpé ; l’approbation n’authentifie pas la banque. La boîte SMS, les anciens messages et les contacts ne sont pas lus ; aucune permission de lecture des SMS n’est demandée. Les notifications masquées ou formats non reconnus ne sont pas importés.</li>
+  <li>Les autres messageries, courriels, navigateurs et réseaux sociaux ne sont pas détectés automatiquement. Même enregistrés délibérément, ils restent soumis à vérification. Désactiver la détection SMS arrête les expéditeurs approuvés et retire les suggestions SMS non traitées. Les dépenses déjà enregistrées restent conservées.</li>
   <li>Vous pouvez révoquer l'accès à tout moment dans les réglages Android ; l'enregistrement cesse immédiatement.</li>
 </ul>
 

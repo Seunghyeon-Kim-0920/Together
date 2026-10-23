@@ -249,6 +249,17 @@ test("undo is idempotent after durable reload and explicit separated sources can
   assert.throws(() => joinPaymentReceipt(next, { ledgerIndex: 0, receiptIndex: 0, receipt: next.automationPaymentReceipts![0] }, alerts[1]), /payment-merge-conflict/);
 });
 
+test("merge undo retains a source's saved transaction type", () => {
+  const { state, ledger, alerts } = undoFixture();
+  const receipts = ledger.automationPaymentReceipts!.map((receipt) => ({ ...receipt, sources: receipt.sources.map((source) => ({ ...source, eventType: "purchase" as const })) }));
+  const typedLedger = { ...ledger, automationPaymentReceipts: receipts };
+  const result = undoPaymentMerge({ ...state, ledgers: [typedLedger] }, ledger.id, alerts[0].expenseId, alerts[1].expenseId);
+  const reloaded = parseWalletStateStrict(JSON.parse(JSON.stringify(result.state))); assert.ok(reloaded);
+  const restored = reloaded.ledgers[0]; assert.ok(restored.kind === "general");
+  assert.equal(restored.expenses[1].transactionType, "purchase");
+  assert.equal(restored.expenses[1].description, alerts[1].merchant);
+});
+
 test("undoing a three-app group one source at a time preserves all reciprocal separation evidence", () => {
   const { state, ledger, alerts } = undoFixture(3);
   const one = undoPaymentMerge(state, ledger.id, alerts[0].expenseId, alerts[1].expenseId);

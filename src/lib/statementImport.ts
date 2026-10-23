@@ -2,7 +2,7 @@ import { currencyDigits } from "./currency";
 import { publicExpenseId } from "./expenseIdentity";
 import { merchantDisplayName } from "./merchant";
 import type { LedgerShareDocument } from "./share";
-import { GENERAL_CATEGORIES, TRAVEL_CATEGORIES, type GeneralCategory, type GeneralExpense, type Ledger, type StatementImportReceipt, type WalletState } from "./types";
+import { EXPENSE_TRANSACTION_TYPES, GENERAL_CATEGORIES, TRAVEL_CATEGORIES, type ExpenseTransactionType, type GeneralCategory, type GeneralExpense, type Ledger, type StatementImportReceipt, type WalletState } from "./types";
 import { createLedger, MAX_EXPENSES_PER_LEDGER, MAX_LEDGERS, parseWalletStateStrict, splitEvenly } from "./wallet";
 
 /** Extraction is intentionally separate from interpreting money. Nothing in
@@ -40,6 +40,8 @@ export interface StatementImportRow {
   readonly currency: string;
   readonly minorUnits: number;
   readonly category: GeneralCategory;
+  /** Present in this app's structured ledger attachments; never inferred from a name. */
+  readonly transactionType?: ExpenseTransactionType;
   readonly reviewReasons: readonly StatementIssueReason[];
   readonly raw: readonly string[];
   readonly selected: boolean;
@@ -522,6 +524,7 @@ export function previewExpenseDocument(document: ReadExpenseDocument, options: S
 /** Review reasons are informational after a user edits a row. Fields are
  * revalidated independently at commit; no earlier preview is trusted. */
 export function validateStatementImportRow(row: StatementImportRow): boolean {
+  if (row.transactionType !== undefined && !EXPENSE_TRANSACTION_TYPES.includes(row.transactionType)) return false;
   return typeof row.id === "string" && row.id.trim().length > 0 && row.id.length <= 100 && typeof row.description === "string" && row.description.trim().length > 0 && row.description.trim().length <= 500 && currencyCode(row.currency) === row.currency && Number.isSafeInteger(row.minorUnits) && row.minorUnits > 0 && parseStatementDate(row.occurredOn, "ymd") === row.occurredOn && GENERAL_CATEGORIES.includes(row.category) && (row.sourceOccurrence === undefined || Number.isSafeInteger(row.sourceOccurrence) && row.sourceOccurrence >= 0 && row.sourceOccurrence < MAX_SOURCE_ROWS) && (row.transactionKey === undefined || /^statement-transaction-[0-9a-f]{16}$/u.test(row.transactionKey)) && (row.reconciledAdjustmentIds === undefined || Array.isArray(row.reconciledAdjustmentIds) && row.reconciledAdjustmentIds.length <= MAX_SOURCE_ROWS && new Set(row.reconciledAdjustmentIds).size === row.reconciledAdjustmentIds.length && row.reconciledAdjustmentIds.every((id) => /^statement-adjustment-[0-9a-f]{16}$/u.test(id)));
 }
 
@@ -608,7 +611,7 @@ export function applyStatementImport(state: WalletState, rows: readonly Statemen
   if (!result) throw new Error("invalid_import");
   return Object.freeze({ state: result, added: accepted.length, duplicates, adjusted, removed, acknowledged, ledgerIds: Object.freeze(ledgerIds) });
 }
-function toGeneralExpense(row: StatementImportRow): GeneralExpense { return Object.freeze({ id: row.id, description: row.description.trim(), category: row.category, occurredOn: row.occurredOn, currency: row.currency, minorUnits: row.minorUnits }); }
+function toGeneralExpense(row: StatementImportRow): GeneralExpense { return Object.freeze({ id: row.id, description: row.description.trim(), category: row.category, occurredOn: row.occurredOn, currency: row.currency, minorUnits: row.minorUnits, ...(row.transactionType ? { transactionType: row.transactionType } : {}) }); }
 function importReceipts(row: StatementImportRow): StatementImportReceipt[] {
   return [Object.freeze({ kind: "payment" as const, id: row.id, expenseId: row.id, ...(row.transactionKey ? { transactionKey: row.transactionKey } : {}) }), ...(row.reconciledAdjustmentIds ?? []).map((id) => Object.freeze({ kind: "adjustment" as const, id, expenseId: row.id }))];
 }

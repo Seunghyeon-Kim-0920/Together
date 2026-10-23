@@ -46,6 +46,13 @@
         </receiver>
     </application>
 
+    <!-- Package visibility for the user's default SMS app; no SMS permission. -->
+    <queries>
+        <intent>
+            <action android:name="android.provider.Telephony.SMS_DELIVER" />
+        </intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />

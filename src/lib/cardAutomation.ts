@@ -1,5 +1,6 @@
 import { GENERAL_CATEGORIES } from "./types";
 import { createCategoryResolver } from "./categoryInference";
+import { isSmsSenderSource } from "./smsAutomation";
 export { inferGeneralCategory } from "./categoryInference";
 import { monthKey, monthTotal } from "./statistics";
 import type { AutomationPaymentReceipt, AutomationSource, GeneralCategory, GeneralExpense, GeneralLedger, Locale, WalletState } from "./types";
@@ -76,9 +77,10 @@ export interface MonthlyLimitStatus {
 }
 
 export interface NativeAutomationConfiguration {
-  readonly ledgers: readonly { readonly ledgerId: string; readonly title: string; readonly currency: string; readonly monthlyLimitMinor: number | null; readonly spentMinor: number; readonly month: string; readonly locale: Locale; readonly automationAllApps: boolean }[];
+  readonly ledgers: readonly { readonly ledgerId: string; readonly title: string; readonly currency: string; readonly monthlyLimitMinor: number | null; readonly spentMinor: number; readonly month: string; readonly locale: Locale; readonly automationAllApps: boolean; readonly automationSmsNotifications: boolean }[];
   readonly sources: readonly { readonly packageName: string; readonly ledgerId: string; readonly currency: string }[];
   readonly detectAllApps: boolean;
+  readonly detectSmsNotifications: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
@@ -128,6 +130,7 @@ export function visibleCardCandidates(ledgers: WalletState["ledgers"], activeLed
   const active = ledgers.find((ledger) => ledger.id === activeLedgerId);
   if (!active || active.kind !== "general") return Object.freeze([]);
   return Object.freeze(candidates.filter((candidate) => {
+    if (isSmsSenderSource(candidate.packageName) && !active.automationSmsNotifications) return false;
     const owners = candidateOwnerLedgerIds(ledgers, candidate);
     // Foreign-currency items remain visible with a blocking explanation. Never
     // convert their money or silently hide an unresolved bank notification.
@@ -203,7 +206,7 @@ function candidateExpense(candidate: NativeCardCandidate, category: GeneralCateg
   // original native draft. A replay of that unchanged alert must remain an
   // idempotent acknowledgement rather than looking like a changed identity.
   const automationFingerprint = completedDraftOrigins.get(candidate) ?? automationOriginFingerprint(candidate);
-  return Object.freeze({ id, description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits, occurredOn: candidateDate(candidate), automationFingerprint, automationReversalFingerprint: automationReversalFingerprint(candidate) });
+  return Object.freeze({ id, description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits, occurredOn: candidateDate(candidate), ...(candidate.eventType !== "reversal" ? { transactionType: candidate.eventType } : {}), automationFingerprint, automationReversalFingerprint: automationReversalFingerprint(candidate) });
 }
 
 function duplicateEvidence(candidate: NativeCardCandidate, id = automationExpenseId(candidate), category?: GeneralCategory): PaymentDuplicateEvidence {
@@ -232,7 +235,9 @@ function identityConflictCandidate(candidate: NativeCardCandidate): NativeCardCa
 }
 
 export function candidateOwnerLedgerIds(ledgers: readonly WalletState["ledgers"][number][], candidate: NativeCardCandidate): readonly string[] {
-  const eligible = ledgers.filter((ledger): ledger is GeneralLedger => ledger.kind === "general" && ledger.currency === candidate.currency);
+  const sms = isSmsSenderSource(candidate.packageName);
+  const eligible = ledgers.filter((ledger): ledger is GeneralLedger => ledger.kind === "general" && ledger.currency === candidate.currency
+    && (!sms || ledger.automationSmsNotifications === true));
   if (candidate.eventType === "reversal") {
     const fingerprint = automationReversalFingerprint(candidate);
     const receiptOwners = eligible.filter((ledger) => ledger.automationPaymentReceipts?.some((receipt) => receipt.sources.some((source) => source.reversalFingerprint === fingerprint)));
@@ -242,7 +247,7 @@ export function candidateOwnerLedgerIds(ledgers: readonly WalletState["ledgers"]
   // An exact user assignment always wins over broad discovery. Otherwise a
   // same-currency discovery ledger could make an already trusted source look
   // ambiguous and silently stop its automatic records.
-  const owners = explicit.length ? explicit : eligible.filter((ledger) => ledger.automationAllApps);
+  const owners = explicit.length ? explicit : eligible.filter((ledger) => sms ? ledger.automationSmsNotifications : ledger.automationAllApps);
   return Object.freeze(owners.map((ledger) => ledger.id));
 }
 
@@ -277,6 +282,25 @@ export function reversalMatchIndexes(expenses: readonly GeneralExpense[], candid
   return Object.freeze(expenses.flatMap((expense, index) => isAutomatedExpense(expense) && expense.occurredOn <= candidate.occurredOn && (expense.automationReversalFingerprint === fingerprint || linkedIds.has(expense.id)) ? [index] : []));
 }
 
+const AUTOMATIC_REVERSAL_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
+
+function hasUniqueRecentReversalReceipt(ledger: GeneralLedger, candidate: NativeCardCandidate, expense: GeneralExpense): boolean {
+  const fingerprint = automationReversalFingerprint(candidate);
+  // A separate refund/cancellation notification normally has a new native id.
+  // Require durable evidence from the same issuer, not just the editable name
+  // and amount. Include removed receipts when counting ambiguity: a repeated
+  // cancellation must not be applied to a newer identical purchase.
+  const receipts = (ledger.automationPaymentReceipts ?? []).filter((receipt) => receipt.currency === candidate.currency
+    && receipt.minorUnits === candidate.minorUnits
+    && receipt.sources.some((source) => source.packageName === candidate.packageName && source.reversalFingerprint === fingerprint));
+  if (receipts.length !== 1 || receipts[0].expenseId !== expense.id) return false;
+  return receipts[0].sources.some((source) => {
+    if (source.packageName !== candidate.packageName || source.reversalFingerprint !== fingerprint) return false;
+    const elapsed = Date.parse(candidate.occurredAt) - Date.parse(source.occurredAt);
+    return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= AUTOMATIC_REVERSAL_WINDOW_MS;
+  });
+}
+
 export function applyHighConfidenceCardAutomation(state: WalletState, candidates: readonly NativeCardCandidate[]): AutomationBatchResult {
   const resolveCategory = createCategoryResolver(state.ledgers);
   const ledgers = [...state.ledgers]; const acknowledgedIds = new Set<string>(); const insertedIds: string[] = []; const reversedIds: string[] = []; const pending: NativeCardCandidate[] = [];
@@ -294,6 +318,10 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     || Number(Boolean(left.requiresMerchant)) - Number(Boolean(right.requiresMerchant))
     || Number(left.confidence !== "high") - Number(right.confidence !== "high"));
   for (const candidate of orderedCandidates) {
+    // SMS requires its own local opt-in, even when the sender was trusted
+    // earlier or broad bank-app discovery is enabled. Never acknowledge a
+    // stale opt-out event; native code purges it when configuration arrives.
+    if (isSmsSenderSource(candidate.packageName) && !ledgers.some((ledger) => ledger.kind === "general" && ledger.automationSmsNotifications)) continue;
     const expenseId = automationExpenseId(candidate);
     const origin = automationOriginFingerprint(candidate);
     if (candidate.eventType !== "reversal") {
@@ -335,7 +363,7 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     }
     // An app trusted for a different ledger currency does not grant permission
     // to auto-book foreign spending, even if a second currency ledger exists.
-    if (ledgers.some((item) => item.kind === "general" && item.currency !== candidate.currency
+    if (ledgers.some((item) => item.kind === "general" && (!isSmsSenderSource(candidate.packageName) || item.automationSmsNotifications) && item.currency !== candidate.currency
       && item.automationSources.some((source) => source.packageName === candidate.packageName))) {
       pending.push(Object.freeze({ ...candidate, confidence: "review", currencyReview: true })); continue;
     }
@@ -367,7 +395,8 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     const index = owners[0]; const ledger = ledgers[index];
     if (ledger.kind !== "general") { pending.push(candidate); continue; }
     const knownLinkedReversal = candidate.eventType === "reversal" && ledger.automationPaymentReceipts?.some((receipt) => receipt.sources.some((source) => source.expenseId === expenseId))
-      && ledgers.some((item) => item.kind === "general" && item.automationSources.some((source) => source.packageName === candidate.packageName));
+      && ledgers.some((item) => item.kind === "general" && (!isSmsSenderSource(candidate.packageName) || item.automationSmsNotifications)
+        && item.automationSources.some((source) => source.packageName === candidate.packageName));
     if (!knownLinkedReversal && !ledger.automationSources.some((source) => source.packageName === candidate.packageName)) {
       pending.push(Object.freeze({ ...candidate, confidence: "review" }));
       continue;
@@ -384,11 +413,16 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
         else pending.push(Object.freeze({ ...candidate, confidence: "review" }));
         continue;
       }
-      // Merchant and amount alone are never enough for an automatic delete.
-      // Only an updated notification with the same stable event id may remove
-      // its purchase. Other unique matches remain available for user review.
+      // A stable native id or one recent durable issuer receipt can identify
+      // the original expense. A partial refund or a user-edited amount must
+      // never delete the whole expense, even when the native id is unchanged.
       const linkedIds = new Set((ledger.automationPaymentReceipts ?? []).filter((receipt) => receipt.sources.some((source) => source.expenseId === expenseId)).map((receipt) => receipt.expenseId));
-      const exactMatches = matches.filter((expenseIndex) => ledger.expenses[expenseIndex].id === expenseId || linkedIds.has(ledger.expenses[expenseIndex].id));
+      const exactMatches = matches.filter((expenseIndex) => {
+        const expense = ledger.expenses[expenseIndex];
+        return expense.currency === candidate.currency && expense.minorUnits === candidate.minorUnits
+          && (expense.id === expenseId || linkedIds.has(expense.id)
+            || matches.length === 1 && hasUniqueRecentReversalReceipt(ledger, candidate, expense));
+      });
       if (exactMatches.length !== 1) { pending.push(Object.freeze({ ...candidate, confidence: "review" })); continue; }
       const removed = ledger.expenses[exactMatches[0]];
       const automationReversalIds = appendReversalIds(ledger.automationReversalIds, [removed.id, expenseId, reversalFingerprint, ...(removed.automationFingerprint ? [removed.automationFingerprint] : [])]);
@@ -412,6 +446,7 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
   if (candidate.requiresMerchant || !parseNativeCardCandidate(candidate)) throw new Error("incomplete candidate");
   const index = state.ledgers.findIndex((ledger) => ledger.id === ledgerId); const ledger = state.ledgers[index];
   if (!ledger || ledger.kind !== "general" || ledger.currency !== candidate.currency) throw new Error("incompatible candidate");
+  if (isSmsSenderSource(candidate.packageName) && !ledger.automationSmsNotifications) throw new Error("incompatible candidate");
   const category = createCategoryResolver(state.ledgers)(candidate.merchant, ledger.id, candidate.categoryHint);
   const expenseId = automationExpenseId(candidate);
   const movedExpenseIds = new Set(state.ledgers.flatMap((item) => item.kind === "general" ? item.movedExpenseIds ?? [] : []));
@@ -494,14 +529,17 @@ export function buildNativeAutomationConfiguration(state: WalletState, locale: L
   const currentMonth = monthKey(now); const generalLedgers = state.ledgers.filter((ledger): ledger is GeneralLedger => ledger.kind === "general");
   const ownerCount = new Map<string, number>();
   for (const ledger of generalLedgers) for (const source of ledger.automationSources) {
+    if (isSmsSenderSource(source.packageName) && !ledger.automationSmsNotifications) continue;
     const key = `${source.packageName}\u0000${ledger.currency}`;
     ownerCount.set(key, (ownerCount.get(key) ?? 0) + 1);
   }
   return Object.freeze({
-    ledgers: Object.freeze(generalLedgers.map((ledger) => Object.freeze({ ledgerId: ledger.id, title: ledger.title, currency: ledger.currency, monthlyLimitMinor: ledger.monthlyLimitMinor, spentMinor: monthTotal(ledger.expenses, currentMonth), month: currentMonth, locale, automationAllApps: ledger.automationAllApps }))),
+    ledgers: Object.freeze(generalLedgers.map((ledger) => Object.freeze({ ledgerId: ledger.id, title: ledger.title, currency: ledger.currency, monthlyLimitMinor: ledger.monthlyLimitMinor, spentMinor: monthTotal(ledger.expenses, currentMonth), month: currentMonth, locale, automationAllApps: ledger.automationAllApps, automationSmsNotifications: ledger.automationSmsNotifications === true }))),
     // Ambiguous package assignments are never sent to native code: assigning
     // a purchase to the first ledger would silently corrupt another ledger.
-    sources: Object.freeze(generalLedgers.flatMap((ledger) => ledger.automationSources.filter((source) => ownerCount.get(`${source.packageName}\u0000${ledger.currency}`) === 1).map((source: AutomationSource) => Object.freeze({ packageName: source.packageName, ledgerId: ledger.id, currency: ledger.currency })))),
+    sources: Object.freeze(generalLedgers.flatMap((ledger) => ledger.automationSources.filter((source) => (!isSmsSenderSource(source.packageName) || ledger.automationSmsNotifications === true)
+      && ownerCount.get(`${source.packageName}\u0000${ledger.currency}`) === 1).map((source: AutomationSource) => Object.freeze({ packageName: source.packageName, ledgerId: ledger.id, currency: ledger.currency })))),
     detectAllApps: generalLedgers.some((ledger) => ledger.automationAllApps),
+    detectSmsNotifications: generalLedgers.some((ledger) => ledger.automationSmsNotifications === true),
   });
 }

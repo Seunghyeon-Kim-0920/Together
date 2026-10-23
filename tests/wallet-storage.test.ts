@@ -3,8 +3,27 @@ import test from "node:test";
 import { WebWalletRepository } from "../src/lib/storage";
 import { legacyPublicExpenseId, publicExpenseId } from "../src/lib/expenseIdentity";
 import { createLedgerSharePayload, createTravelSharePayload, createTravelShareText, parseLedgerShareDocument, parseLedgerSharePayload, parseTravelSharePayload, safeFilename } from "../src/lib/share";
-import { EMPTY_WALLET_STATE, type TravelLedger } from "../src/lib/types";
+import { EMPTY_WALLET_STATE, type GeneralLedger, type TravelLedger } from "../src/lib/types";
 import { createLedger, createTravelExpense, MAX_AUTOMATION_SOURCES, mergeGeneralLedgers, mergeTravelLedgerMutation, parseWalletState, parseWalletStateStrict, replaceLedger } from "../src/lib/wallet";
+import { isSmsSenderSource, smsText } from "../src/lib/smsAutomation";
+
+test("SMS notification consent is explicit local state and never imported through a shared ledger", () => {
+  const senderSource = `walletdiary.sms.s${"a".repeat(64)}`;
+  assert.equal(isSmsSenderSource(senderSource), true);
+  assert.equal(isSmsSenderSource("com.google.android.apps.messaging"), false);
+  const ledger = { ...createLedger("general", "Local", "EUR"), automationSmsNotifications: true,
+    automationSources: [{ packageName: senderSource, displayName: "SMS · Example Bank", trustedDirectApp: true as const }] };
+  const state = { ...EMPTY_WALLET_STATE, ledgers: [ledger], activeLedgerId: ledger.id };
+  const stored = parseWalletStateStrict(state)?.ledgers[0];
+  assert.ok(stored?.kind === "general" && stored.automationSmsNotifications);
+  assert.equal(parseWalletStateStrict({ ...state, ledgers: [{ ...ledger, automationSmsNotifications: "yes" }] }), null);
+  const publicPayload = createLedgerSharePayload(ledger);
+  assert.equal(publicPayload.includes("automationSmsNotifications"), false);
+  assert.equal(publicPayload.includes(senderSource), false);
+  const imported = parseLedgerSharePayload(publicPayload);
+  assert.ok(imported?.kind === "general" && imported.automationSmsNotifications === false);
+  for (const locale of ["ko", "en", "fr"] as const) assert.ok(smsText(locale, "consent").length > 100);
+});
 
 test("queued travel deletions and stale edits never restore removed expenses", () => {
   const expense = (id: string) => ({ ...createTravelExpense({ description: id, category: "food", currency: "EUR", minorUnits: 1000, occurredOn: "2026-09-01", paidBy: "a", participantIds: ["a", "b"] }), id });
@@ -127,6 +146,26 @@ test("legacy general ledgers migrate private automation settings to safe default
   assert.equal(parsed.automationAllApps, false);
   assert.deepEqual(parsed.automationSources, []);
   assert.deepEqual(parsed.automationReversalIds, []);
+});
+
+test("general shares retain transfer types from saved fields and legacy receipts without exposing bank evidence", () => {
+  for (const transactionType of ["purchase", "outgoing_transfer", "direct_debit", "standing_order"] as const) {
+    for (const legacy of [false, true]) {
+      const expense = { id: "card-auto-0123456789abcdef", description: "김예시", category: "other" as const, currency: "KRW", minorUnits: 15000, occurredOn: "2026-10-17", ...(legacy ? {} : { transactionType }) };
+      const ledger: GeneralLedger = { ...createLedger("general", "생활", "KRW"), expenses: [expense], automationPaymentReceipts: [{
+        expenseId: expense.id, merchant: expense.description, currency: expense.currency, minorUnits: expense.minorUnits,
+        sources: [{ expenseId: expense.id, packageName: "com.example.privatebank", occurredAt: "2026-10-17T12:15:00+09:00", eventType: transactionType, originFingerprint: "card-origin-0123456789abcdef", reversalFingerprint: "card-reversal-0123456789abcdef" }],
+      }] };
+      const loaded = parseWalletStateStrict(JSON.parse(JSON.stringify({ ...EMPTY_WALLET_STATE, activeLedgerId: ledger.id, ledgers: [ledger] }))); assert.ok(loaded);
+      const payload = createLedgerSharePayload(loaded.ledgers[0]);
+      for (const privateValue of ["automationPaymentReceipts", "com.example.privatebank", "card-origin-", "card-reversal-"]) assert.equal(payload.includes(privateValue), false);
+      const imported = parseLedgerSharePayload(payload); assert.ok(imported?.kind === "general");
+      assert.equal(imported.expenses[0].transactionType, transactionType);
+      assert.equal(imported.expenses[0].description, "김예시");
+      assert.equal(imported.expenses[0].minorUnits, 15000);
+      assert.equal(imported.expenses[0].occurredOn, "2026-10-17");
+    }
+  }
 });
 
 test("invalid monthly limits and notification-source settings are rejected", () => {

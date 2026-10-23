@@ -9,6 +9,7 @@ import { t } from "../lib/i18n";
 import { cardAutomationConnectionState, cardAutomationPlugin, type CardAutomationStatus } from "../lib/nativeCardAutomation";
 import { notificationText as n } from "../lib/notificationI18n";
 import type { AutomationSource, GeneralLedger, Locale } from "../lib/types";
+import { isSmsSenderSource, smsText } from "../lib/smsAutomation";
 import { SheetFrame } from "./Sheets";
 
 type Notify = (message: string, tone?: "success" | "error" | "info") => void;
@@ -19,7 +20,7 @@ export function GeneralLedgerAutomation({ ledger, locale, selectedMonth, status,
   const limit = useMemo(() => calculateMonthlyLimitStatus(ledger, selectedMonth), [ledger, selectedMonth]);
   const progress = Math.min(limit.percent ?? 0, 100);
   const connection = cardAutomationConnectionState(status);
-  const captureConfigured = ledger.automationAllApps || ledger.automationSources.length > 0;
+  const captureConfigured = ledger.automationAllApps || ledger.automationSmsNotifications || ledger.automationSources.some((source) => !isSmsSenderSource(source.packageName));
 
   const saveLimit = async (monthlyLimitMinor: number | null) => {
     if (!await onChange(Object.freeze({ ...ledger, monthlyLimitMinor, updatedAt: new Date().toISOString() }))) return;
@@ -49,7 +50,7 @@ export function GeneralLedgerAutomation({ ledger, locale, selectedMonth, status,
       </button>
     </section>
     {limitOpen ? <MonthlyLimitSheet ledger={ledger} locale={locale} onClose={() => setLimitOpen(false)} onSave={saveLimit} onNotify={onNotify} /> : null}
-    {automationOpen ? <CardAutomationSheet ledger={ledger} locale={locale} status={status} pending={pending} busy={busy} onRefresh={onRefresh} onOpenAccessSettings={onOpenAccessSettings} onRequestAlertPermission={onRequestAlertPermission} onToggleAllPaymentApps={onToggleAllPaymentApps} onRegisterSource={onRegisterSource} onRemoveSource={onRemoveSource} onConfirm={onConfirm} onDismiss={onDismiss} onClose={() => setAutomationOpen(false)} /> : null}
+    {automationOpen ? <CardAutomationSheet ledger={ledger} locale={locale} status={status} pending={pending} busy={busy} onRefresh={onRefresh} onOpenAccessSettings={onOpenAccessSettings} onRequestAlertPermission={onRequestAlertPermission} onToggleAllPaymentApps={onToggleAllPaymentApps} onRegisterSource={onRegisterSource} onRemoveSource={onRemoveSource} onConfirm={onConfirm} onDismiss={onDismiss} onChange={onChange} onClose={() => setAutomationOpen(false)} /> : null}
   </>;
 }
 
@@ -72,15 +73,22 @@ function MonthlyLimitSheet({ ledger, locale, onClose, onSave, onNotify }: { ledg
   </SheetFrame>;
 }
 
-function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh, onOpenAccessSettings, onRequestAlertPermission, onToggleAllPaymentApps, onRegisterSource, onRemoveSource, onConfirm, onDismiss, onClose }: { ledger: GeneralLedger; locale: Locale; status: CardAutomationStatus; pending: readonly NativeCardCandidate[]; busy: boolean; onRefresh: () => void; onOpenAccessSettings: () => void; onRequestAlertPermission: () => void; onToggleAllPaymentApps: (enabled: boolean) => void; onRegisterSource: (source: AutomationSource) => void; onRemoveSource: (packageName: string) => void; onConfirm: (candidate: NativeCardCandidate, asNewTransaction?: boolean) => void; onDismiss: (candidate: NativeCardCandidate) => void; onClose: () => void }) {
+function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh, onOpenAccessSettings, onRequestAlertPermission, onToggleAllPaymentApps, onRegisterSource, onRemoveSource, onConfirm, onDismiss, onChange, onClose }: { ledger: GeneralLedger; locale: Locale; status: CardAutomationStatus; pending: readonly NativeCardCandidate[]; busy: boolean; onRefresh: () => void; onOpenAccessSettings: () => void; onRequestAlertPermission: () => void; onToggleAllPaymentApps: (enabled: boolean) => void; onRegisterSource: (source: AutomationSource) => void; onRemoveSource: (packageName: string) => void; onConfirm: (candidate: NativeCardCandidate, asNewTransaction?: boolean) => void; onDismiss: (candidate: NativeCardCandidate) => void; onChange: (ledger: GeneralLedger) => Promise<boolean>; onClose: () => void }) {
   const registeredPackages = useMemo(() => new Set(ledger.automationSources.map((source) => source.packageName)), [ledger.automationSources]);
   const [directAppConfirmations, setDirectAppConfirmations] = useState<ReadonlySet<string>>(() => new Set());
   const [newTransactionConfirmations, setNewTransactionConfirmations] = useState<ReadonlySet<string>>(() => new Set());
   const [merchantDrafts, setMerchantDrafts] = useState<Readonly<Record<string, string>>>({});
   const [rechecking, setRechecking] = useState(false);
   const [recheckError, setRecheckError] = useState(false);
+  const [savingSms, setSavingSms] = useState(false);
   const connection = cardAutomationConnectionState(status);
-  const captureConfigured = ledger.automationAllApps || ledger.automationSources.length > 0;
+  const captureConfigured = ledger.automationAllApps || ledger.automationSmsNotifications || ledger.automationSources.some((source) => !isSmsSenderSource(source.packageName));
+  const toggleSms = async (enabled: boolean) => {
+    if (savingSms) return;
+    setSavingSms(true);
+    try { await onChange(Object.freeze({ ...ledger, automationSmsNotifications: enabled, updatedAt: new Date().toISOString() })); }
+    finally { setSavingSms(false); }
+  };
   const recheck = async () => {
     if (rechecking) return;
     setRechecking(true); setRecheckError(false);
@@ -116,11 +124,13 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh,
       </div>
       <label className="all-apps-toggle"><span><Globe2 /><b>{t(locale, "allPaymentApps")}</b><small>{t(locale, "allPaymentAppsHelp")}</small></span><input type="checkbox" role="switch" checked={ledger.automationAllApps} disabled={busy} onChange={(event) => onToggleAllPaymentApps(event.target.checked)} /></label>
       {!ledger.automationAllApps ? <p className="reversal-help">{n(locale, "discoveryOff")}</p> : null}
+      <label className="all-apps-toggle"><span><ReceiptText /><b>{smsText(locale, "title")}</b><small>{smsText(locale, "consent")}</small></span><input type="checkbox" role="switch" checked={ledger.automationSmsNotifications === true} disabled={busy || savingSms} onChange={(event) => void toggleSms(event.target.checked)} /></label>
+      {!ledger.automationSmsNotifications && ledger.automationSources.some((source) => isSmsSenderSource(source.packageName)) ? <p className="reversal-help">{smsText(locale, "off")}</p> : null}
       <details className="notification-diagnostics"><summary>{n(locale, "recentChecks")}</summary><p className="sheet-intro">{n(locale, "recentChecksHelp")}</p>{status.lastRecoveryError ? <p className="exchange-error">{n(locale, "recoveryFailed")}</p> : null}<ul>{([
         ["lastListenerConnectedAt", "lastConnected"], ["lastListenerDisconnectedAt", "lastDisconnected"], ["lastRecoveryRequestedAt", "lastRecovery"], ["lastProcessingFailureAt", "lastProcessingFailure"],
       ] as const).map(([field, label]) => status[field] ? <li key={field}><strong>{n(locale, label)}</strong><small>{dateFormatter.format(new Date(status[field]))}</small></li> : null)}</ul>{status.recentChecks?.length ? <ul>{status.recentChecks.map((check) => <li key={check.packageName}><strong>{check.sourceName}</strong><span>{n(locale, check.recognized ? "recognized" : "notRecognized")}</span><small>{dateFormatter.format(new Date(check.checkedAt))}</small>{registeredPackages.has(check.packageName) ? null : <button type="button" disabled={busy} onClick={() => onRegisterSource(Object.freeze({ packageName: check.packageName, displayName: check.sourceName, trustedDirectApp: true }))}>{t(locale, "registerSource")}</button>}</li>)}</ul> : <p className="automation-empty">{n(locale, "noChecks")}</p>}</details>
       <div className="automation-section-heading"><h3>{t(locale, "registeredSources")}</h3><button type="button" disabled={busy} onClick={onRefresh}><RefreshCw />{t(locale, "refresh")}</button></div>
-      {ledger.automationSources.length ? <div className="automation-source-list">{ledger.automationSources.map((source) => <article key={source.packageName}><div><strong>{source.displayName}</strong><small>{source.packageName}</small></div><button type="button" disabled={busy} onClick={() => onRemoveSource(source.packageName)} aria-label={`${t(locale, "removeCardApp")}: ${source.displayName}`}><Trash2 /></button></article>)}</div> : <p className="automation-empty">{t(locale, "noRegisteredSources")}</p>}
+      {ledger.automationSources.length ? <div className="automation-source-list">{ledger.automationSources.map((source) => <article key={source.packageName}><div><strong>{source.displayName}</strong><small>{isSmsSenderSource(source.packageName) ? smsText(locale, "source") : source.packageName}</small></div><button type="button" disabled={busy} onClick={() => onRemoveSource(source.packageName)} aria-label={`${t(locale, "removeCardApp")}: ${source.displayName}`}><Trash2 /></button></article>)}</div> : <p className="automation-empty">{t(locale, "noRegisteredSources")}</p>}
       <div className="automation-section-heading"><h3>{t(locale, "pendingExpenses")}</h3><span>{pending.length.toLocaleString(locale)}</span></div>
       {pending.length ? <div className="candidate-list">{pending.map((nativeCandidate) => { const draftKey = `${nativeCandidate.packageName}:${nativeCandidate.id}:${nativeCandidate.queueToken ?? ""}`; const draft = merchantDrafts[draftKey]?.trim() ?? ""; const candidate = nativeCandidate.requiresMerchant && draft ? completeCandidateMerchant(nativeCandidate, draft) : nativeCandidate; const wrongCurrency = candidate.currency !== ledger.currency; const movedReversal = isMovedAutomationReversal(ledger, candidate); const reversalHandled = candidate.eventType === "reversal" && ledger.automationReversalIds.includes(automationReversalFingerprint(candidate)); const reversalMatches = reversalHandled ? 0 : reversalMatchIndexes(ledger.expenses, candidate, ledger.automationPaymentReceipts).length; const registered = registeredPackages.has(candidate.packageName); const directAppConfirmed = directAppConfirmations.has(candidate.packageName); return <article key={draftKey}>
         <div className="candidate-heading"><span><strong>{candidate.merchant || n(locale, "merchantUnknown")}</strong><small>{candidate.sourceName} · {dateFormatter.format(new Date(candidate.occurredAt))}</small></span><b>{formatMoney(candidate.minorUnits, candidate.currency, locale)}</b></div>
@@ -130,7 +140,7 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh,
         {candidate.identityConflict || candidate.possibleDuplicate ? <><p className="reversal-help">{n(locale, candidate.possibleDuplicate ? "possibleDuplicateHelp" : "identityConflictHelp")}</p><label className="direct-source-confirm"><input type="checkbox" checked={newTransactionConfirmations.has(draftKey)} disabled={busy} onChange={(event) => setNewTransactionConfirmations((current) => { const next = new Set(current); if (event.target.checked) next.add(draftKey); else next.delete(draftKey); return next; })} /><span>{n(locale, "confirmNewTransaction")}</span></label></> : null}
         <span className={`confidence-chip ${candidate.confidence}`}>{candidate.eventType === "reversal" ? <><RotateCcw />{t(locale, "cancellationReview")}</> : <>{automationEventTypeLabel(locale, candidate.eventType)} · {candidate.confidence === "high" ? automationConfidenceLabel(locale) : t(locale, "needsReview")}</>}</span>
         {candidate.manualOnly ? <p className="reversal-help">{t(locale, "manualReviewSource")}</p> : null}
-        {!registered && !candidate.manualOnly && !wrongCurrency ? <><label className="direct-source-confirm"><input type="checkbox" checked={directAppConfirmed} disabled={busy} onChange={(event) => setDirectAppConfirmations((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.packageName); else next.delete(candidate.packageName); return next; })} /><span>{t(locale, "confirmDirectPaymentApp")}</span></label><button className="wide-secondary" type="button" disabled={busy || !directAppConfirmed} onClick={() => onRegisterSource(Object.freeze({ packageName: candidate.packageName, displayName: candidate.sourceName, trustedDirectApp: true }))}>{t(locale, "registerSource")}</button></> : null}
+        {!registered && !candidate.manualOnly && !wrongCurrency ? <><label className="direct-source-confirm"><input type="checkbox" checked={directAppConfirmed} disabled={busy} onChange={(event) => setDirectAppConfirmations((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.packageName); else next.delete(candidate.packageName); return next; })} /><span>{isSmsSenderSource(candidate.packageName) ? smsText(locale, "confirm") : t(locale, "confirmDirectPaymentApp")}</span></label><button className="wide-secondary" type="button" disabled={busy || !directAppConfirmed} onClick={() => onRegisterSource(Object.freeze({ packageName: candidate.packageName, displayName: candidate.sourceName, trustedDirectApp: true }))}>{isSmsSenderSource(candidate.packageName) ? smsText(locale, "trust") : t(locale, "registerSource")}</button></> : null}
         {candidate.eventType === "reversal" && !movedReversal && reversalMatches !== 1 ? <p className="reversal-help">{t(locale, reversalMatches > 1 ? "cancellationAmbiguous" : "cancellationNoMatch")}</p> : null}
         {movedReversal ? <><p className="reversal-help">{movedReversalNotice(locale)}</p><button className="wide-secondary" type="button" disabled={busy} onClick={reviewTravelLedgers}>{reviewTravelLedgersLabel(locale)}</button></> : null}
         <div className="candidate-actions"><button type="button" disabled={busy} onClick={() => onDismiss(candidate)}><Trash2 />{t(locale, "dismissCandidate")}</button><button className="primary-button" type="button" disabled={busy || ((candidate.identityConflict || candidate.possibleDuplicate) && !newTransactionConfirmations.has(draftKey)) || wrongCurrency || candidate.requiresMerchant || movedReversal || (candidate.eventType === "reversal" && reversalMatches !== 1)} onClick={() => onConfirm(candidate, Boolean((candidate.identityConflict || candidate.possibleDuplicate) && newTransactionConfirmations.has(draftKey)))}><Check />{t(locale, candidate.eventType === "reversal" ? "applyCancellation" : "confirmExpense")}</button></div>

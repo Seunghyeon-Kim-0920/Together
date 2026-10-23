@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.provider.Telephony;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
@@ -43,6 +44,7 @@ final class CardAutomationStore {
     }
 
     static boolean hasCaptureScope(JSONObject configuration) {
+        if (smsEnabled(configuration)) return true;
         JSONArray sources = configuration.optJSONArray("sources");
         if (sources != null) for (int index = 0; index < sources.length(); index++) {
             JSONObject source = sources.optJSONObject(index);
@@ -84,8 +86,24 @@ final class CardAutomationStore {
     static synchronized boolean isAllowedPackage(Context context, String packageName) {
         if (packageName == null || packageName.equals(context.getPackageName())) return false;
         JSONObject configuration = configuration(context);
+        if (isDefaultSmsPackage(context, packageName) || SmsPaymentPolicy.isSenderSource(packageName)) return smsEnabled(configuration);
         if (configuration.optBoolean("detectAllApps", false)) return true;
         return isConfiguredSourcePackage(configuration, packageName);
+    }
+
+    static boolean isDefaultSmsPackage(Context context, String packageName) {
+        try { return packageName != null && packageName.equals(Telephony.Sms.getDefaultSmsPackage(context)); }
+        catch (RuntimeException unavailable) { return false; }
+    }
+
+    static boolean smsEnabled(JSONObject configuration) {
+        if (!configuration.optBoolean("detectSmsNotifications", false)) return false;
+        JSONArray ledgers = configuration.optJSONArray("ledgers");
+        if (ledgers != null) for (int index = 0; index < ledgers.length(); index++) {
+            JSONObject ledger = ledgers.optJSONObject(index);
+            if (ledger != null && ledger.optBoolean("automationSmsNotifications", false)) return true;
+        }
+        return false;
     }
 
     static synchronized boolean isConfiguredSourcePackage(Context context, String packageName) {
@@ -127,7 +145,9 @@ final class CardAutomationStore {
             if (ledger == null) continue;
             String currency = ledger.optString("currency");
             if (sourceLedgerIds.contains(ledger.optString("ledgerId")) && !currency.isEmpty()) sourceCurrencies.add(currency);
-            if (configuration.optBoolean("detectAllApps", false) && ledger.optBoolean("automationAllApps", false) && !currency.isEmpty()) currencies.add(currency);
+            if ((SmsPaymentPolicy.isSenderSource(packageName)
+                ? smsEnabled(configuration) && ledger.optBoolean("automationSmsNotifications", false)
+                : configuration.optBoolean("detectAllApps", false) && ledger.optBoolean("automationAllApps", false)) && !currency.isEmpty()) currencies.add(currency);
         }
         if (!sourceLedgerIds.isEmpty()) return sourceCurrencies.size() == 1 ? sourceCurrencies.iterator().next() : "";
         return currencies.size() == 1 ? currencies.iterator().next() : "";
@@ -190,11 +210,19 @@ final class CardAutomationStore {
         for (int index = 0; index < events.length(); index++) {
             JSONObject item = events.optJSONObject(index);
             if (item != null && item.optInt("parserVersion", 0) >= 3 && item.optInt("parserVersion", 0) <= PaymentNotificationParser.PARSER_VERSION) {
-                // Before v8, multi-payment summaries were review-only but
-                // indistinguishable from an ordinary merchant review. Do not
-                // let the new reconciliation path auto-ack those old drafts.
-                if (item.optInt("parserVersion", 0) < 8 && "review".equals(item.optString("confidence")) && !item.optBoolean("manualOnly")) {
-                    try { current.put(new JSONObject(item.toString()).put("manualOnly", true)); }
+                // A few old purchases retained a literal authorization CTA in
+                // the merchant. Remove only that demonstrably invalid draft;
+                // do not acknowledge it or suppress a later completed receipt.
+                if (item.optInt("parserVersion", 0) < 14 && "purchase".equals(item.optString("eventType"))
+                    && PaymentNotificationParser.hasLeakedAuthorizationRequest(item.optString("merchant"))) continue;
+                // Pre-v14 candidates may have been approval challenges rather
+                // than completed transactions. Raw text is intentionally not
+                // stored, so do not guess which drafts were real or delete them.
+                // Keep them manual until confirmed or replaced by an active
+                // notification parsed with the current completion/request gate.
+                // This also preserves the pre-v8 multi-payment summary guard.
+                if (item.optInt("parserVersion", 0) < 14) {
+                    try { current.put(new JSONObject(item.toString()).put("manualOnly", true).put("confidence", "review")); }
                     catch (JSONException ignored) { /* Fail closed; never promote an unsafe legacy draft. */ }
                 } else current.put(item);
             }
@@ -208,6 +236,10 @@ final class CardAutomationStore {
             JSONObject event = events.optJSONObject(index);
             if (event == null) continue;
             String packageName = event.optString("packageName");
+            if (SmsPaymentPolicy.isSenderSource(packageName)) {
+                if (smsEnabled(configuration)) allowed.put(event);
+                continue;
+            }
             if (!packageName.isEmpty() && !packageName.equals(ownPackage)
                 && (configuration.optBoolean("detectAllApps", false) || isConfiguredSourcePackage(configuration, packageName))) allowed.put(event);
         }
@@ -316,11 +348,19 @@ final class CardAutomationStore {
         // Revisit still-visible alerts after discovery, source or currency changes,
         // not on each budget/expense update. The capture gate checks the new scope.
         return previous.optBoolean("detectAllApps", false) != next.optBoolean("detectAllApps", false)
+            || smsEnabled(previous) != smsEnabled(next)
             || !captureScope(previous).equals(captureScope(next));
     }
 
     private static Set<String> captureScope(JSONObject configuration) {
         Set<String> scope = new HashSet<>();
+        if (smsEnabled(configuration)) {
+            JSONArray ledgers = configuration.optJSONArray("ledgers");
+            if (ledgers != null) for (int index = 0; index < ledgers.length(); index++) {
+                JSONObject ledger = ledgers.optJSONObject(index);
+                if (ledger != null && ledger.optBoolean("automationSmsNotifications", false)) scope.add("sms:" + ledger.optString("ledgerId") + ":" + ledger.optString("currency"));
+            }
+        }
         JSONArray sources = configuration.optJSONArray("sources");
         if (sources != null) for (int index = 0; index < sources.length(); index++) {
             JSONObject source = sources.optJSONObject(index);

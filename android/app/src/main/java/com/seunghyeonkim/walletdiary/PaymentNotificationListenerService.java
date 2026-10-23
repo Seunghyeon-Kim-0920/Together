@@ -151,7 +151,9 @@ public final class PaymentNotificationListenerService extends NotificationListen
         if (!CardAutomationStore.isAllowedPackage(this, packageName)) return;
         Notification notification = statusBarNotification.getNotification();
         if (notification == null) return;
+        final boolean smsNotification = CardAutomationStore.isDefaultSmsPackage(this, packageName);
         final boolean groupSummary = (notification.flags & Notification.FLAG_GROUP_SUMMARY) != 0;
+        if (smsNotification && groupSummary) return;
         // A few apps post only a summary. Preserve a single parseable payment
         // for review when there is no child alert to use instead. The parser
         // still rejects summaries containing several different amounts.
@@ -161,12 +163,12 @@ public final class PaymentNotificationListenerService extends NotificationListen
         final boolean relayIdentity = isRelayIdentity(packageName);
         // A messenger, mail client, browser or social app carries other people's
         // messages, not the user's own payments. Discovery never reads them.
-        if (PaymentSourcePolicy.isExcludedFromDiscovery(packageName, relayIdentity, explicitlyConfigured)) return;
+        if (!smsNotification && PaymentSourcePolicy.isExcludedFromDiscovery(packageName, relayIdentity, explicitlyConfigured)) return;
         final boolean manualOnly = relayIdentity
             || PaymentSourcePolicy.requiresManualReview(packageName, notification.category, explicitlyConfigured);
         // Discovery reads bank, card and payment apps only. Any other app is
         // read solely because the user registered it as a payment source.
-        final boolean paymentSource = explicitlyConfigured || PaymentSourcePolicy.isPaymentSourcePackage(packageName);
+        final boolean paymentSource = smsNotification || explicitlyConfigured || PaymentSourcePolicy.isPaymentSourcePackage(packageName);
         final long postedAt = stableEventTime(notification, statusBarNotification.getPostTime());
         final String notificationKey = statusBarNotification.getKey();
 
@@ -183,6 +185,7 @@ public final class PaymentNotificationListenerService extends NotificationListen
             Bundle extras = notification.extras;
             if (extras == null) return;
             String title = NotificationTextContent.title(extras.getCharSequence(Notification.EXTRA_TITLE), extras.getCharSequence(Notification.EXTRA_TITLE_BIG));
+            String smsSender = smsNotification ? title : "";
             String message = text(extras.getCharSequence(Notification.EXTRA_TEXT));
             String subText = text(extras.getCharSequence(Notification.EXTRA_SUB_TEXT));
             CharSequence[] lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
@@ -203,17 +206,40 @@ public final class PaymentNotificationListenerService extends NotificationListen
                 // Keep the standard title/body instead of discarding the payment.
             }
             if (style != null) {
+                if (smsNotification && style.isGroupConversation()) return;
                 // Conversation titles usually identify the sender, not the merchant.
                 title = "";
                 List<NotificationCompat.MessagingStyle.Message> messages = style.getMessages();
                 if (messages != null && !messages.isEmpty()) {
                     NotificationCompat.MessagingStyle.Message latest = messages.get(messages.size() - 1);
+                    if (smsNotification) {
+                        androidx.core.app.Person sender = latest.getPerson();
+                        if (sender == null) return; // A self/sent message is not a bank receipt.
+                        smsSender = sender.getUri() != null && sender.getUri().startsWith("tel:")
+                            ? sender.getUri() : text(sender.getName());
+                    }
                     message = text(latest.getText()); bigText = ""; subText = "";
+                    if (smsNotification) multiplePaymentLines = PaymentNotificationParser.hasMultiplePaymentLines(new String[] {message}, currencyHint);
                     long timestamp = latest.getTimestamp();
                     if (timestamp > 0L && timestamp <= statusBarNotification.getPostTime() + 300_000L) {
                         eventTime = timestamp; eventKey += ":message:" + timestamp;
                     }
                 }
+            }
+            if (smsNotification) {
+                String senderSource = SmsPaymentPolicy.sourceId(packageName, smsSender);
+                // A contact/sender label is never a merchant. A plain money
+                // message is insufficient even after the sender was trusted.
+                if (senderSource.isEmpty() || multiplePaymentLines
+                    || !SmsPaymentPolicy.hasFinancialReceiptEvidence(message + "\n" + bigText)) return;
+                String senderLabel = SmsPaymentPolicy.displayName(smsSender);
+                JSONObject smsCandidate = PaymentNotificationParser.parse(
+                    senderSource, senderLabel, "", message, bigText, "", eventTime,
+                    statusBarNotification.getPostTime(), eventKey,
+                    CardAutomationStore.isConfiguredSourcePackage(getApplicationContext(), senderSource),
+                    false, CardAutomationStore.currencyHint(getApplicationContext(), senderSource));
+                if (smsCandidate != null) CardAutomationStore.addPendingIfAllowed(getApplicationContext(), packageName, smsCandidate);
+                return;
             }
             String sourceName = applicationLabel(packageName);
             JSONObject candidate = PaymentNotificationParser.parse(

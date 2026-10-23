@@ -40,6 +40,14 @@ test("general PDF attachments omit local card and budget settings, preserving ex
   assert.equal(parsed?.ledger.expenses[0].description, "Boulangerie");
 });
 
+test("a real PDF attachment retains the transfer recipient, transaction type, date and exact money", async () => {
+  const ledger: GeneralLedger = { ...createLedger("general", "생활", "KRW"), expenses: [{ id: "transfer-example", description: "김예시", transactionType: "outgoing_transfer", category: "other", currency: "KRW", minorUnits: 15000, occurredOn: "2026-10-17" }] };
+  const { text } = await attachment(await attachLedgerToPdf(await emptyPdf(), ledger));
+  const parsed = parseLedgerShareDocument(text); assert.ok(parsed?.ledger.kind === "general");
+  assert.deepEqual({ ...parsed.ledger.expenses[0], id: "transfer-example" }, ledger.expenses[0]);
+  assert.equal(text.includes("automationPaymentReceipts"), false);
+});
+
 test("oversized or malformed attachments fail instead of producing an unrestorable backup", async () => {
   const ledger: GeneralLedger = { ...createLedger("general", "Large", "EUR"), expenses: Array.from({ length: 2000 }, (_, index) => ({ id: String(index), description: "가".repeat(500), category: "food", currency: "EUR", minorUnits: 1, occurredOn: "2026-09-01" })) };
   await assert.rejects(attachLedgerToPdf(await emptyPdf(), ledger), /ledger-attachment-limit/);

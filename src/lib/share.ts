@@ -3,6 +3,7 @@ import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { formatMoney } from "./currency";
 import { publicExpenseId } from "./expenseIdentity";
+import { expenseTransactionType } from "./expenseTransaction";
 import { t, travelCategoryLabel } from "./i18n";
 import { merchantDisplayName } from "./merchant";
 import type { Ledger, Locale, TravelLedger } from "./types";
@@ -31,7 +32,10 @@ function omitTravelPrivacySettings(ledger: TravelLedger): TravelLedger {
 function omitGeneralPrivacySettings(ledger: Extract<Ledger, { kind: "general" }>) {
   // Do not expose provider-derived or card-auto id prefixes. A deterministic
   // opaque id keeps repeated imports idempotent without revealing provenance.
-  const expenses = ledger.expenses.map((expense) => ({ id: publicExpenseId(ledger.id, expense.id), description: merchantDisplayName(expense.description, expense.id), category: expense.category, currency: expense.currency, minorUnits: expense.minorUnits, occurredOn: expense.occurredOn }));
+  const expenses = ledger.expenses.map((expense) => {
+    const transactionType = expenseTransactionType(ledger, expense);
+    return { id: publicExpenseId(ledger.id, expense.id), description: merchantDisplayName(expense.description, expense.id), category: expense.category, currency: expense.currency, minorUnits: expense.minorUnits, occurredOn: expense.occurredOn, ...(transactionType ? { transactionType } : {}) };
+  });
   return { id: ledger.id, title: ledger.title, kind: ledger.kind, createdAt: ledger.createdAt, updatedAt: ledger.updatedAt, currency: ledger.currency, expenses };
 }
 
@@ -42,7 +46,7 @@ export function createTravelSharePayload(ledger: TravelLedger): string {
 function withoutImportedPrivacy(parsed: Ledger): Ledger {
   if (parsed.kind === "travel") return omitTravelPrivacySettings(parsed);
   const shareSafe = omitGeneralPrivacySettings(parsed);
-  return Object.freeze({ ...shareSafe, monthlyLimitMinor: null, automationAllApps: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), movedExpenseIds: Object.freeze([]), expenses: Object.freeze(shareSafe.expenses.map((expense) => Object.freeze(expense))) });
+  return Object.freeze({ ...shareSafe, monthlyLimitMinor: null, automationAllApps: false, automationSmsNotifications: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), movedExpenseIds: Object.freeze([]), expenses: Object.freeze(shareSafe.expenses.map((expense) => Object.freeze(expense))) });
 }
 
 function cloneImportedLedger(parsed: Ledger): Ledger {

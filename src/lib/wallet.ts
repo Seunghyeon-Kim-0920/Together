@@ -1,6 +1,6 @@
 import { MAX_MERCHANT_CATEGORY_PREFERENCES } from "./categoryInference";
 import { parseSharedLocal } from "./sharedTravelLocal";
-import type { MerchantCategoryPreference } from "./types";
+import { EXPENSE_TRANSACTION_TYPES, type ExpenseTransactionType, type MerchantCategoryPreference } from "./types";
 import { currencyDigits } from "./currency";
 import { legacyPublicExpenseId, publicExpenseId } from "./expenseIdentity";
 import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationPaymentReceipt, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type StatementImportReceipt, type TravelExpense, type TravelLedger, type WalletState } from "./types";
@@ -142,11 +142,12 @@ function parseTravelExpense(value: unknown, participantIds: ReadonlySet<string>,
 
 function parseGeneralExpense(value: unknown, ledgerCurrency: string): GeneralExpense | null {
   if (!isRecord(value)) return null;
+  if (value.transactionType !== undefined && !EXPENSE_TRANSACTION_TYPES.includes(value.transactionType as never)) return null;
   const id = text(value.id, 100); const description = text(value.description, 500); const expenseDate = date(value.occurredOn); const expenseCurrency = currency(value.currency); const minorUnits = positiveMinor(value.minorUnits);
   const automationFingerprint = value.automationFingerprint === undefined ? null : text(value.automationFingerprint, 40);
   const automationReversalFingerprint = value.automationReversalFingerprint === undefined ? null : text(value.automationReversalFingerprint, 42);
   if (!id || !description || !expenseDate || expenseCurrency !== ledgerCurrency || !minorUnits || !GENERAL_CATEGORIES.includes(value.category as never) || (value.automationFingerprint !== undefined && (!automationFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(automationFingerprint))) || (value.automationReversalFingerprint !== undefined && (!automationReversalFingerprint || !/^card-reversal-[0-9a-f]{16}$/.test(automationReversalFingerprint)))) return null;
-  return Object.freeze({ id, description, category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate, ...(automationFingerprint ? { automationFingerprint } : {}), ...(automationReversalFingerprint ? { automationReversalFingerprint } : {}) });
+  return Object.freeze({ id, description, category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate, ...(value.transactionType ? { transactionType: value.transactionType as ExpenseTransactionType } : {}), ...(automationFingerprint ? { automationFingerprint } : {}), ...(automationReversalFingerprint ? { automationReversalFingerprint } : {}) });
 }
 
 function parseMerchantCategoryPreferences(value: unknown): readonly MerchantCategoryPreference[] | null {
@@ -194,6 +195,8 @@ export function parseLedger(value: unknown): Ledger | null {
     const merchantCategoryPreferences = parseMerchantCategoryPreferences(value.merchantCategoryPreferences);
     const monthlyLimitMinor = value.monthlyLimitMinor === undefined || value.monthlyLimitMinor === null ? null : positiveMinor(value.monthlyLimitMinor);
     const automationAllApps = value.automationAllApps === undefined ? false : value.automationAllApps;
+    const automationSmsNotifications = value.automationSmsNotifications === undefined ? false : value.automationSmsNotifications;
+    if (typeof automationSmsNotifications !== "boolean") return null;
     const automationSources = value.automationSources === undefined ? Object.freeze([]) : parseAutomationSources(value.automationSources);
     const automationReversalIds = value.automationReversalIds === undefined ? Object.freeze([]) : parseAutomationReversalIds(value.automationReversalIds);
     const movedExpenseIds = value.movedExpenseIds === undefined ? Object.freeze([]) : parseMovedExpenseIds(value.movedExpenseIds);
@@ -205,7 +208,7 @@ export function parseLedger(value: unknown): Ledger | null {
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...(automationPaymentReceipts.length ? { automationPaymentReceipts } : {}), ...(merchantCategoryPreferences.length ? { merchantCategoryPreferences } : {}), ...privateHistory } satisfies GeneralLedger);
+    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSmsNotifications, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...(automationPaymentReceipts.length ? { automationPaymentReceipts } : {}), ...(merchantCategoryPreferences.length ? { merchantCategoryPreferences } : {}), ...privateHistory } satisfies GeneralLedger);
   }
   return null;
 }
@@ -228,7 +231,7 @@ export function createLedger(kind: Ledger["kind"], titleInput: string, selectedC
   const now = new Date().toISOString(); const base = { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now };
   return kind === "travel"
     ? Object.freeze({ ...base, kind, currencies: Object.freeze([selectedCurrency]), defaultCurrency: selectedCurrency, participants: Object.freeze([]), selfParticipantId: null, expenses: Object.freeze([]) })
-    : Object.freeze({ ...base, kind, currency: selectedCurrency, monthlyLimitMinor: null, automationAllApps: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), movedExpenseIds: Object.freeze([]), expenses: Object.freeze([]) });
+    : Object.freeze({ ...base, kind, currency: selectedCurrency, monthlyLimitMinor: null, automationAllApps: false, automationSmsNotifications: false, automationSources: Object.freeze([]), automationReversalIds: Object.freeze([]), movedExpenseIds: Object.freeze([]), expenses: Object.freeze([]) });
 }
 
 export function splitEvenly(minorUnits: number, participantIds: readonly string[]): readonly ExpenseShare[] {
@@ -272,7 +275,7 @@ export function replaceLedger(state: WalletState, ledger: Ledger): WalletState {
 }
 
 function sameGeneralExpense(left: GeneralExpense, right: GeneralExpense): boolean {
-  return left.id === right.id && left.description === right.description && left.category === right.category && left.currency === right.currency && left.minorUnits === right.minorUnits && left.occurredOn === right.occurredOn && left.automationFingerprint === right.automationFingerprint && left.automationReversalFingerprint === right.automationReversalFingerprint;
+  return left.id === right.id && left.description === right.description && left.category === right.category && left.currency === right.currency && left.minorUnits === right.minorUnits && left.occurredOn === right.occurredOn && left.transactionType === right.transactionType && left.automationFingerprint === right.automationFingerprint && left.automationReversalFingerprint === right.automationReversalFingerprint;
 }
 
 function sameAutomationSources(left: readonly AutomationSource[], right: readonly AutomationSource[]): boolean {
@@ -312,6 +315,7 @@ export function mergeGeneralLedgerMutation(base: GeneralLedger, desired: General
     title: desired.title !== base.title ? desired.title : latest.title,
     monthlyLimitMinor: desired.monthlyLimitMinor !== base.monthlyLimitMinor ? desired.monthlyLimitMinor : latest.monthlyLimitMinor,
     automationAllApps: desired.automationAllApps !== base.automationAllApps ? desired.automationAllApps : latest.automationAllApps,
+    automationSmsNotifications: desired.automationSmsNotifications !== base.automationSmsNotifications ? desired.automationSmsNotifications : latest.automationSmsNotifications,
     automationSources: sameAutomationSources(desired.automationSources, base.automationSources) ? latest.automationSources : desired.automationSources,
     automationReversalIds: sameStringList(desired.automationReversalIds, base.automationReversalIds) ? latest.automationReversalIds : desired.automationReversalIds,
     // Moving and editing can happen while another sheet is open. Tombstones

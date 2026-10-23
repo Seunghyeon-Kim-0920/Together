@@ -222,6 +222,7 @@ export function undoPaymentMerge(state: WalletState, ledgerId: string, primaryEx
   const expense: GeneralExpense = Object.freeze({ id: sourceExpenseId, description: source.merchant ?? receipt.merchant,
     category: source.category ?? primary.category, currency: receipt.currency, minorUnits: receipt.minorUnits,
     occurredOn: source.occurredOn ?? source.occurredAt.slice(0, 10),
+    ...(source.eventType ? { transactionType: source.eventType } : {}),
     automationFingerprint: source.originFingerprint, automationReversalFingerprint: source.reversalFingerprint });
   const total = ledger.expenses.reduce((sum, item) => sum + BigInt(item.minorUnits), BigInt(expense.minorUnits));
   if (total > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("payment-undo-limit");

@@ -1,6 +1,7 @@
 import { formatMoney } from "./currency";
 import { generalCategoryLabel, t, travelCategoryLabel } from "./i18n";
 import { merchantDisplayName } from "./merchant";
+import { expenseTransactionLabel, expenseTransactionType } from "./expenseTransaction";
 import { createLedgerSharePayload, parseLedgerShareDocument, safeFilename } from "./share";
 import { savePdfFile, sharePdfFile } from "./documentFiles";
 import { pdfExportText } from "./pdfExportI18n";
@@ -139,7 +140,11 @@ export async function createLedgerPdf(sourceLedger: Ledger, locale: Locale, rang
       for (const expense of ledger.expenses) totals.set(expense.category, (totals.get(expense.category) ?? 0) + expense.minorUnits);
       for (const [category, amount] of totals) row([generalCategoryLabel(locale, category as (typeof ledger.expenses)[number]["category"]), formatMoney(amount, ledger.currency, locale)], "1fr 180px");
       heading(t(locale, "history"));
-      for (const expense of newestExpensesFirst(ledger.expenses)) row([expense.occurredOn, merchantDisplayName(expense.description, expense.id), generalCategoryLabel(locale, expense.category), formatMoney(expense.minorUnits, expense.currency, locale)], "90px 1fr 105px 120px");
+      for (const expense of newestExpensesFirst(ledger.expenses)) {
+        const transactionType = expenseTransactionType(ledger, expense);
+        const category = generalCategoryLabel(locale, expense.category) + (transactionType && transactionType !== "purchase" ? "\n" + expenseTransactionLabel(locale, transactionType) : "");
+        row([expense.occurredOn, merchantDisplayName(expense.description, expense.id), category, formatMoney(expense.minorUnits, expense.currency, locale)], "90px 1fr 105px 120px");
+      }
     }
     if (!ledger.expenses.length) add(text("p", t(locale, "noExpenses")));
     const pdf = new jsPDF({ format: "a4", unit: "mm", compress: true });

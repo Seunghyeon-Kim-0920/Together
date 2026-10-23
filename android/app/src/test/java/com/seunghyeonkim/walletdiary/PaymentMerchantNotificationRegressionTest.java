@@ -78,6 +78,78 @@ public class PaymentMerchantNotificationRegressionTest {
     }
 
     @Test
+    public void genericPaymentHeadingsNeverBecomeInventedMerchantsAcrossApps() {
+        String[] sources = {"Swile", "travel Wallet", "KB국민카드", "하나카드", "삼성카드", "현대카드", "NH농협카드", "신한카드", "Synthetic Bank"};
+        for (String source : sources) {
+            for (String heading : new String[] {"Payment confirmed", "Payment settled", "Card payment confirmed",
+                "Paiement validé", "결제 정상처리", "결제 승인됨", "Pagamento confermato", "Pago confirmado", "Zahlung bestätigt",
+                "Paiement finalisé", "Payment status-update"}) {
+                assertPurchase(source, heading, "EXAMPLE MARKET\n12.34 EUR", "EXAMPLE MARKET", "EUR", 1234L);
+                assertPurchase(source, heading + " 12.34 EUR", "EXAMPLE MARKET", "EXAMPLE MARKET", "EUR", 1234L);
+                assertPurchase(source, source, heading + "\nEXAMPLE MARKET\n12.34 EUR", "EXAMPLE MARKET", "EUR", 1234L);
+                assertNeedsMerchantReview(source + ": " + heading,
+                    parse(source, heading, "12.34 EUR", "", "EUR", true));
+            }
+        }
+    }
+
+    @Test
+    public void standaloneCompletionStatusCannotHideMerchantOnAnySource() {
+        for (String status : new String[] {"confirmed", "validated", "settled", "is confirmed", "validé", "valide\u0301",
+            "validée", "validés", "confirmé", "finalisé", "bestätigt", "confirmado", "confermato", "승인됨"}) {
+            assertPurchase("Synthetic Bank", status, "Card payment 12.34 EUR\nEXAMPLE MARKET",
+                "EXAMPLE MARKET", "EUR", 1234L);
+            assertNeedsMerchantReview(status,
+                parse("Synthetic Bank", status, "Card payment 12.34 EUR", "", "EUR", true));
+        }
+        assertPurchase("Synthetic Bank", "Card payment", "Confirmed Café\n12.34 EUR", "Confirmed Café", "EUR", 1234L);
+    }
+
+    @Test
+    public void frenchValidatedTitleDoesNotOverrideTheBodyMerchant() {
+        for (String title : new String[] {"Paiement validé", "Paiement valide", "Paiement validée",
+            "Paiement validé !", "Paiement a été validé", "Paiement a ete valide avec succes",
+            "Paiement validé : 6,94 €"}) {
+            assertPurchase("Swile", title, "MARCHE EXEMPLE\n6,94 €", "MARCHE EXEMPLE", "EUR", 694L);
+        }
+        String expanded = NotificationTextContent.expandedBody("Votre paiement a été validé.",
+            new CharSequence[] {"MARCHE EXEMPLE", "6,94 €", "Solde disponible : 100,00 €"}, null);
+        assertPurchaseResult("expanded validated receipt", parse("Swile", "Paiement validé",
+            "Paiement validé", expanded, "EUR", true), "MARCHE EXEMPLE", "EUR", 694L);
+    }
+
+    @Test
+    public void frenchValidationAfterAmountKeepsMerchantBeforeAmount() {
+        for (String suffix : new String[] {"validé", "validée", "valide", "a été validé", "validé avec succès !"}) {
+            assertPurchase("Swile", "Paiement validé", "MARCHE EXEMPLE 6,94 € " + suffix,
+                "MARCHE EXEMPLE", "EUR", 694L);
+        }
+    }
+
+    @Test
+    public void frenchValidationWithoutMerchantWaitsForReview() {
+        for (String title : new String[] {"Paiement validé", "Paiement validée !", "Paiement a été validé"}) {
+            assertNeedsMerchantReview(title, parse("Swile", title, "6,94 €", "", "EUR", true));
+        }
+        assertNeedsMerchantReview("status labelled as merchant",
+            parse("Swile", "Paiement validé", "Commerçant : validé\n6,94 €", "", "EUR", true));
+        assertNeedsMerchantReview("conflicting body merchants",
+            parse("Swile", "Paiement validé", "MARCHE EXEMPLE\nCAFE EXEMPLE\n6,94 €", "", "EUR", true));
+        JSONObject untrusted = parse("Swile", "Paiement validé", "MARCHE EXEMPLE\n6,94 €", "", "EUR", false);
+        assertNotNull(untrusted);
+        assertEquals("MARCHE EXEMPLE", untrusted.optString("merchant"));
+        assertEquals("review", untrusted.optString("confidence"));
+    }
+
+    @Test
+    public void validationWordWithinRealMerchantNameIsPreserved() {
+        for (String merchant : new String[] {"Validé Café", "Café Validé", "Validée Boutique"}) {
+            assertPurchase("Swile", "Paiement validé", merchant + "\n6,94 €", merchant, "EUR", 694L);
+            assertPurchase("Swile", "Paiement validé", "Commerçant : " + merchant + "\n6,94 €", merchant, "EUR", 694L);
+        }
+    }
+
+    @Test
     public void frenchMerchantBeforePaymentNarrativeIsPreserved() {
         for (String body : new String[] {
             "Café Exemple : votre paiement de 12,34 € a été accepté.",
@@ -243,7 +315,7 @@ public class PaymentMerchantNotificationRegressionTest {
     }
 
     private static void assertPurchase(String source, String title, String body, String merchant, String currency, long amount) {
-        assertPurchaseResult(source + ": " + body, parse(source, title, body, "", currency, true), merchant, currency, amount);
+        assertPurchaseResult(source + ": " + title + " / " + body, parse(source, title, body, "", currency, true), merchant, currency, amount);
     }
 
     private static void assertPurchaseResult(String message, JSONObject result, String merchant, String currency, long amount) {

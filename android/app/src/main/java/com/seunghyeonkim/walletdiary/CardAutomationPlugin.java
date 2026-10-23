@@ -113,6 +113,7 @@ public final class CardAutomationPlugin extends Plugin {
             configuration.put("ledgers", ledgers);
             configuration.put("sources", sources);
             configuration.put("detectAllApps", detectAllApps);
+            configuration.put("detectSmsNotifications", Boolean.TRUE.equals(call.getBoolean("detectSmsNotifications", false)));
         } catch (JSONException exception) {
             call.reject("Invalid automation configuration.", exception);
             return;

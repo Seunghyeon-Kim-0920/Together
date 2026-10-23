@@ -1,6 +1,6 @@
 {
   "name": "wallet-diary",
-  "version": "1.8.8",
+  "version": "1.8.12",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

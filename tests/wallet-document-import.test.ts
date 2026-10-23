@@ -285,6 +285,24 @@ test("own general ledger PDF attachment rows preserve exported identity and cate
   assert.equal(repeated.rows[0].selected, false);
 });
 
+test("structured general ledger imports retain transfer types through preview, save, reload and replay", () => {
+  const types = ["purchase", "outgoing_transfer", "direct_debit", "standing_order"] as const;
+  const ledger = { ...createLedger("general", "생활", "KRW"), expenses: types.map((transactionType, index) => ({ id: `synthetic-${index}`, description: `받는 분 ${index}`, occurredOn: "2026-10-17", currency: "KRW", minorUnits: 15000 + index, category: "other" as const, transactionType })) };
+  const shared = parseLedgerShareDocument(createLedgerSharePayload(ledger)); assert.ok(shared);
+  const preview = previewExpenseDocument(document([], { ledger: shared }));
+  assert.deepEqual(preview.rows.map((item) => item.transactionType), types);
+  const imported = applyStatementImport(EMPTY_WALLET_STATE, preview.rows, { kind: "new-general", title: "가져온 생활" });
+  const loaded = parseWalletStateStrict(JSON.parse(JSON.stringify(imported.state))); assert.ok(loaded);
+  const restored = loaded.ledgers[0]; assert.ok(restored.kind === "general");
+  assert.deepEqual(restored.expenses.map((expense) => [expense.transactionType, expense.description, expense.minorUnits, expense.occurredOn]), ledger.expenses.map((expense) => [expense.transactionType, expense.description, expense.minorUnits, expense.occurredOn]));
+  const replay = applyStatementImport(loaded, preview.rows, { kind: "existing", ledgerId: restored.id });
+  assert.equal(replay.added, 0);
+  assert.equal(replay.duplicates, types.length);
+  const invalid = { ...preview.rows[0], transactionType: "incoming_transfer" } as unknown as StatementImportRow;
+  assert.equal(validateStatementImportRow(invalid), false);
+  assert.throws(() => applyStatementImport(loaded, [invalid], { kind: "existing", ledgerId: restored.id }), /invalid_rows/);
+});
+
 test("mixed currencies create separate ledgers and cannot be silently converted into a single-currency ledger", () => {
   const rows = [row(), row({ id: "statement-yen", currency: "JPY", minorUnits: 500 })];
   const result = applyStatementImport(EMPTY_WALLET_STATE, rows, { kind: "new-general", title: "Card history" });

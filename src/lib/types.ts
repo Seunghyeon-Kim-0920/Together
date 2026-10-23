@@ -6,6 +6,8 @@ export const TRAVEL_CATEGORIES = ["accommodation", "transport", "food", "activit
 export type TravelCategory = (typeof TRAVEL_CATEGORIES)[number];
 export const GENERAL_CATEGORIES = ["food", "transport", "housing", "utilities", "shopping", "health", "leisure", "education", "subscriptions", "travel", "other"] as const;
 export type GeneralCategory = (typeof GENERAL_CATEGORIES)[number];
+export const EXPENSE_TRANSACTION_TYPES = ["purchase", "outgoing_transfer", "direct_debit", "standing_order"] as const;
+export type ExpenseTransactionType = (typeof EXPENSE_TRANSACTION_TYPES)[number];
 
 export interface Participant {
   readonly id: string;
@@ -35,6 +37,8 @@ export interface GeneralExpense {
   readonly currency: string;
   readonly minorUnits: number;
   readonly occurredOn: string;
+  /** Executed debit type, separate from the editable recipient/merchant name. */
+  readonly transactionType?: ExpenseTransactionType;
   /** Immutable, private deduplication marker for card-notification imports. */
   readonly automationFingerprint?: string;
   /** Immutable, private merchant/amount marker used to match later reversals. */
@@ -44,7 +48,7 @@ export interface GeneralExpense {
 export interface AutomationSource {
   readonly packageName: string;
   readonly displayName: string;
-  /** The user explicitly confirmed this is a direct bank/card app, not a relay. */
+  /** Explicit trust in a direct bank/card app, or one opt-in SMS sender source. */
   readonly trustedDirectApp: true;
 }
 
@@ -117,6 +121,8 @@ export interface GeneralLedger extends LedgerBase {
   readonly monthlyLimitMinor: number | null;
   /** Explicit consent to inspect payment-shaped notifications from any app. */
   readonly automationAllApps: boolean;
+  /** Separate local opt-in for financial receipts in the default SMS app's notifications. */
+  readonly automationSmsNotifications?: boolean;
   readonly automationSources: readonly AutomationSource[];
   /** Private idempotency tombstones for durably applied cancellation alerts. */
   readonly automationReversalIds: readonly string[];

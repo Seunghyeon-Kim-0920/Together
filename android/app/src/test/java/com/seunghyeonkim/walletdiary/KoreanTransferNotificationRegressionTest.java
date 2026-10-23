@@ -181,6 +181,71 @@ public class KoreanTransferNotificationRegressionTest {
         }
     }
 
+    @Test
+    public void completedRecipientFirstNarrativesUseTheRecipientsName() {
+        String[] sentences = {
+            "테스트수취인님에게 12,000원을 보냈어요",
+            "테스트수취인에게 12,000원을 보냈습니다.",
+            "테스트수취인님께 12,000원을 송금했어요",
+            "테스트수취인에게 12,000원 이체했어요",
+            "테스트수취인에게 12,000원 이체 완료",
+        };
+        for (String sentence : sentences) {
+            for (String bank : new String[] {"KB국민은행", "하나은행", "테스트은행"}) {
+                assertTransfer(parse("kr.example.syntheticbank", bank, "거래 알림", sentence + "\n잔액 188,000원", true),
+                    "outgoing_transfer", "테스트수취인", 12_000L, "high");
+            }
+        }
+    }
+
+    @Test
+    public void recipientInExpandedTitleAndBodyMustAgree() {
+        assertTransfer(parse("kr.example.syntheticbank", "테스트은행", "테스트수취인님에게 송금 완료",
+            "이체금액 12,000원\n받는 분: 테스트수취인", true),
+            "outgoing_transfer", "테스트수취인", 12_000L, "high");
+        JSONObject ambiguous = parse("kr.example.syntheticbank", "테스트은행", "이체 완료",
+            "출금 12,000원\n받는 분: 테스트수취인\n수취인: 다른수취인", true);
+        assertNotNull(ambiguous);
+        assertEquals("review", ambiguous.optString("confidence"));
+        assertEquals("", ambiguous.optString("merchant"));
+    }
+
+    @Test
+    public void sourceAccountOwnerCannotReplaceTheActualRecipient() {
+        assertTransfer(parse("kr.example.syntheticbank", "테스트은행", "이체 완료",
+            "출금계좌 예금주: 테스트발신인\n이체금액: 12,000원\n받는 분: 테스트수취인\n입금계좌: ***-***-0000", true),
+            "outgoing_transfer", "테스트수취인", 12_000L, "high");
+    }
+
+    @Test
+    public void moneySentBySomebodyElseIsIncomeEvenWhenTheVerbSaysSent() {
+        String[][] incoming = {
+            {"송금 알림", "테스트발신인님이 12,000원을 보냈어요"},
+            {"송금 알림", "테스트발신인님께서 테스트예금주님에게 12,000원 송금했어요"},
+            {"송금 알림", "테스트발신인이 테스트예금주에게 12,000원을 송금했어요"},
+            {"이체 완료", "테스트발신인에게서 12,000원을 받았어요"},
+            {"Money transfer", "Alex sent you 12,000 KRW"},
+            {"Transfer completed", "Alex sent 12,000 KRW to you"},
+        };
+        for (String[] fixture : incoming) {
+            assertNull(fixture[1], parse("kr.example.syntheticbank", "테스트은행", fixture[0], fixture[1], true));
+        }
+    }
+
+    @Test
+    public void recipientFirstInstructionsAndUntrustedSourcesRemainGuarded() {
+        for (String text : new String[] {
+            "테스트수취인님에게 12,000원을 보내세요", "테스트수취인님에게 12,000원 송금 요청",
+            "테스트수취인님에게 12,000원 이체 예정", "테스트수취인님에게 12,000원 송금 실패",
+            "테스트수취인님에게 12,000원 송금 취소", "내 계좌로 테스트수취인님에게 12,000원을 보냈어요",
+        }) {
+            assertNull(text, parse("kr.example.syntheticbank", "테스트은행", "송금 알림", text, true));
+        }
+        assertTransfer(parse("kr.example.syntheticbank", "테스트은행", "거래 알림",
+            "테스트수취인님에게 12,000원을 보냈어요", false),
+            "outgoing_transfer", "테스트수취인", 12_000L, "review");
+    }
+
     private static void assertTransfer(JSONObject event, String type, String counterparty, long amount, String confidence) {
         assertNotNull("The explicit outgoing transfer must produce a candidate", event);
         assertEquals(type, event.optString("eventType"));

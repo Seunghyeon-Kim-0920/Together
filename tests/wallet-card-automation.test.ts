@@ -7,6 +7,7 @@ import { createLedger, mergeGeneralLedgerMutation, parseWalletStateStrict, repla
 import { moveGeneralExpenseToTravel } from "../src/lib/moveExpense";
 import { createLedgerSharePayload, parseLedgerSharePayload } from "../src/lib/share";
 import { getAutomationPaymentHistory, undoPaymentMerge } from "../src/lib/paymentDuplicates";
+import { expenseTransactionLabel, expenseTransactionType } from "../src/lib/expenseTransaction";
 
 const candidate: NativeCardCandidate = Object.freeze({ id: "native-1", queueToken: null, packageName: "com.revolut.revolut", sourceName: "Revolut", merchant: "Lidl Paris", minorUnits: 1299, currency: "EUR", occurredAt: "2026-08-30T10:15:00+02:00", occurredOn: "2026-08-30", confidence: "high", eventType: "purchase", manualOnly: false });
 
@@ -40,6 +41,54 @@ function configuredLedger(): GeneralLedger {
 }
 
 function wallet(ledger = configuredLedger()): WalletState { return Object.freeze({ version: 2, locale: "ko", activeLedgerId: ledger.id, ledgers: Object.freeze([ledger]) }); }
+
+test("SMS consent is separate from broad app discovery and is scoped per ledger", () => {
+  const sender = `walletdiary.sms.s${"a".repeat(64)}`;
+  const sms = { ...candidate, packageName: sender, sourceName: "SMS · Example Bank" };
+  const source = { packageName: sender, displayName: sms.sourceName, trustedDirectApp: true as const };
+  const off = Object.freeze({ ...configuredLedger(), automationAllApps: true, automationSources: [source], automationSmsNotifications: false });
+  const offState = wallet(off);
+  assert.equal(buildNativeAutomationConfiguration(offState, "ko").detectSmsNotifications, false);
+  assert.deepEqual(buildNativeAutomationConfiguration(offState, "ko").sources, []);
+  assert.deepEqual(candidateOwnerLedgerIds(offState.ledgers, sms), []);
+  assert.deepEqual(visibleCardCandidates(offState.ledgers, off.id, [sms]), []);
+  const ignored = applyHighConfidenceCardAutomation(offState, [sms]);
+  assert.equal(ignored.state, offState);
+  assert.deepEqual(ignored.pending, []);
+  assert.deepEqual(ignored.acknowledgedIds, []);
+  assert.throws(() => confirmCardCandidate(offState, off.id, sms), /incompatible/);
+
+  const on = Object.freeze({ ...off, automationAllApps: false, automationSmsNotifications: true });
+  const onState = wallet(on);
+  const config = buildNativeAutomationConfiguration(onState, "ko");
+  assert.equal(config.detectSmsNotifications, true);
+  assert.equal(config.ledgers[0].automationSmsNotifications, true);
+  assert.deepEqual(config.sources, [{ packageName: sender, ledgerId: on.id, currency: "EUR" }]);
+  const recorded = applyHighConfidenceCardAutomation(onState, [sms]);
+  assert.deepEqual(recorded.insertedIds, [sms.id]);
+  assert.equal(recorded.state.ledgers[0].expenses.length, 1);
+  assert.deepEqual(applyHighConfidenceCardAutomation(recorded.state, [sms]).insertedIds, []);
+  const mixed: WalletState = { ...onState, ledgers: [{ ...off, id: "off-ledger" }, on] };
+  assert.deepEqual(candidateOwnerLedgerIds(mixed.ledgers, sms), [on.id]);
+  assert.deepEqual(buildNativeAutomationConfiguration(mixed, "ko").sources, config.sources);
+});
+
+test("each SMS sender needs trust and remains subject to currency review and cancellation matching", () => {
+  const sender = `walletdiary.sms.s${"b".repeat(64)}`;
+  const sms = { ...candidate, packageName: sender, sourceName: "SMS · Example Bank" };
+  const ledger = Object.freeze({ ...configuredLedger(), automationSmsNotifications: true,
+    automationSources: [{ packageName: sender, displayName: sms.sourceName, trustedDirectApp: true as const }] });
+  const initial = wallet(ledger);
+  const otherSender = { ...sms, packageName: `walletdiary.sms.s${"c".repeat(64)}`, confidence: "review" as const };
+  assert.equal(applyHighConfidenceCardAutomation(initial, [otherSender]).pending.length, 1);
+  assert.equal(applyHighConfidenceCardAutomation(initial, [sms]).pending.length, 0);
+  assert.equal(applyHighConfidenceCardAutomation(initial, [{ ...sms, currency: "USD" }]).pending[0].currencyReview, true);
+  const recorded = applyHighConfidenceCardAutomation(initial, [sms]);
+  const reversal = { ...sms, id: "sms-reversal", eventType: "reversal" as const, occurredAt: "2026-08-30T11:15:00+02:00" };
+  const cancelled = applyHighConfidenceCardAutomation(recorded.state, [reversal]);
+  assert.deepEqual(cancelled.reversedIds, [reversal.id]);
+  assert.equal(cancelled.state.ledgers[0].expenses.length, 0);
+});
 
 test("new app merchant drafts remain visible and cannot save until user completes them", () => {
   const draft = parseNativeCardCandidate({ ...candidate, packageName: "hr.lunc.client", sourceName: "Swile", merchant: "", requiresMerchant: true, queueToken: "original-token" });
@@ -129,6 +178,36 @@ test("recovering a trusted Travel Wallet merchant does not bypass foreign-curren
   assert.throws(() => confirmCardCandidate(current, ledger.id, after.pending[0]), /incompatible candidate/);
 });
 
+test("split payments from Swile and Travel Wallet remain separate despite matching merchant and delivery time", () => {
+  const sources = Object.freeze([
+    { packageName: "hr.lunc.client", displayName: "Swile", trustedDirectApp: true as const },
+    { packageName: "com.mobiletoong.travelwallet", displayName: "travel Wallet", trustedDirectApp: true as const },
+  ]);
+  const ledger = Object.freeze({ ...configuredLedger(), automationSources: sources });
+  const payments = sources.map((source, index) => Object.freeze({ ...candidate,
+    id: `synthetic-split-payment-${index}`, packageName: source.packageName, sourceName: source.displayName,
+    merchant: "MARCHE EXEMPLE", minorUnits: index === 0 ? 694 : 435,
+    deliveredAt: candidate.occurredAt,
+  }));
+  const result = applyHighConfidenceCardAutomation(wallet(ledger), payments);
+  assert.deepEqual(result.insertedIds, payments.map(payment => payment.id));
+  assert.deepEqual(result.pending, []);
+  const expenses = result.state.ledgers[0].expenses;
+  assert.equal(expenses.length, 2);
+  assert.deepEqual(expenses.map(expense => expense.minorUnits).sort((a, b) => a - b), [435, 694]);
+  assert.equal(expenses.reduce((sum, expense) => sum + expense.minorUnits, 0), 1129);
+  assert.ok(expenses.every(expense => expense.description === "MARCHE EXEMPLE" && expense.currency === "EUR"));
+
+  const restored = parseWalletStateStrict(JSON.parse(JSON.stringify(result.state)));
+  assert.ok(restored);
+  const replay = applyHighConfidenceCardAutomation(restored, payments);
+  assert.equal(replay.state, restored);
+  assert.equal(replay.state.ledgers[0].expenses.length, 2);
+  assert.deepEqual(replay.insertedIds, []);
+  assert.deepEqual(replay.acknowledgedIds, payments.map(payment => payment.id));
+  assert.deepEqual(replay.pending, []);
+});
+
 test("other currencies and ambiguous owners do not disappear from review", () => {
   const first = Object.freeze({ ...configuredLedger(), automationAllApps: true });
   const second = Object.freeze({ ...createLedger("general", "Other", "EUR"), automationAllApps: true });
@@ -170,12 +249,43 @@ test("completed outgoing transfers and executed recurring debits use the normal 
   if (result.state.ledgers[0].kind !== "general") throw new Error("expected general ledger");
   assert.equal(result.state.ledgers[0].expenses[0].category, "other");
   assert.equal(result.state.ledgers[0].expenses[1].category, "utilities");
+  assert.deepEqual(result.state.ledgers[0].expenses.map((expense) => expense.transactionType), ["outgoing_transfer", "direct_debit", "standing_order"]);
+  assert.equal(result.state.ledgers[0].expenses[0].description, outbound.merchant);
+  assert.equal(result.state.ledgers[0].expenses[0].minorUnits, outbound.minorUnits);
+  assert.equal(result.state.ledgers[0].expenses[0].occurredOn, outbound.occurredOn);
+  const reloaded = parseWalletStateStrict(JSON.parse(JSON.stringify(result.state)));
+  assert.deepEqual(reloaded, result.state);
   const edited = Object.freeze({ ...result.state.ledgers[0].expenses[0], description: "친구에게 보냄", category: "leisure" as const });
   const editedLedger = Object.freeze({ ...result.state.ledgers[0], expenses: replaceExpenseById(result.state.ledgers[0].expenses, edited) });
   const replay = applyHighConfidenceCardAutomation(wallet(editedLedger), [outbound]);
   assert.deepEqual(replay.state.ledgers[0].kind === "general" ? replay.state.ledgers[0].expenses[0] : null, edited);
   assert.deepEqual(replay.acknowledgedIds, [outbound.id]);
   assert.deepEqual(replay.pending, []);
+  assert.equal(edited.transactionType, "outgoing_transfer");
+});
+
+test("saved transfer labels use debit types, never a guessed person name or incoming event", () => {
+  const outbound = Object.freeze({ ...candidate, id: "transfer-label", merchant: "테스트수취인", eventType: "outgoing_transfer" as const });
+  const result = applyHighConfidenceCardAutomation(wallet(), [outbound]);
+  const ledger = result.state.ledgers[0];
+  assert.equal(ledger.kind, "general"); if (ledger.kind !== "general") throw new Error("expected general");
+  const expense = ledger.expenses[0];
+  assert.equal(expenseTransactionType(ledger, expense), "outgoing_transfer");
+  assert.equal(expenseTransactionLabel("ko", "outgoing_transfer"), "보낸 계좌이체");
+  assert.equal(expenseTransactionLabel("en", "outgoing_transfer"), "Outgoing transfer");
+  assert.equal(expenseTransactionLabel("fr", "outgoing_transfer"), "Virement émis");
+  assert.equal(expenseTransactionLabel("ko", "direct_debit"), "자동이체");
+  assert.equal(expenseTransactionLabel("ko", "standing_order"), "정기이체");
+  const legacy = { ...expense, transactionType: undefined };
+  assert.equal(expenseTransactionType(ledger, legacy), "outgoing_transfer");
+  assert.equal(expenseTransactionType({ ...ledger, automationPaymentReceipts: [] }, legacy), undefined);
+  const receipt = ledger.automationPaymentReceipts![0];
+  const mixed = { ...receipt, sources: [...receipt.sources, { ...receipt.sources[0], eventType: "purchase" as const }] };
+  assert.equal(expenseTransactionType({ ...ledger, automationPaymentReceipts: [mixed] }, legacy), undefined);
+  for (const eventType of ["incoming", "incoming_transfer", "deposit", "credit"]) {
+    assert.equal(parseNativeCardCandidate({ ...outbound, eventType }), null);
+    assert.equal(parseWalletStateStrict({ ...result.state, ledgers: [{ ...ledger, expenses: [{ ...expense, transactionType: eventType }] }] }), null);
+  }
 });
 
 test("stable ids and category inference are deterministic", () => {
@@ -216,6 +326,23 @@ test("messaging, email, and browser aggregator candidates always require manual 
   assert.deepEqual(result.pending, [{ ...relayed, confidence: "review" }]);
   const confirmed = confirmCardCandidate(state, ledger.id, result.pending[0]);
   assert.equal(confirmed.inserted, true);
+});
+
+test("legacy authorization-era drafts stay manual even for trusted sources, then a fresh receipt may post", () => {
+  const raw = { ...candidate, queueToken: "approval-or-payment", parserVersion: 13, confidence: "review", manualOnly: true };
+  const legacy = parseNativeCardCandidate(raw);
+  assert.ok(legacy);
+  const initial = wallet();
+  const held = applyHighConfidenceCardAutomation(initial, [legacy]);
+  assert.equal(held.state, initial);
+  assert.deepEqual(held.insertedIds, []);
+  assert.deepEqual(held.acknowledgedIds, []);
+  assert.equal(held.pending.length, 1);
+  const current = parseNativeCardCandidate({ ...raw, parserVersion: 14, confidence: "high", manualOnly: false });
+  assert.ok(current);
+  const recorded = applyHighConfidenceCardAutomation(held.state, [current]);
+  assert.equal(recorded.insertedIds.length, 1);
+  assert.equal(applyHighConfidenceCardAutomation(recorded.state, [current]).insertedIds.length, 0);
 });
 
 test("an automatically recorded expense stays editable and a replay preserves the user's changes", () => {
@@ -834,7 +961,7 @@ test("monthly limit status and native configuration use the current calendar mon
   assert.equal(calculateMonthlyLimitStatus(Object.freeze({ ...ledger, monthlyLimitMinor: 40_000 }), "2026-08").state, "reached");
   assert.equal(calculateMonthlyLimitStatus(Object.freeze({ ...ledger, monthlyLimitMinor: null }), "2026-08").state, "unset");
   const config = buildNativeAutomationConfiguration(wallet(ledger), "fr", new Date(2026, 7, 30));
-  assert.deepEqual(config.ledgers[0], { ledgerId: ledger.id, title: ledger.title, currency: "EUR", monthlyLimitMinor: 50_000, spentMinor: 40_000, month: "2026-08", locale: "fr", automationAllApps: false });
+  assert.deepEqual(config.ledgers[0], { ledgerId: ledger.id, title: ledger.title, currency: "EUR", monthlyLimitMinor: 50_000, spentMinor: 40_000, month: "2026-08", locale: "fr", automationAllApps: false, automationSmsNotifications: false });
   assert.deepEqual(config.sources, [{ packageName: candidate.packageName, ledgerId: ledger.id, currency: "EUR" }]);
   assert.equal(config.detectAllApps, false);
 });
@@ -848,16 +975,94 @@ test("all-app discovery is opt-in and never auto-inserts an unregistered package
   assert.equal(buildNativeAutomationConfiguration(wallet(ledger), "ko").detectAllApps, true);
 });
 
-test("a reversal without the same stable event id never deletes automatically", () => {
+test("a separate cancellation notification reverses one recent exact issuer receipt and survives replay", () => {
   const purchase = applyHighConfidenceCardAutomation(wallet(), [candidate]);
-  const reversal = Object.freeze({ ...candidate, id: "refund-1", occurredAt: "2026-09-01T10:00:00+02:00", occurredOn: "2026-09-01", eventType: "reversal" as const });
+  const reversal = Object.freeze({ ...candidate, id: "refund-1", merchant: "LIDL PARIS", occurredAt: "2026-09-01T10:00:00+02:00", occurredOn: "2026-09-01", eventType: "reversal" as const });
   const reversed = applyHighConfidenceCardAutomation(purchase.state, [reversal]);
-  assert.equal(reversed.state, purchase.state);
+  assert.notEqual(reversed.state, purchase.state);
   assert.deepEqual(reversed.insertedIds, []);
-  assert.deepEqual(reversed.reversedIds, []);
-  assert.deepEqual(reversed.acknowledgedIds, []);
-  assert.equal(reversed.state.ledgers[0].expenses.length, 1);
-  assert.deepEqual(reversed.pending, [{ ...reversal, confidence: "review" }]);
+  assert.deepEqual(reversed.reversedIds, [reversal.id]);
+  assert.deepEqual(reversed.acknowledgedIds, [reversal.id]);
+  assert.equal(reversed.state.ledgers[0].expenses.length, 0);
+  assert.deepEqual(reversed.pending, []);
+  const reloaded = parseWalletStateStrict(JSON.parse(JSON.stringify(reversed.state))); assert.ok(reloaded);
+  const replay = applyHighConfidenceCardAutomation(reloaded, [candidate, reversal, { ...reversal, id: "same-refund-reposted" }]);
+  assert.equal(replay.state, reloaded);
+  assert.deepEqual(replay.pending, []);
+  assert.deepEqual(replay.insertedIds, []);
+  assert.deepEqual(replay.reversedIds, []);
+  assert.equal(replay.acknowledgedIds.length, 3);
+});
+
+test("a new issuer cancellation id can remove a wallet-first merged expense without reviving stale alerts", () => {
+  const recorded = applyHighConfidenceCardAutomation(wallet(pairedLedger()), [walletAlert(), candidate]);
+  const reversal = Object.freeze({ ...candidate, id: "issuer-cancellation-separate", eventType: "reversal" as const,
+    occurredAt: "2026-08-30T11:15:00+02:00" });
+  const cancelled = applyHighConfidenceCardAutomation(recorded.state, [reversal]);
+  assert.deepEqual(cancelled.reversedIds, [reversal.id]);
+  assert.deepEqual(cancelled.pending, []);
+  assert.equal(cancelled.state.ledgers[0].expenses.length, 0);
+  assert.equal(applyHighConfidenceCardAutomation(cancelled.state, [candidate, walletAlert()]).state, cancelled.state);
+});
+
+test("automatic separate-id cancellations require recent receipts, a trusted source and a completed high-confidence event", () => {
+  const recorded = applyHighConfidenceCardAutomation(wallet(), [candidate]);
+  const ledger = recorded.state.ledgers[0] as GeneralLedger;
+  const reversal = Object.freeze({ ...candidate, id: "cancel-guard", eventType: "reversal" as const,
+    occurredAt: "2026-08-30T11:15:00+02:00" });
+  const cases: readonly { readonly state: WalletState; readonly alert: NativeCardCandidate }[] = [
+    { state: wallet({ ...ledger, automationPaymentReceipts: [] }), alert: reversal },
+    { state: wallet({ ...ledger, automationSources: [], automationAllApps: true }), alert: reversal },
+    { state: recorded.state, alert: { ...reversal, confidence: "review" } },
+    { state: recorded.state, alert: { ...reversal, manualOnly: true } },
+    { state: recorded.state, alert: { ...reversal, merchant: "", requiresMerchant: true } },
+    { state: recorded.state, alert: { ...reversal, occurredAt: "2026-08-30T09:15:00+02:00" } },
+    { state: recorded.state, alert: { ...reversal, occurredAt: "2026-10-01T10:15:00+02:00", occurredOn: "2026-10-01" } },
+    { state: recorded.state, alert: { ...reversal, minorUnits: 1298 } },
+    { state: recorded.state, alert: { ...reversal, currency: "USD" } },
+    { state: recorded.state, alert: { ...reversal, merchant: "Other Store" } },
+  ];
+  for (const { state, alert } of cases) {
+    const result = applyHighConfidenceCardAutomation(state, [alert]);
+    assert.equal(result.state, state);
+    assert.deepEqual(result.reversedIds, []);
+    assert.equal(result.pending.length, 1);
+    assert.equal(result.state.ledgers[0].expenses.length, 1);
+  }
+});
+
+test("a user-edited amount is preserved even when a cancellation reuses the purchase notification id", () => {
+  const recorded = applyHighConfidenceCardAutomation(wallet(), [candidate]);
+  const ledger = recorded.state.ledgers[0] as GeneralLedger;
+  const edited = wallet({ ...ledger, expenses: [{ ...ledger.expenses[0], minorUnits: 1599 }] });
+  for (const id of [candidate.id, "separate-refund-edited"]) {
+    const result = applyHighConfidenceCardAutomation(edited, [{ ...candidate, id, eventType: "reversal" }]);
+    assert.equal(result.state, edited);
+    assert.deepEqual(result.reversedIds, []);
+    assert.equal(result.pending.length, 1);
+  }
+});
+
+test("a removed historical receipt makes a new same-merchant amount cancellation ambiguous", () => {
+  const first = applyHighConfidenceCardAutomation(wallet(), [candidate]);
+  const firstLedger = first.state.ledgers[0] as GeneralLedger;
+  const removed = wallet({ ...firstLedger, expenses: [] });
+  const later = { ...candidate, id: "new-purchase-same-merchant", occurredAt: "2026-09-01T10:15:00+02:00", occurredOn: "2026-09-01" };
+  const recorded = applyHighConfidenceCardAutomation(removed, [later]);
+  const result = applyHighConfidenceCardAutomation(recorded.state, [{ ...later, id: "which-purchase-cancelled", eventType: "reversal" }]);
+  assert.equal(result.state, recorded.state);
+  assert.deepEqual(result.reversedIds, []);
+  assert.equal(result.pending.length, 1);
+});
+
+test("an out-of-order separate-id cancellation is applied after its purchase within the same batch", () => {
+  const reversal = { ...candidate, id: "refund-posted-first", eventType: "reversal" as const,
+    occurredAt: "2026-08-30T11:15:00+02:00" };
+  const result = applyHighConfidenceCardAutomation(wallet(), [reversal, candidate]);
+  assert.deepEqual(result.insertedIds, [candidate.id]);
+  assert.deepEqual(result.reversedIds, [reversal.id]);
+  assert.deepEqual(result.pending, []);
+  assert.equal(result.state.ledgers[0].expenses.length, 0);
 });
 
 test("an updated notification can reverse a purchase with the same stable event id", () => {
