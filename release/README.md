@@ -1,4 +1,18 @@
-# 지갑의 일기 v1.8.16 — 참가자 과거 정산 선택·삼성카드 문자 인식 수정
+# 지갑의 일기 v1.8.17 — 보안 의존성 업데이트
+
+- 검증 완료일: 2026-11-02. 직접 설치/업데이트: `Wallet-Diary-v1.8.17.apk`, Google Play 업로드용: `Wallet-Diary-v1.8.17.aab`.
+- 패키지: `com.seunghyeonkim.walletdiary`, version code **142**. 기존 서명 키를 유지했습니다. Play Console에 아직 제출하지 않은 v1.8.16/code 141 대신 이 AAB를 사용하세요.
+- Capacitor Android/iOS/Core/CLI **8.5.1**, DOMPurify **3.4.17**, RE2JS **2.8.7**, grpc-js **1.13.6**으로 보안 의존성을 갱신했습니다. Firebase **12.19.0**은 유지하며 강제 다운그레이드하지 않았습니다. 자세한 범위와 근거는 `docs/SECURITY_DEPENDENCIES.md`에 있습니다.
+- 이번 버전은 v1.8.16 기능을 유지하는 보안 업데이트입니다. 앱 알림 파서·UI·데이터 스키마·Firebase 보안 규칙은 변경하지 않았습니다. 새 권한·유료 API·AI 호출은 추가하지 않았습니다.
+- 프로덕션 의존성 감사 **알려진 취약점 0건**. JavaScript **312/312**, Android JVM **204/204**, Firestore 에뮬레이터 **28/28** 통과(실패·오류·건너뜀 0). TypeScript·ESLint·웹/Android 빌드 통과. 최종 Android 클래스의 정규식 **109개**, native ICU 매칭 표본 **270개** 통과.
+- 최종 APK/AAB의 기존 인증서, 패키지·버전·코드, 최소 SDK **24**·대상 SDK **36**, 서명·번들 구조를 확인했습니다. APK 16KB ZIP 정렬 및 64비트 네이티브 라이브러리 **4개**의 16KB ELF 정렬도 통과했습니다.
+- APK와 AAB 각각 웹 자산 **220개**(오프라인 PDF 자산 **198개** 포함)가 최종 빌드와 일치하며, DEX **2개**와 네이티브 라이브러리 **8개**도 두 파일 간 바이트 단위로 일치합니다. Capacitor의 새 요청 차단 로직이 컴파일됐고 최종 DEX에 포함된 것도 확인했습니다. SHA-256은 `SHA256SUMS.txt`에 있습니다.
+- **한계:** 연결된 ADB 휴대폰이 없어 이번 버전의 실제 기기 설치·결제/문자 알림 수신은 검증하지 못했습니다. 감사 0건은 알려지지 않은 모든 취약점의 부재를 보증하지 않습니다. iOS 의존성 선언은 갱신했지만 IPA는 빌드하지 않았습니다.
+- 기존 앱을 삭제하지 말고 백업 후 업데이트하세요. Play 설치본은 Play 서명이 다를 수 있으므로 같은 Play 트랙에 새 AAB를 올려 업데이트하세요. 이전 v1.8.16 APK/AAB를 보존했습니다. **사용자 요청에 따라 Git commit/push, GitHub 업로드, Play 제출, Firebase 배포를 하지 않았습니다.**
+
+---
+
+# 이전 릴리스: 지갑의 일기 v1.8.16 — 참가자 과거 정산 선택·삼성카드 문자 인식 수정
 
 - 검증 완료일: 2026-11-02. 직접 설치/업데이트: `Wallet-Diary-v1.8.16.apk`, Google Play 제출용: `Wallet-Diary-v1.8.16.aab`.
 - 패키지: `com.seunghyeonkim.walletdiary`, version code `141`, notification parser version `17`. 기존 서명 키를 유지했습니다.

@@ -15,6 +15,7 @@ $buildTools = "$AndroidSdk\build-tools\36.1.0"
 $apkPath = "$buildRoot\android\app\build\outputs\apk\release\app-release.apk"
 $aabPath = "$buildRoot\android\app\build\outputs\bundle\release\app-release.aab"
 if (-not (Select-String -LiteralPath "$buildRoot\build.log" -SimpleMatch "WALLET_BUILD_SUCCEEDED $version" -Quiet)) { throw 'Final release build has not completed' }
+if (-not (Select-String -LiteralPath "$buildRoot\build.log" -SimpleMatch "WALLET_SECURITY_AUDIT_PASSED $version" -Quiet)) { throw 'Production dependency security audit has not passed for this release' }
 foreach ($relativeRoot in @('src', 'public', 'tests', 'docs', 'android\app\src')) {
   $sourceRoot = (Get-Item -LiteralPath "$repoRoot\$relativeRoot").FullName
   foreach ($file in (Get-ChildItem -LiteralPath $sourceRoot -File -Recurse)) {
@@ -33,7 +34,7 @@ foreach ($relative in @('package.json', 'package-lock.json', 'vite.config.ts', '
 $testCount = 0
 Get-ChildItem -LiteralPath "$buildRoot\android\app\build\test-results\testReleaseUnitTest" -Filter '*.xml' | ForEach-Object {
   [xml]$result = Get-Content -Raw -LiteralPath $_.FullName
-  if ([int]$result.testsuite.failures -gt 0 -or [int]$result.testsuite.errors -gt 0) { throw 'Native tests have failures' }
+  if ([int]$result.testsuite.failures -gt 0 -or [int]$result.testsuite.errors -gt 0 -or [int]$result.testsuite.skipped -gt 0) { throw 'Native tests have failures or skipped cases' }
   $testCount += [int]$result.testsuite.tests
 }
 if ($testCount -lt 35) { throw 'Native tests are missing' }

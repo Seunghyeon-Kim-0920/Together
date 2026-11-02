@@ -17,6 +17,9 @@ try {
     $env:JAVA_HOME = $JavaHome; $env:ANDROID_HOME = $AndroidSdk; $env:ANDROID_SDK_ROOT = $AndroidSdk
     $env:Path = "$JavaHome\bin;$env:Path"
     Set-Location -LiteralPath $repoRoot
+    & npm.cmd audit --omit=dev --audit-level=moderate | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Production dependency security audit failed; do not package a release.' }
+    Write-Output "WALLET_SECURITY_AUDIT_PASSED $version"
     & npm.cmd test | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
     & npm.cmd run lint | Out-Host

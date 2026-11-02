@@ -17,6 +17,7 @@ jobs:
           distribution: temurin
           java-version: 21
       - run: npm ci
+      - run: npm audit --omit=dev --audit-level=moderate
       - run: npm run lint
       - run: npm test
       - run: npm run build
