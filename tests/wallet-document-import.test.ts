@@ -313,6 +313,19 @@ test("mixed currencies create separate ledgers and cannot be silently converted 
   assert.equal(state.ledgers[0].expenses.length, 0, "a failed import changes no original data");
 });
 
+test("new travel statement rows reject newly archived payer or split selections without modifying history", () => {
+  const travel = { ...createLedger("travel", "Paris", "EUR"), participants: [{ id: "alice", name: "Alice" }, { id: "bob", name: "Bob" }], inactiveParticipantIds: ["bob"] };
+  const state: WalletState = { ...EMPTY_WALLET_STATE, ledgers: [travel], activeLedgerId: travel.id };
+  for (const selection of [{ paidBy: "bob", participantIds: ["alice"] }, { paidBy: "alice", participantIds: ["alice", "bob"] }]) {
+    assert.throws(() => applyStatementImport(state, [row()], { kind: "existing", ledgerId: travel.id, ...selection }), /participants_required/u);
+  }
+  assert.equal(state.ledgers[0].expenses.length, 0);
+  const result = applyStatementImport(state, [row()], { kind: "existing", ledgerId: travel.id, paidBy: "alice", participantIds: ["alice"] });
+  const updated = result.state.ledgers[0]; assert.ok(updated.kind === "travel");
+  assert.deepEqual(updated.expenses[0].shares, [{ participantId: "alice", minorUnits: row().minorUnits }]);
+  assert.deepEqual(updated.inactiveParticipantIds, ["bob"]);
+});
+
 test("travel imports require explicit payer and participants, split cents exactly and preserve existing expenses", () => {
   const travel = { ...createLedger("travel", "Paris", "EUR"), participants: [{ id: "alice", name: "Alice" }, { id: "bob", name: "Bob" }, { id: "chris", name: "Chris" }] };
   const state: WalletState = { ...EMPTY_WALLET_STATE, ledgers: [travel], activeLedgerId: travel.id };

@@ -1,4 +1,4 @@
-import { SharedTravelError, sharedId, validParticipantMembers, validateSharedExpense, type SharedExpenseMutation, type SharedExpenseRecord, type SharedMember, type SharedTrip, type SharedTripSnapshot } from "./sharedTravel";
+import { SharedTravelError, sharedId, validParticipantMembers, validParticipantHistoryRemoval, removeParticipantsFromSharedExpense, validateSharedExpense, type SharedExpenseMutation, type SharedExpenseRecord, type SharedMember, type SharedTrip, type SharedTripSnapshot } from "./sharedTravel";
 import type { TravelExpense, TravelLedger, WalletState } from "./types";
 
 /** Private, durably saved in the same SQLite transaction as the visible ledger.
@@ -22,6 +22,9 @@ export function parseSharedLocal(value: unknown): SharedTravelLocalState | null 
   if (trip.id !== value.tripId || !sharedId(trip.ownerUid) || typeof trip.title !== "string" || !trip.title.trim() || trip.title.length > 80 || !Number.isInteger(trip.revision) || trip.revision < 1 || typeof trip.deleted !== "boolean" || !Array.isArray(trip.participants) || trip.participants.length > 20 || !Array.isArray(trip.currencies) || !trip.currencies.length || trip.currencies.length > 20 || !trip.currencies.every((code) => typeof code === "string" && /^[A-Z]{3}$/.test(code)) || new Set(trip.currencies).size !== trip.currencies.length || !trip.currencies.includes(trip.defaultCurrency)) return null;
   if (!trip.participants.every((p) => record(p) && sharedId(p.id) && typeof p.name === "string" && p.name.trim() && p.name.length <= 80) || new Set(trip.participants.map((p) => p.id)).size !== trip.participants.length) return null;
   if (trip.participantMembers !== undefined && !validParticipantMembers(trip.participantMembers, trip.participants.map((p) => p.id))) return null;
+  if (trip.inactiveParticipantIds !== undefined && (!Array.isArray(trip.inactiveParticipantIds) || new Set(trip.inactiveParticipantIds).size !== trip.inactiveParticipantIds.length || !trip.inactiveParticipantIds.every((id) => sharedId(id) && trip.participants.some((person) => person.id === id)))) return null;
+  if (trip.historyRemovedParticipantIds !== undefined && (!Array.isArray(trip.historyRemovedParticipantIds) || new Set(trip.historyRemovedParticipantIds).size !== trip.historyRemovedParticipantIds.length || !trip.historyRemovedParticipantIds.every((id) => sharedId(id) && trip.inactiveParticipantIds?.includes(id)))) return null;
+  if (trip.participantHistoryRemoval !== undefined && !validParticipantHistoryRemoval(trip.participantHistoryRemoval, trip.participants.map((p) => p.id), trip.historyRemovedParticipantIds)) return null;
   if (!Array.isArray(value.records) || value.records.length > 5000 || !Array.isArray(value.pending) || value.pending.length > 5000 || !Array.isArray(value.members) || value.members.length > 100) return null;
   const records: SharedExpenseRecord[] = []; const recordIds = new Set<string>();
   for (const r of value.records) {
@@ -40,20 +43,21 @@ export function parseSharedLocal(value: unknown): SharedTravelLocalState | null 
     if (!record(m) || !sharedId(m.uid) || memberIds.has(m.uid) || typeof m.displayName !== "string" || !m.displayName.trim() || m.displayName.length > 80 || (m.role !== "member" && m.role !== "owner")) return null;
     members.push({ uid: m.uid, displayName: m.displayName, role: m.role }); memberIds.add(m.uid);
   }
-  return { version: 1, tripId: value.tripId, uid: value.uid, trip: { id: trip.id, ownerUid: trip.ownerUid, title: trip.title, participants: trip.participants.map((p) => ({ id: p.id, name: p.name })), currencies: [...trip.currencies], defaultCurrency: trip.defaultCurrency, revision: trip.revision, deleted: trip.deleted, ...(trip.participantMembers !== undefined ? { participantMembers: { ...trip.participantMembers } } : {}) }, records, pending, members };
+  return { version: 1, tripId: value.tripId, uid: value.uid, trip: { id: trip.id, ownerUid: trip.ownerUid, title: trip.title, participants: trip.participants.map((p) => ({ id: p.id, name: p.name })), currencies: [...trip.currencies], defaultCurrency: trip.defaultCurrency, revision: trip.revision, deleted: trip.deleted, ...(trip.participantMembers !== undefined ? { participantMembers: { ...trip.participantMembers } } : {}), ...(trip.inactiveParticipantIds !== undefined ? { inactiveParticipantIds: [...trip.inactiveParticipantIds] } : {}), ...(trip.historyRemovedParticipantIds !== undefined ? { historyRemovedParticipantIds: [...trip.historyRemovedParticipantIds] } : {}), ...(trip.participantHistoryRemoval !== undefined ? { participantHistoryRemoval: { ...trip.participantHistoryRemoval } } : {}) }, records, pending, members };
 }
 
 export function connectSharedLedger(ledger: TravelLedger, trip: SharedTrip, uid: string, snapshot?: SharedTripSnapshot): TravelLedger {
   if (ledger.sharedSync || trip.deleted || !sharedId(uid) || snapshot && (snapshot.trip.id !== trip.id || snapshot.trip.deleted || snapshot.fromCache)) throw new SharedTravelError("invalid-data");
   // Another member may join between accepting an invite and loading the full snapshot.
   const connectedTrip = snapshot?.trip ?? trip;
+  if (connectedTrip.participantHistoryRemoval) throw new SharedTravelError("history-busy");
   const pending = snapshot ? [] : ledger.expenses.map((expense) => {
     validateSharedExpense(expense, connectedTrip);
     return { id: expense.id, expense, expectedRevision: 0, mutationId: crypto.randomUUID(), conflict: false };
   });
   const sync: SharedTravelLocalState = { version: 1, tripId: connectedTrip.id, uid, trip: connectedTrip, records: snapshot?.expenses ?? [], members: snapshot?.members ?? [], pending };
   if (!parseSharedLocal(sync)) throw new SharedTravelError("invalid-data");
-  return { ...ledger, title: connectedTrip.title, participants: connectedTrip.participants, currencies: connectedTrip.currencies, defaultCurrency: connectedTrip.defaultCurrency,
+  return { ...ledger, title: connectedTrip.title, participants: connectedTrip.participants, inactiveParticipantIds: connectedTrip.inactiveParticipantIds, historyRemovedParticipantIds: connectedTrip.historyRemovedParticipantIds, currencies: connectedTrip.currencies, defaultCurrency: connectedTrip.defaultCurrency,
     selfParticipantId: participantFor(connectedTrip, uid) ?? (connectedTrip.participants.some((p) => p.id === ledger.selfParticipantId) ? ledger.selfParticipantId : null),
     expenses: snapshot ? snapshot.expenses.flatMap((r) => r.expense ? [r.expense] : []) : ledger.expenses, sharedSync: sync, updatedAt: new Date().toISOString() };
 }
@@ -64,7 +68,8 @@ export function queueSharedWalletChanges(before: WalletState, desired: WalletSta
     const base = before.ledgers.find((item) => item.id === ledger.id);
     if (ledger.kind !== "travel" || base?.kind !== "travel" || !base.sharedSync) return ledger;
     const sync = base.sharedSync;
-    if (!same(base.participants, ledger.participants) || !same(base.currencies, ledger.currencies) || base.defaultCurrency !== ledger.defaultCurrency || base.title !== ledger.title) throw new SharedTravelError("permission-denied");
+    if (!same(base.participants, ledger.participants) || !same(base.inactiveParticipantIds ?? [], ledger.inactiveParticipantIds ?? []) || !same(base.historyRemovedParticipantIds ?? [], ledger.historyRemovedParticipantIds ?? []) || !same(base.currencies, ledger.currencies) || base.defaultCurrency !== ledger.defaultCurrency || base.title !== ledger.title) throw new SharedTravelError("permission-denied");
+    if (sync.trip.participantHistoryRemoval && !same(base.expenses, ledger.expenses)) throw new SharedTravelError("history-busy");
     const pending = new Map(sync.pending.map((op) => [op.id, op]));
     const oldExpenses = new Map(base.expenses.map((expense) => [expense.id, expense]));
     const desiredExpenses = new Map(ledger.expenses.map((expense) => [expense.id, expense]));
@@ -86,29 +91,66 @@ export function queueSharedWalletChanges(before: WalletState, desired: WalletSta
   return { ...desired, ledgers };
 }
 
-/** Remote updates never replace a pending local edit. A differing revision
- * becomes a visible conflict, not last-write-wins. */
-export function receiveSharedSnapshot(ledger: TravelLedger, snapshot: SharedTripSnapshot): TravelLedger {
+/** Apply a confirmed header without acknowledging, replacing, or conflicting any
+ * expense operation. Call this against the latest durable ledger after a header write. */
+export function applySharedParticipantHeader(ledger: TravelLedger, trip: SharedTrip): TravelLedger {
+  return applyParticipantHeader(ledger, trip, false);
+}
+function applyParticipantHeader(ledger: TravelLedger, trip: SharedTrip, withExpenseSnapshot: boolean): TravelLedger {
   const sync = ledger.sharedSync;
-  if (!sync || sync.tripId !== snapshot.trip.id || snapshot.fromCache) return ledger;
-  const trip = snapshot.trip.revision >= sync.trip.revision ? snapshot.trip : sync.trip;
+  if (!sync || sync.tripId !== trip.id) throw new SharedTravelError("invalid-data");
+  if (trip.revision < sync.trip.revision) return ledger;
+  if (trip.revision === sync.trip.revision && same(trip, sync.trip)) return ledger;
+  if (trip.revision === sync.trip.revision) throw new SharedTravelError("invalid-data");
   // Joining may append people, but cannot rename/remove/reorder existing settlement
   // identities or reassign a device. Existing expense shares remain untouched.
   if (!Array.isArray(trip.participants) || !same(sync.trip.participants, trip.participants.slice(0, sync.trip.participants.length))
     || !same(sync.trip.currencies, trip.currencies) || sync.trip.defaultCurrency !== trip.defaultCurrency || sync.trip.ownerUid !== trip.ownerUid
     || Object.entries(sync.trip.participantMembers ?? {}).some(([uid, participantId]) => participantFor(trip, uid) !== participantId)) throw new SharedTravelError("invalid-data");
+  if (sync.trip.historyRemovedParticipantIds?.some((id) => !trip.historyRemovedParticipantIds?.includes(id))) throw new SharedTravelError("invalid-data");
+  const fenceChanged = !same(sync.trip.historyRemovedParticipantIds ?? [], trip.historyRemovedParticipantIds ?? []);
+  if (fenceChanged && !withExpenseSnapshot) throw new SharedTravelError("invalid-data");
+  const selfParticipantId = !participantFor(sync.trip, sync.uid) && participantFor(trip, sync.uid) ? participantFor(trip, sync.uid)! : ledger.selfParticipantId;
+  const next = { ...ledger, title: trip.title, participants: trip.participants, inactiveParticipantIds: trip.inactiveParticipantIds, historyRemovedParticipantIds: trip.historyRemovedParticipantIds, selfParticipantId, sharedSync: { ...sync, trip } };
+  if (!fenceChanged && !parseSharedLocal(next.sharedSync)) throw new SharedTravelError("invalid-data");
+  return next;
+}
+
+/** Remote updates never replace a pending local edit. A differing revision
+ * becomes a visible conflict, not last-write-wins. */
+export function receiveSharedSnapshot(ledger: TravelLedger, snapshot: SharedTripSnapshot): TravelLedger {
+  const sync = ledger.sharedSync;
+  if (!sync || sync.tripId !== snapshot.trip.id || snapshot.fromCache) return ledger;
+  if (snapshot.trip.revision < sync.trip.revision && (sync.trip.participantHistoryRemoval || !same(sync.trip.historyRemovedParticipantIds ?? [], snapshot.trip.historyRemovedParticipantIds ?? []))) return ledger;
+  const withHeader = applyParticipantHeader(ledger, snapshot.trip, true);
+  const trip = withHeader.sharedSync!.trip;
+  // Do not persist/display a partially rewritten settlement. The header alone
+  // carries a durable busy state; a later final snapshot applies all rows at once.
+  if (trip.participantHistoryRemoval) return { ...withHeader, sharedSync: { ...withHeader.sharedSync!, members: snapshot.members } };
   const records = new Map(sync.records.map((r) => [r.id, r]));
   for (const r of snapshot.expenses) if ((records.get(r.id)?.revision ?? 0) <= r.revision) records.set(r.id, r);
   const pending = new Map(sync.pending.map((op) => [op.id, op]));
   const expenses = new Map(ledger.expenses.map((expense) => [expense.id, expense]));
+  for (const op of pending.values()) {
+    if (!op.expense) continue;
+    // If an unsent row would lose its only sharer, fail before any persistence.
+    // The original ledger/outbox remains available for an explicit split repair.
+    const expense = removeParticipantsFromSharedExpense(op.expense, trip.historyRemovedParticipantIds ?? []);
+    if (expense === op.expense) continue;
+    if (!expense) { pending.delete(op.id); expenses.delete(op.id); }
+    else {
+      const remote = records.get(op.id);
+      pending.set(op.id, { ...op, expense, mutationId: crypto.randomUUID(), expectedRevision: remote?.revision ?? op.expectedRevision, conflict: op.conflict || Boolean(remote && remote.revision > op.expectedRevision) });
+      expenses.set(op.id, expense);
+    }
+  }
   for (const r of records.values()) {
     const op = pending.get(r.id);
     if (op && op.mutationId === r.mutationId) pending.delete(r.id);
     else if (op) { if (r.revision > op.expectedRevision) pending.set(r.id, { ...op, conflict: true }); continue; }
     if (r.expense) expenses.set(r.id, r.expense); else expenses.delete(r.id);
   }
-  const selfParticipantId = !participantFor(sync.trip, sync.uid) && participantFor(trip, sync.uid) ? participantFor(trip, sync.uid)! : ledger.selfParticipantId;
-  const next = { ...ledger, title: trip.title, participants: trip.participants, selfParticipantId, expenses: [...expenses.values()], sharedSync: { ...sync, trip, members: snapshot.members, records: [...records.values()], pending: [...pending.values()] } };
+  const next = { ...withHeader, expenses: [...expenses.values()], sharedSync: { ...sync, trip, members: snapshot.members, records: [...records.values()], pending: [...pending.values()] } };
   if (!parseSharedLocal(next.sharedSync)) throw new SharedTravelError("invalid-data");
   return same(next, ledger) ? ledger : next;
 }
@@ -116,6 +158,8 @@ export function receiveSharedSnapshot(ledger: TravelLedger, snapshot: SharedTrip
 export function acknowledgeSharedMutation(ledger: TravelLedger, sent: SharedExpenseMutation, result: SharedExpenseRecord): TravelLedger {
   const sync = ledger.sharedSync;
   if (!sync || sent.id !== result.id || result.mutationId !== sent.mutationId) throw new SharedTravelError("invalid-data");
+  // A delayed acknowledgement must not undo a completed history purge.
+  try { if (result.expense) validateSharedExpense(result.expense, sync.trip); } catch { return ledger; }
   const known = sync.records.find((r) => r.id === result.id);
   const newer = known && known.revision > result.revision;
   const pending = sync.pending.flatMap((op) => op.id !== sent.id ? [op] : op.mutationId === sent.mutationId && !newer ? [] : [{ ...op, expectedRevision: Math.max(op.expectedRevision, result.revision), conflict: Boolean(newer) || op.conflict && op.expectedRevision > result.revision }]);
@@ -127,7 +171,9 @@ export function acknowledgeSharedMutation(ledger: TravelLedger, sent: SharedExpe
 export function resolveSharedConflict(ledger: TravelLedger, id: string, keepLocal: boolean): TravelLedger {
   const sync = ledger.sharedSync; const op = sync?.pending.find((p) => p.id === id); const r = sync?.records.find((item) => item.id === id);
   if (!sync || !op?.conflict || !r) throw new SharedTravelError("conflict");
+  if (sync.trip.participantHistoryRemoval) throw new SharedTravelError("history-busy");
   if (keepLocal && (sync.trip.deleted || r.authorUid !== sync.uid && sync.trip.ownerUid !== sync.uid)) throw new SharedTravelError("permission-denied");
+  if (keepLocal && op.expense) validateSharedExpense(op.expense, sync.trip);
   const pending = sync.pending.flatMap((p) => p.id !== id ? [p] : keepLocal ? [{ ...p, expectedRevision: r.revision, mutationId: crypto.randomUUID(), conflict: false }] : []);
   return { ...ledger, expenses: keepLocal ? ledger.expenses : [...ledger.expenses.filter((expense) => expense.id !== id), ...(r.expense ? [r.expense] : [])], sharedSync: { ...sync, pending } };
 }

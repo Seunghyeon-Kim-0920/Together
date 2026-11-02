@@ -1,6 +1,7 @@
 import { TRAVEL_CATEGORIES, type TravelCategory, type TravelExpense, type WalletState } from "./types";
 import { publicExpenseId } from "./expenseIdentity";
 import { merchantDisplayName } from "./merchant";
+import { activeTravelParticipants } from "./travelParticipants";
 import { MAX_EXPENSES_PER_LEDGER, MAX_MOVED_EXPENSE_MARKERS, MAX_PARTICIPANTS, parseLedger, parseWalletStateStrict, splitEvenly } from "./wallet";
 
 export interface MoveGeneralExpenseToTravelInput {
@@ -32,10 +33,10 @@ export function moveGeneralExpenseToTravel(state: WalletState, input: MoveGenera
   const source = state.ledgers.find((ledger) => ledger.id === input.sourceLedgerId);
   const target = state.ledgers.find((ledger) => ledger.id === input.targetLedgerId);
   if (!source || source.kind !== "general" || !target || target.kind !== "travel" || !parseLedger(source) || !parseLedger(target)) throw new Error("invalid move ledgers");
-  const availableParticipants = new Set(target.participants.map((participant) => participant.id));
-  if (!availableParticipants.has(input.paidBy) || !Array.isArray(input.participantIds) || input.participantIds.length < 1 || input.participantIds.length > MAX_PARTICIPANTS || new Set(input.participantIds).size !== input.participantIds.length || input.participantIds.some((id) => !availableParticipants.has(id)) || !TRAVEL_CATEGORIES.includes(input.category)) throw new Error("invalid move participants or category");
   const movedMarkers = source.movedExpenseIds ?? [];
   if (movedMarkers.includes(input.expenseId)) return state;
+  const availableParticipants = new Set(activeTravelParticipants(target).map((participant) => participant.id));
+  if (!availableParticipants.has(input.paidBy) || !Array.isArray(input.participantIds) || input.participantIds.length < 1 || input.participantIds.length > MAX_PARTICIPANTS || new Set(input.participantIds).size !== input.participantIds.length || input.participantIds.some((id) => !availableParticipants.has(id)) || !TRAVEL_CATEGORIES.includes(input.category)) throw new Error("invalid move participants or category");
   const expense = source.expenses.find((candidate) => candidate.id === input.expenseId);
   if (!expense) throw new Error("source expense no longer exists");
   const id = movedTravelExpenseId(source.id, expense.id);

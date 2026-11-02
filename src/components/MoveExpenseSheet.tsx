@@ -4,7 +4,7 @@ import { exchangeText as x } from "../lib/exchangeI18n";
 import { t, travelCategoryLabel } from "../lib/i18n";
 import { merchantDisplayName } from "../lib/merchant";
 import { TRAVEL_CATEGORIES, type GeneralExpense, type Locale, type TravelCategory, type TravelLedger } from "../lib/types";
-import { SheetFrame } from "./Sheets";
+import { SheetFrame } from "./Sheets"; import { activeTravelParticipants } from "../lib/travelParticipants";
 
 export interface MoveSelection { readonly targetLedgerId: string; readonly paidBy: string; readonly participantIds: readonly string[]; readonly category: TravelCategory; }
 
@@ -20,14 +20,14 @@ export function MoveExpenseSheet({ expense, travels, locale, busy, onClose, onMo
 }
 
 function MoveDetails({ target, expense, locale, busy, onMove }: { target: TravelLedger; expense: GeneralExpense; locale: Locale; busy: boolean; onMove: (selection: MoveSelection) => void }) {
-  const [paidBy, setPaidBy] = useState(target.selfParticipantId ?? "");
-  const [selected, setSelected] = useState<readonly string[]>(target.participants.map((person) => person.id));
+  const activePeople = activeTravelParticipants(target); const [paidBy, setPaidBy] = useState(activePeople.find((person) => person.id === target.selfParticipantId)?.id ?? "");
+  const [selected, setSelected] = useState<readonly string[]>(activePeople.map((person) => person.id));
   const [category, setCategory] = useState<TravelCategory>(TRAVEL_CATEGORIES.includes(expense.category as TravelCategory) ? expense.category as TravelCategory : expense.category === "housing" ? "accommodation" : expense.category === "leisure" ? "activities" : "other");
-  if (!target.participants.length) return <p className="empty-inline">{x(locale, "noPeople")}</p>;
+  if (!activePeople.length) return <p className="empty-inline">{x(locale, "noPeople")}</p>;
   return <div className="expense-form-grid">
-    <label>{t(locale, "payer")}<select value={paidBy} disabled={busy} onChange={(event) => setPaidBy(event.target.value)}><option value="" disabled>{t(locale, "payer")}</option>{target.participants.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+    <label>{t(locale, "payer")}<select value={paidBy} disabled={busy} onChange={(event) => setPaidBy(event.target.value)}><option value="" disabled>{t(locale, "payer")}</option>{activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
     <label>{t(locale, "category")}<select value={category} disabled={busy} onChange={(event) => setCategory(event.target.value as TravelCategory)}>{TRAVEL_CATEGORIES.map((value) => <option key={value} value={value}>{travelCategoryLabel(locale, value)}</option>)}</select></label>
-    <fieldset><legend>{t(locale, "splitWith")}</legend><div className="split-grid">{target.participants.map((person) => <label key={person.id}><input type="checkbox" disabled={busy} checked={selected.includes(person.id)} onChange={() => setSelected((current) => current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id])} />{person.name}</label>)}</div><small>{t(locale, "equalSplit")}</small></fieldset>
-    <button className="primary-button wide" type="button" disabled={busy || !paidBy || selected.length === 0} onClick={() => onMove({ targetLedgerId: target.id, paidBy, participantIds: selected, category })}>{x(locale, "move")}</button>
+    <fieldset><legend>{t(locale, "splitWith")}</legend><div className="split-grid">{activePeople.map((person) => <label key={person.id}><input type="checkbox" disabled={busy} checked={selected.includes(person.id)} onChange={() => setSelected((current) => current.includes(person.id) ? current.filter((id) => id !== person.id) : [...current, person.id])} />{person.name}</label>)}</div><small>{t(locale, "equalSplit")}</small></fieldset>
+    <button className="primary-button wide" type="button" disabled={busy || !activePeople.some((person) => person.id === paidBy) || selected.length === 0 || selected.some((id) => !activePeople.some((person) => person.id === id))} onClick={() => onMove({ targetLedgerId: target.id, paidBy, participantIds: selected, category })}>{x(locale, "move")}</button>
   </div>;
 }

@@ -1,6 +1,7 @@
 import { Check, ChevronRight, Gauge, Globe2, ReceiptText, RefreshCw, RotateCcw, ShieldCheck, Trash2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
-import { automationReversalFingerprint, isMovedAutomationReversal, calculateMonthlyLimitStatus, completeCandidateMerchant, reversalMatchIndexes, type NativeCardCandidate } from "../lib/cardAutomation";
+import { automationReversalFingerprint, isMovedAutomationReversal, calculateMonthlyLimitStatus, completeCandidateMerchant, reversalMatchIndexes, cashbackMatchOptions, selectCashbackExpense, type NativeCardCandidate } from "../lib/cardAutomation";
+import { cashbackText } from "../lib/cashbackI18n";
 import { categoryText } from "../lib/categoryI18n";
 import { currencyDigits, formatMoney, parseMinorUnits } from "../lib/currency";
 import { designText as ux } from "../lib/designI18n";
@@ -131,9 +132,12 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh,
       ] as const).map(([field, label]) => status[field] ? <li key={field}><strong>{n(locale, label)}</strong><small>{dateFormatter.format(new Date(status[field]))}</small></li> : null)}</ul>{status.recentChecks?.length ? <ul>{status.recentChecks.map((check) => <li key={check.packageName}><strong>{check.sourceName}</strong><span>{n(locale, check.recognized ? "recognized" : "notRecognized")}</span><small>{dateFormatter.format(new Date(check.checkedAt))}</small>{registeredPackages.has(check.packageName) ? null : <button type="button" disabled={busy} onClick={() => onRegisterSource(Object.freeze({ packageName: check.packageName, displayName: check.sourceName, trustedDirectApp: true }))}>{t(locale, "registerSource")}</button>}</li>)}</ul> : <p className="automation-empty">{n(locale, "noChecks")}</p>}</details>
       <div className="automation-section-heading"><h3>{t(locale, "registeredSources")}</h3><button type="button" disabled={busy} onClick={onRefresh}><RefreshCw />{t(locale, "refresh")}</button></div>
       {ledger.automationSources.length ? <div className="automation-source-list">{ledger.automationSources.map((source) => <article key={source.packageName}><div><strong>{source.displayName}</strong><small>{isSmsSenderSource(source.packageName) ? smsText(locale, "source") : source.packageName}</small></div><button type="button" disabled={busy} onClick={() => onRemoveSource(source.packageName)} aria-label={`${t(locale, "removeCardApp")}: ${source.displayName}`}><Trash2 /></button></article>)}</div> : <p className="automation-empty">{t(locale, "noRegisteredSources")}</p>}
-      <div className="automation-section-heading"><h3>{t(locale, "pendingExpenses")}</h3><span>{pending.length.toLocaleString(locale)}</span></div>
-      {pending.length ? <div className="candidate-list">{pending.map((nativeCandidate) => { const draftKey = `${nativeCandidate.packageName}:${nativeCandidate.id}:${nativeCandidate.queueToken ?? ""}`; const draft = merchantDrafts[draftKey]?.trim() ?? ""; const candidate = nativeCandidate.requiresMerchant && draft ? completeCandidateMerchant(nativeCandidate, draft) : nativeCandidate; const wrongCurrency = candidate.currency !== ledger.currency; const movedReversal = isMovedAutomationReversal(ledger, candidate); const reversalHandled = candidate.eventType === "reversal" && ledger.automationReversalIds.includes(automationReversalFingerprint(candidate)); const reversalMatches = reversalHandled ? 0 : reversalMatchIndexes(ledger.expenses, candidate, ledger.automationPaymentReceipts).length; const registered = registeredPackages.has(candidate.packageName); const directAppConfirmed = directAppConfirmations.has(candidate.packageName); return <article key={draftKey}>
+      <div className="automation-section-heading"><h3>{pending.some((candidate) => candidate.eventType === "cashback") ? cashbackText(locale, "pending") : t(locale, "pendingExpenses")}</h3><span>{pending.length.toLocaleString(locale)}</span></div>
+      {pending.length ? <div className="candidate-list">{pending.map((nativeCandidate) => { const draftKey = `${nativeCandidate.packageName}:${nativeCandidate.id}:${nativeCandidate.queueToken ?? ""}`;
+        if (nativeCandidate.eventType === "cashback") return <CashbackCandidateReview key={draftKey} ledger={ledger} locale={locale} candidate={nativeCandidate} busy={busy} onConfirm={onConfirm} onDismiss={onDismiss} />;
+        const draft = merchantDrafts[draftKey]?.trim() ?? ""; const candidate = nativeCandidate.requiresMerchant && draft ? completeCandidateMerchant(nativeCandidate, draft) : nativeCandidate; const wrongCurrency = candidate.currency !== ledger.currency; const movedReversal = isMovedAutomationReversal(ledger, candidate); const reversalHandled = candidate.eventType === "reversal" && ledger.automationReversalIds.includes(automationReversalFingerprint(candidate)); const reversalMatches = reversalHandled ? 0 : reversalMatchIndexes(ledger.expenses, candidate, ledger.automationPaymentReceipts).length; const registered = registeredPackages.has(candidate.packageName); const directAppConfirmed = directAppConfirmations.has(candidate.packageName); return <article key={draftKey}>
         <div className="candidate-heading"><span><strong>{candidate.merchant || n(locale, "merchantUnknown")}</strong><small>{candidate.sourceName} · {dateFormatter.format(new Date(candidate.occurredAt))}</small></span><b>{formatMoney(candidate.minorUnits, candidate.currency, locale)}</b></div>
+        {candidate.cashbackMinorUnits ? <p className="reversal-help">{cashbackNetLabel(locale, candidate.currency, candidate.minorUnits, candidate.cashbackMinorUnits)}</p> : null}
         {nativeCandidate.requiresMerchant ? <><p className="reversal-help">{n(locale, "merchantRequired")}</p><label className="field-label">{t(locale, "description")}<input aria-label={n(locale, "merchantUnknown")} value={merchantDrafts[draftKey] ?? ""} maxLength={100} disabled={busy} onChange={(event) => setMerchantDrafts((current) => ({ ...current, [draftKey]: event.target.value }))} /></label></> : null}
         {candidate.currencyReview ? <p className="reversal-help">{categoryText(locale, "currencyReview")}</p> : null}
         {wrongCurrency ? <p className="reversal-help">{n(locale, "currencyMismatch").replace("{currency}", candidate.currency)}</p> : null}
@@ -149,12 +153,44 @@ function CardAutomationSheet({ ledger, locale, status, pending, busy, onRefresh,
   </SheetFrame>;
 }
 
+function CashbackCandidateReview({ ledger, locale, candidate, busy, onConfirm, onDismiss }: { ledger: GeneralLedger; locale: Locale; candidate: NativeCardCandidate; busy: boolean; onConfirm: (candidate: NativeCardCandidate, asNewTransaction?: boolean) => void; onDismiss: (candidate: NativeCardCandidate) => void }) {
+  const [selectedId, setSelectedId] = useState("");
+  const options = cashbackMatchOptions(ledger, candidate);
+  // A refreshed ledger can remove or edit an option. A stale selection must
+  // not keep the action enabled or fall back to the first available purchase.
+  const selected = options.find((expense) => expense.id === selectedId);
+  const selectedGross = ledger.automationPaymentReceipts?.find((receipt) => receipt.expenseId === selected?.id)?.minorUnits;
+  const wrongCurrency = candidate.currency !== ledger.currency;
+  const dateFormatter = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" });
+  const purchaseDateFormatter = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
+  return <article>
+    <div className="candidate-heading"><span><strong>{cashbackText(locale, "received")}</strong>{candidate.merchant ? <small>{candidate.merchant}</small> : null}<small>{candidate.sourceName} · {dateFormatter.format(new Date(candidate.occurredAt))}</small></span><b>{formatMoney(candidate.minorUnits, candidate.currency, locale)}</b></div>
+    <p className="reversal-help">{cashbackText(locale, options.length ? "help" : "noMatch")}</p>
+    {wrongCurrency ? <p className="reversal-help">{n(locale, "currencyMismatch").replace("{currency}", candidate.currency)}</p> : null}
+    {options.length ? <label className="field-label">{cashbackText(locale, "selectPurchase")}<select value={selected?.id ?? ""} disabled={busy || wrongCurrency} onChange={(event) => setSelectedId(event.target.value)}>
+      <option value="">{cashbackText(locale, "choosePurchase")}</option>
+      {options.map((expense) => <option key={expense.id} value={expense.id}>{purchaseDateFormatter.format(new Date(`${expense.occurredOn}T12:00:00`))} · {expense.description} · {formatMoney(expense.minorUnits, expense.currency, locale)}</option>)}
+    </select></label> : null}
+    {selected && selectedGross ? <p className="reversal-help">{cashbackNetLabel(locale, candidate.currency, selectedGross, candidate.minorUnits)}</p> : null}
+    <p className="sheet-intro">{cashbackText(locale, "topup")}</p>
+    <div className="candidate-actions"><button type="button" disabled={busy} onClick={() => onDismiss(candidate)}><Trash2 />{t(locale, "dismissCandidate")}</button><button className="primary-button" type="button" disabled={busy || wrongCurrency || !selected} onClick={() => { if (selected) onConfirm(selectCashbackExpense(candidate, selected.id)); }}><Check />{cashbackText(locale, "apply")}</button></div>
+  </article>;
+}
+
+function cashbackNetLabel(locale: Locale, currency: string, grossMinor: number, cashbackMinor: number): string {
+  return cashbackText(locale, "net")
+    .replace("{gross}", formatMoney(grossMinor, currency, locale))
+    .replace("{cashback}", formatMoney(cashbackMinor, currency, locale))
+    .replace("{net}", formatMoney(grossMinor - cashbackMinor, currency, locale));
+}
+
 function minorUnitsInput(minorUnits: number, currency: string): string {
   const digits = currencyDigits(currency);
   return (minorUnits / 10 ** digits).toFixed(digits);
 }
 
 function automationEventTypeLabel(locale: Locale, eventType: NativeCardCandidate["eventType"]): string {
+  if (eventType === "cash_withdrawal") return t(locale, "cashWithdrawalEvent");
   if (eventType === "outgoing_transfer") return t(locale, "outgoingTransferEvent");
   if (eventType === "direct_debit") return t(locale, "directDebitEvent");
   if (eventType === "standing_order") return t(locale, "standingOrderEvent");

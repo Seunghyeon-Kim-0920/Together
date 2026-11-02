@@ -140,12 +140,25 @@ public class KoreanTransferNotificationRegressionTest {
         String[][] fixtures = {
             {"잔액 알림", "출금 가능 잔액 188,000원"},
             {"출금 알림", "출금 12,000원\n잔액 188,000원"},
-            {"출금 알림", "ATM 현금출금 12,000원\n잔액 188,000원"},
-            {"출금 알림", "출금 12,000원\n적요: CD현금\n잔액 188,000원"},
             {"이체 안내", "이체금액: 12,000원\n출금계좌: ***-***-0000\n받는 분: 테스트수취인"},
         };
         for (String[] fixture : fixtures) {
             assertNull(fixture[0] + " / " + fixture[1], parse("com.kbstar.kbbank", "KB국민은행", fixture[0], fixture[1], true));
+        }
+    }
+
+    @Test
+    public void explicitAtmDebitsAreCashWithdrawalsAndNeverPersonTransfers() {
+        for (String body : new String[] {
+            "ATM 현금출금 12,000원\n잔액 188,000원",
+            "출금 12,000원\n적요: CD현금\n잔액 188,000원"
+        }) {
+            JSONObject result = parse("com.kbstar.kbbank", "KB국민은행", "출금 알림", body, true);
+            assertNotNull(body, result);
+            assertEquals("cash_withdrawal", result.optString("eventType"));
+            assertEquals("KRW", result.optString("currency"));
+            assertEquals(12000L, result.optLong("minorUnits"));
+            assertEquals("ATM · KB국민은행", result.optString("merchant"));
         }
     }
 

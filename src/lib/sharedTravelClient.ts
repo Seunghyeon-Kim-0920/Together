@@ -1,8 +1,8 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { browserLocalPersistence, getAuth, setPersistence, signInAnonymously } from "firebase/auth";
-import { collection, deleteDoc, doc, getDocFromServer, getDocsFromServer, getFirestore, limit, onSnapshot, query, runTransaction, serverTimestamp, Timestamp, where, writeBatch, type Firestore } from "firebase/firestore";
+import { collection, deleteDoc, deleteField, doc, documentId, getDocFromServer, getDocsFromServer, getFirestore, limit, onSnapshot, orderBy, query, runTransaction, serverTimestamp, startAfter, Timestamp, where, writeBatch, type Firestore } from "firebase/firestore";
 import { SHARED_TRAVEL_FIREBASE_CONFIG, type SharedTravelFirebaseConfig } from "./sharedTravelConfig";
-import { MAX_SHARED_EXPENSES, MAX_SHARED_PARTICIPANTS, normalizeSharedError, parseSharedExpense, parseSharedMember, parseSharedTrip, registerSharedParticipant, SharedTravelError, sharedId, toSharedExpenseData, toSharedTripData, type SharedExpenseRecord, type SharedMember, type SharedTravelClient, type SharedTrip } from "./sharedTravel";
+import { MAX_SHARED_EXPENSES, MAX_SHARED_PARTICIPANTS, normalizeSharedError, parseSharedExpense, parseSharedMember, parseSharedTrip, registerSharedParticipant, removeParticipantFromSharedExpense, SharedTravelError, sharedId, toSharedExpenseData, toSharedTripData, updateSharedParticipants, type SharedExpenseRecord, type SharedMember, type SharedTravelClient, type SharedTrip } from "./sharedTravel";
 
 const COLLECTION = "sharedTrips";
 const INVITE_DURATION_MS = 24 * 60 * 60 * 1_000;
@@ -160,35 +160,46 @@ export function createFirebaseSharedTravelClient(db: Firestore, uid: string): Sh
     }),
     ensureParticipant: (tripId, preferredParticipantId) => guarded(() => ensureParticipant(tripId, preferredParticipantId)),
     getSnapshot: (tripId) => guarded(async () => {
-      const [expenses, members] = await Promise.all([getDocsFromServer(query(collection(tripRef(tripId), "expenses"), limit(MAX_SHARED_EXPENSES + 1))), getDocsFromServer(collection(tripRef(tripId), "members"))]);
-      if (expenses.size > MAX_SHARED_EXPENSES) throw new SharedTravelError("limit");
-      // Read the append-only participant header after expenses, which can reference a just-joined person.
-      const trip = await readTrip(tripId);
-      return { trip, expenses: expenses.docs.map((record) => requireExpense(record.id, record.data(), trip)), members: members.docs.map((record) => { const member = parseSharedMember(record.id, record.data()); if (!member) throw new SharedTravelError("invalid-data"); return member; }), fromCache: false };
+      // Bracket financial reads with one stable header. In particular a second
+      // history operation must not mix its partial rows with an unlocked header
+      // from a previously completed operation. Bounded retries fail closed.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const before = await readTrip(tripId);
+        const [expenses, members] = await Promise.all([getDocsFromServer(query(collection(tripRef(tripId), "expenses"), limit(MAX_SHARED_EXPENSES + 1))), getDocsFromServer(collection(tripRef(tripId), "members"))]);
+        if (expenses.size > MAX_SHARED_EXPENSES) throw new SharedTravelError("limit");
+        const trip = await readTrip(tripId);
+        if (before.revision !== trip.revision) continue;
+        return { trip, expenses: expenses.docs.map((record) => requireExpense(record.id, record.data(), trip)), members: members.docs.map((record) => { const member = parseSharedMember(record.id, record.data()); if (!member) throw new SharedTravelError("invalid-data"); return member; }), fromCache: false };
+      }
+      throw new SharedTravelError("conflict");
     }),
     listenTrip: (tripId, receive, failure) => {
       const reference = tripRef(tripId);
       let disposed = false; let trip: SharedTrip | null = null; let refreshingHeader = false;
+      let expenseGeneration = 0; let awaitingExpenseHeader = false;
       let expenseDocs: { id: string; data: unknown }[] | null = null; let members: SharedMember[] | null = null;
       const cached = { trip: true, expenses: true, members: true };
       const stops: (() => void)[] = [];
       function stop(): void { disposed = true; for (const unsubscribe of stops) unsubscribe(); }
       function fail(error: unknown): void { if (!disposed) { stop(); failure(normalizeSharedError(error)); } }
       function emit(): void {
-        if (disposed || !trip || !expenseDocs || !members) return;
+        if (disposed || awaitingExpenseHeader || !trip || !expenseDocs || !members) return;
         try {
           const records = expenseDocs.map((record) => parseSharedExpense(record.id, record.data, trip!));
           if (records.some((record) => !record)) {
             // Independent Firestore listeners may deliver an expense before its new participant header.
             if (refreshingHeader) return;
             refreshingHeader = true;
-            const observedDocs = expenseDocs;
-            void readTrip(tripId).then((latest) => {
+            const generation = expenseGeneration;
+            void client.getSnapshot(tripId).then((snapshot) => {
               if (disposed) return;
-              if (!trip || latest.revision >= trip.revision) { trip = latest; cached.trip = false; }
-              // Validate the records that triggered the refresh, not newer records arriving during the read.
-              observedDocs.forEach((record) => requireExpense(record.id, record.data, trip!));
-              refreshingHeader = false; emit();
+              refreshingHeader = false;
+              if (generation !== expenseGeneration || trip && snapshot.trip.revision < trip.revision) { emit(); return; }
+              trip = snapshot.trip; members = [...snapshot.members];
+              expenseDocs = snapshot.expenses.map((record) => ({ id: record.id, data: record.expense
+                ? toSharedExpenseData(record.expense, snapshot.trip, record.authorUid, record.updatedBy, record.revision, record.mutationId)
+                : { schema: 1, authorUid: record.authorUid, updatedBy: record.updatedBy, revision: record.revision, mutationId: record.mutationId, deleted: true } }));
+              cached.trip = false; cached.expenses = false; cached.members = false; emit();
             }).catch(fail);
             return;
           }
@@ -205,7 +216,19 @@ export function createFirebaseSharedTravelClient(db: Firestore, uid: string): Sh
       }, fail));
       stops.push(onSnapshot(query(collection(reference, "expenses"), limit(MAX_SHARED_EXPENSES + 1)), { includeMetadataChanges: true }, (snapshot) => {
         if (snapshot.size > MAX_SHARED_EXPENSES) { fail(new SharedTravelError("limit")); return; }
-        expenseDocs = snapshot.docs.map((record) => ({ id: record.id, data: record.data() })); cached.expenses = snapshot.metadata.fromCache; emit();
+        const generation = ++expenseGeneration;
+        const candidate = snapshot.docs.map((record) => ({ id: record.id, data: record.data() }));
+        if (snapshot.metadata.fromCache) { awaitingExpenseHeader = false; expenseDocs = candidate; cached.expenses = true; emit(); return; }
+        // Independent listeners can deliver a page's rows before its lock header.
+        // Never emit those rows with an older, unlocked header, even if the rows
+        // happen to pass ordinary expense validation. Newer callbacks supersede
+        // older pending reads, and cached rows never become server-confirmed here.
+        awaitingExpenseHeader = true;
+        void guarded(() => readTrip(tripId)).then((latest) => {
+          if (disposed || generation !== expenseGeneration) return;
+          if (!trip || latest.revision >= trip.revision) { trip = latest; cached.trip = false; }
+          expenseDocs = candidate; cached.expenses = false; awaitingExpenseHeader = false; emit();
+        }).catch((error) => { if (generation === expenseGeneration) fail(error); });
       }, fail));
       stops.push(onSnapshot(collection(reference, "members"), { includeMetadataChanges: true }, (snapshot) => {
         try { members = snapshot.docs.map((record) => { const member = parseSharedMember(record.id, record.data()); if (!member) throw new SharedTravelError("invalid-data"); return member; }); cached.members = snapshot.metadata.fromCache; emit(); } catch (error) { fail(error); }
@@ -220,6 +243,7 @@ export function createFirebaseSharedTravelClient(db: Firestore, uid: string): Sh
         const [header, current] = await Promise.all([transaction.get(tripRef(tripId)), transaction.get(expenseRef)]);
         if (!header.exists()) throw new SharedTravelError("not-found");
         const trip = requireTrip(tripId, header.data()); if (trip.deleted) throw new SharedTravelError("not-found");
+        if (trip.participantHistoryRemoval) throw new SharedTravelError("history-busy");
         const previous = current.exists() ? requireExpense(mutation.id, current.data(), trip) : null;
         if (previous && previous.authorUid !== uid && trip.ownerUid !== uid) throw new SharedTravelError("permission-denied");
         if (previous?.mutationId === mutation.mutationId) {
@@ -241,22 +265,134 @@ export function createFirebaseSharedTravelClient(db: Firestore, uid: string): Sh
       if (!snapshot.exists()) throw new SharedTravelError("not-found");
       const trip = requireTrip(tripId, snapshot.data()); checkOwner(trip);
       if (trip.deleted) throw new SharedTravelError("not-found");
+      if (trip.participantHistoryRemoval) throw new SharedTravelError("history-busy");
       if (trip.revision !== expectedRevision) throw new SharedTravelError("conflict");
       if (JSON.stringify(trip.participants) !== JSON.stringify(ledger.participants) || JSON.stringify(trip.currencies) !== JSON.stringify(ledger.currencies) || trip.defaultCurrency !== ledger.defaultCurrency) throw new SharedTravelError("invalid-data");
       const data = toSharedTripData(ledger, uid, expectedRevision + 1);
       transaction.update(reference, { title: data.title, revision: data.revision, updatedAt: serverTimestamp() });
       return { ...trip, title: ledger.title, revision: expectedRevision + 1 };
     })),
+    updateParticipants: (tripId, participants, inactiveParticipantIds, expectedRevision) => guarded(async () => runTransaction(db, async (transaction) => {
+      const reference = tripRef(tripId); const snapshot = await transaction.get(reference);
+      if (!snapshot.exists()) throw new SharedTravelError("not-found");
+      const trip = requireTrip(tripId, snapshot.data());
+      const next = updateSharedParticipants(trip, uid, participants, inactiveParticipantIds, expectedRevision);
+      if (next !== trip) transaction.update(reference, {
+        participantIds: next.participants.map((person) => person.id), participantNames: next.participants.map((person) => person.name),
+        inactiveParticipantIds: next.inactiveParticipantIds, revision: next.revision, updatedAt: serverTimestamp(),
+      });
+      return next;
+    })),
+    removeParticipantHistory: async (tripId, participantId, expectedRevision, expectedRecords) => {
+      requireId(participantId);
+      const reference = tripRef(tripId);
+      // Each committed page is durable. There is deliberately no whole-operation
+      // timeout that could report completion/failure while later pages still run.
+      let trip = await guarded(() => runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(reference);
+        if (!snapshot.exists()) throw new SharedTravelError("not-found");
+        const current = requireTrip(tripId, snapshot.data()); checkOwner(current);
+        if (current.deleted) throw new SharedTravelError("not-found");
+        if (!current.participants.some((p) => p.id === participantId)) throw new SharedTravelError("invalid-data");
+        if (current.historyRemovedParticipantIds?.includes(participantId)) return current;
+        if (current.participantHistoryRemoval) {
+          if (current.participantHistoryRemoval.participantId !== participantId) throw new SharedTravelError("history-busy");
+          return current;
+        }
+        if (current.revision !== expectedRevision) throw new SharedTravelError("conflict");
+        const operation = { id: crypto.randomUUID(), participantId, phase: "preflight" as const, cursor: null };
+        transaction.update(reference, { participantHistoryRemoval: operation, revision: current.revision + 1, updatedAt: serverTimestamp() });
+        return { ...current, participantHistoryRemoval: operation, revision: current.revision + 1 };
+      }));
+      // A retry of a completed target is read-only even if a different target
+      // is now locked. Never advance that newer operation using the old target.
+      if (trip.historyRemovedParticipantIds?.includes(participantId) || !trip.participantHistoryRemoval) return client.getSnapshot(tripId);
+      if (trip.participantHistoryRemoval.phase === "preflight") {
+        const operationId = trip.participantHistoryRemoval.id;
+        try {
+          const all = await guarded(() => getDocsFromServer(query(collection(reference, "expenses"), limit(MAX_SHARED_EXPENSES + 1))));
+          if (all.size > MAX_SHARED_EXPENSES) throw new SharedTravelError("limit");
+          const records = all.docs.map((record) => requireExpense(record.id, record.data(), trip));
+          if (expectedRecords) {
+            const expected = new Map(expectedRecords.map((record) => [record.id, record]));
+            if (records.length !== expected.size || records.some((record) => expected.get(record.id)?.revision !== record.revision || expected.get(record.id)?.deleted !== record.deleted)) throw new SharedTravelError("conflict");
+          }
+          for (const record of records) if (record.expense) removeParticipantFromSharedExpense(record.expense, participantId);
+          trip = await guarded(() => runTransaction(db, async (transaction) => {
+            const snapshot = await transaction.get(reference);
+            if (!snapshot.exists()) throw new SharedTravelError("not-found");
+            const current = requireTrip(tripId, snapshot.data()); checkOwner(current);
+            if (current.participantHistoryRemoval?.id !== operationId) throw new SharedTravelError("conflict");
+            if (current.participantHistoryRemoval.phase === "applying") return current;
+            const operation = { ...current.participantHistoryRemoval, phase: "applying" as const, cursor: null };
+            transaction.update(reference, { participantHistoryRemoval: operation, revision: current.revision + 1, updatedAt: serverTimestamp() });
+            return { ...current, participantHistoryRemoval: operation, revision: current.revision + 1 };
+          }));
+        } catch (error) {
+          // Only a preflight lock can be canceled: no financial row has changed.
+          if (["conflict", "orphan-shares", "limit", "invalid-data"].includes(normalizeSharedError(error).code)) await guarded(() => runTransaction(db, async (transaction) => {
+            const snapshot = await transaction.get(reference);
+            if (!snapshot.exists()) return;
+            const current = requireTrip(tripId, snapshot.data());
+            if (current.participantHistoryRemoval?.id === operationId && current.participantHistoryRemoval.phase === "preflight") transaction.update(reference, { participantHistoryRemoval: deleteField(), revision: current.revision + 1, updatedAt: serverTimestamp() });
+          }));
+          throw normalizeSharedError(error);
+        }
+      }
+      // Pages stay well below the Firestore write limit and the rules access budget.
+      while (trip.participantHistoryRemoval) {
+        const operation = trip.participantHistoryRemoval;
+        const page = await guarded(() => getDocsFromServer(query(collection(reference, "expenses"), orderBy(documentId()), ...(operation.cursor ? [startAfter(operation.cursor)] : []), limit(50))));
+        trip = await guarded(() => runTransaction(db, async (transaction) => {
+          const header = await transaction.get(reference);
+          if (!header.exists()) throw new SharedTravelError("not-found");
+          const current = requireTrip(tripId, header.data()); checkOwner(current);
+          if (!current.participantHistoryRemoval && current.historyRemovedParticipantIds?.includes(participantId)) return current;
+          if (current.participantHistoryRemoval?.id !== operation.id) throw new SharedTravelError("conflict");
+          // Another resumed worker committed this page. Re-query from its cursor.
+          if (current.participantHistoryRemoval.cursor !== operation.cursor) return current;
+          if (page.empty) {
+            const inactiveParticipantIds = [...new Set([...(current.inactiveParticipantIds ?? []), participantId])];
+            const historyRemovedParticipantIds = [...new Set([...(current.historyRemovedParticipantIds ?? []), participantId])];
+            transaction.update(reference, { participantHistoryRemoval: deleteField(), inactiveParticipantIds, historyRemovedParticipantIds, revision: current.revision + 1, updatedAt: serverTimestamp() });
+            const { participantHistoryRemoval: _operation, ...rest } = current; void _operation;
+            return { ...rest, inactiveParticipantIds, historyRemovedParticipantIds, revision: current.revision + 1 };
+          }
+          const rows = await Promise.all(page.docs.map((record) => transaction.get(record.ref)));
+          for (const row of rows) {
+            if (!row.exists()) throw new SharedTravelError("conflict");
+            const previous = requireExpense(row.id, row.data(), current);
+            if (!previous.expense) continue;
+            const expense = removeParticipantFromSharedExpense(previous.expense, participantId);
+            if (expense === previous.expense) continue;
+            const data = expense ? toSharedExpenseData(expense, current, previous.authorUid, uid, previous.revision + 1, operation.id) : { schema: 1, authorUid: previous.authorUid, updatedBy: uid, revision: previous.revision + 1, mutationId: operation.id, deleted: true };
+            transaction.set(row.ref, { ...data, updatedAt: serverTimestamp() });
+          }
+          const nextOperation = { ...operation, cursor: page.docs[page.docs.length - 1].id };
+          transaction.update(reference, { participantHistoryRemoval: nextOperation, revision: current.revision + 1, updatedAt: serverTimestamp() });
+          return { ...current, participantHistoryRemoval: nextOperation, revision: current.revision + 1 };
+        }));
+      }
+      return client.getSnapshot(tripId);
+    },
     revokeMember: (tripId, memberUid) => guarded(async () => {
       checkOwner(await readTrip(tripId)); requireId(memberUid); if (memberUid === uid) throw new SharedTravelError("invalid-data");
       const batch = writeBatch(db);
       batch.set(doc(tripRef(tripId), "blocked", memberUid), { schema: 1, blockedAt: serverTimestamp() });
       batch.delete(memberRef(tripId, memberUid)); await batch.commit();
     }),
-    leaveTrip: (tripId) => guarded(async () => {
-      const trip = await readTrip(tripId); if (trip.ownerUid === uid) throw new SharedTravelError("invalid-data");
-      await deleteDoc(memberRef(tripId, uid));
-    }),
+    leaveTrip: (tripId) => guarded(async () => runTransaction(db, async (transaction) => {
+      // Read only this device's membership: a completed leave, revocation or owner
+      // deletion removes permission to read the trip. Retrying must still succeed
+      // so a failed local save cannot leave a permanently undeletable local tab.
+      const reference = memberRef(tripId, uid);
+      const snapshot = await transaction.get(reference);
+      if (!snapshot.exists()) return;
+      const membership = parseSharedMember(uid, snapshot.data());
+      if (!membership) throw new SharedTravelError("invalid-data");
+      if (membership.role === "owner") throw new SharedTravelError("invalid-data");
+      transaction.delete(reference);
+    })),
     deleteTrip: (tripId) => guarded(async () => {
       const reference = tripRef(tripId);
       const exists = await runTransaction(db, async (transaction) => {

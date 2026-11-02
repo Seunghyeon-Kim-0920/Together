@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { acknowledgeSharedMutation, connectSharedLedger, disconnectSharedLedger, parseSharedLocal, queueSharedWalletChanges, receiveSharedSnapshot, resolveSharedConflict } from "../src/lib/sharedTravelLocal";
+import { acknowledgeSharedMutation, applySharedParticipantHeader, connectSharedLedger, disconnectSharedLedger, parseSharedLocal, queueSharedWalletChanges, receiveSharedSnapshot, resolveSharedConflict } from "../src/lib/sharedTravelLocal";
 import type { SharedExpenseMutation, SharedExpenseRecord, SharedTrip, SharedTripSnapshot } from "../src/lib/sharedTravel";
 import type { GeneralLedger, TravelExpense, TravelLedger, WalletState } from "../src/lib/types";
 import { createLedger, parseWalletStateStrict } from "../src/lib/wallet";
@@ -36,6 +36,49 @@ function changed(ledger: TravelLedger, expenses: readonly TravelExpense[]): Trav
 function acknowledgement(op: SharedExpenseMutation, revision: number): SharedExpenseRecord {
   return remote(op.expense, revision, { id: op.id, mutationId: op.mutationId });
 }
+
+test("history lock durably holds a complete prior settlement and blocks new local expense writes", () => {
+  const original = connected([remote(expense())]);
+  const lockedTrip: SharedTrip = { ...trip, revision: 2, participantHistoryRemoval: { id: "remove-b", participantId: "person-b", phase: "applying", cursor: "expense-one" } };
+  const rewritten = { ...expense(), shares: [{ participantId: "person-a", minorUnits: 1234 }] };
+  const locked = receiveSharedSnapshot(original, snapshot([remote(rewritten, 2)], { trip: lockedTrip }));
+  assert.deepEqual(locked.expenses, original.expenses);
+  assert.deepEqual(locked.sharedSync?.records, original.sharedSync?.records);
+  assert.ok(parseWalletStateStrict(JSON.parse(JSON.stringify(wallet(locked)))));
+  assert.throws(() => changed(locked, [expense("new")]), /history-busy/);
+  assert.throws(() => connectSharedLedger(localLedger(), lockedTrip, uid, snapshot([], { trip: lockedTrip })), /history-busy/);
+  const finishedTrip: SharedTrip = { ...trip, revision: 3, inactiveParticipantIds: ["person-b"], historyRemovedParticipantIds: ["person-b"] };
+  const done = receiveSharedSnapshot(locked, snapshot([remote(rewritten, 2)], { trip: finishedTrip }));
+  assert.deepEqual(done.expenses, [rewritten]);
+  assert.deepEqual(done.historyRemovedParticipantIds, ["person-b"]);
+  assert.ok(parseWalletStateStrict(JSON.parse(JSON.stringify(wallet(done)))));
+  assert.throws(() => applySharedParticipantHeader(original, finishedTrip));
+  assert.deepEqual(receiveSharedSnapshot(done, snapshot([remote(expense())])), done);
+});
+
+test("offline edits and unuploaded rows cannot resurrect a removed payer or sharer", () => {
+  const original = connected([remote(expense())]);
+  const payerRemoved: TravelExpense = { ...expense("offline-payer"), paidBy: "person-b" };
+  const onlyRemovedSharer: TravelExpense = { ...expense("offline-orphan"), shares: [{ participantId: "person-b", minorUnits: 1234 }] };
+  const edited = changed(original, [expense("expense-one", "Offline description"), expense("offline-new"), payerRemoved]);
+  const finishedTrip: SharedTrip = { ...trip, revision: 4, inactiveParticipantIds: ["person-b"], historyRemovedParticipantIds: ["person-b"] };
+  const rewritten = { ...expense(), shares: [{ participantId: "person-a", minorUnits: 1234 }] };
+  const orphaned = changed(original, [...original.expenses, onlyRemovedSharer]);
+  const savedOrphan = JSON.stringify(orphaned);
+  assert.throws(() => receiveSharedSnapshot(orphaned, snapshot([remote(rewritten, 2)], { trip: finishedTrip })), /orphan-shares/);
+  assert.equal(JSON.stringify(orphaned), savedOrphan);
+  const done = receiveSharedSnapshot(edited, snapshot([remote(rewritten, 2)], { trip: finishedTrip }));
+  assert.deepEqual(done.expenses.map((e) => e.id).sort(), ["expense-one", "offline-new"]);
+  assert.ok(done.expenses.every((e) => e.paidBy !== "person-b" && e.shares.every((s) => s.participantId !== "person-b")));
+  assert.equal(done.sharedSync?.pending.find((p) => p.id === "expense-one")?.conflict, true);
+  assert.equal(done.sharedSync?.pending.find((p) => p.id === "offline-new")?.expectedRevision, 0);
+  assert.ok(parseWalletStateStrict(JSON.parse(JSON.stringify(wallet(done)))));
+  const kept = resolveSharedConflict(done, "expense-one", true);
+  assert.equal(kept.expenses.find((e) => e.id === "expense-one")?.description, "Offline description");
+  assert.deepEqual(kept.expenses.find((e) => e.id === "expense-one")?.shares, rewritten.shares);
+  const stale = edited.sharedSync!.pending[0];
+  assert.equal(acknowledgeSharedMutation(done, stale, acknowledgement(stale, 1)), done);
+});
 
 test("connecting explicitly queues approved initial expenses with stable identity and durable local snapshots", () => {
   const original = localLedger([expense()]); const before = JSON.stringify(original);
@@ -337,4 +380,30 @@ test("a late acknowledgement of the same sent mutation cannot clear a newer remo
   assert.equal(ack.sharedSync!.records[0].revision, 3);
   assert.equal(ack.sharedSync!.pending[0].conflict, true);
   assert.equal(ack.expenses[0].description, "My edit");
+});
+
+test("confirmed participant header preserves offline edits, archives and expense history across stale snapshots", () => {
+  const pending = changed(connected([remote(expense())]), [expense("expense-one", "My draft"), expense("new-expense")]);
+  const header = { ...trip, revision: 2, participants: [...trip.participants, { id: "person-c", name: "C" }], inactiveParticipantIds: ["person-b"] };
+  const updated = applySharedParticipantHeader(pending, header);
+  assert.deepEqual(updated.participants, header.participants);
+  assert.deepEqual(updated.inactiveParticipantIds, ["person-b"]);
+  assert.equal(updated.expenses, pending.expenses);
+  assert.equal(updated.sharedSync!.pending, pending.sharedSync!.pending);
+  assert.equal(updated.sharedSync!.records, pending.sharedSync!.records);
+  assert.equal(updated.sharedSync!.members, pending.sharedSync!.members);
+  assert.deepEqual(parseSharedLocal(JSON.parse(JSON.stringify(updated.sharedSync)))?.trip.inactiveParticipantIds, ["person-b"]);
+  const delayed = receiveSharedSnapshot(updated, snapshot([remote(expense())]));
+  assert.deepEqual(delayed.inactiveParticipantIds, ["person-b"]);
+  assert.deepEqual(delayed.expenses, pending.expenses);
+  assert.equal(applySharedParticipantHeader(updated, header), updated);
+  assert.throws(() => applySharedParticipantHeader(updated, { ...header, inactiveParticipantIds: [] }), /invalid-data/);
+  assert.throws(() => applySharedParticipantHeader(updated, { ...header, id: "wrong-trip", revision: 3 }), /invalid-data/);
+  assert.throws(() => queueSharedWalletChanges(wallet(updated), wallet({ ...updated, inactiveParticipantIds: [] })), /permission-denied/);
+  for (const inactiveParticipantIds of [["unknown"], ["person-a", "person-a"], "person-a", null]) {
+    assert.equal(parseSharedLocal({ ...updated.sharedSync, trip: { ...header, inactiveParticipantIds } }), null);
+  }
+  const restored = applySharedParticipantHeader(updated, { ...header, revision: 3, inactiveParticipantIds: [] });
+  assert.deepEqual(restored.inactiveParticipantIds, []);
+  assert.deepEqual(restored.expenses, pending.expenses);
 });

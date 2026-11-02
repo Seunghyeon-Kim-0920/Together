@@ -5,7 +5,9 @@ import { MAX_SHARED_PARTICIPANTS, normalizeSharedError, SharedTravelError, type 
 import { acknowledgeSharedMutation, connectSharedLedger, disconnectSharedLedger, receiveSharedSnapshot, resolveSharedConflict } from "../lib/sharedTravelLocal";
 import { sharedText as s } from "../lib/sharedTravelI18n";
 import { formatMoney } from "../lib/currency";
-import type { Locale, TravelLedger } from "../lib/types";
+import type { Locale, Participant, TravelExpense, TravelLedger } from "../lib/types";
+import { orphanedPendingHistoryExpenses, repairPendingHistoryShares } from "../lib/sharedHistoryRepair";
+import { travelParticipantText as p } from "../lib/travelParticipantI18n";
 import "./shared-travel.css";
 
 type Props = {
@@ -20,13 +22,15 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
   const [expanded, setExpanded] = useState(false);
   const [displayName, setDisplayName] = useState(""); const [inviteInput, setInviteInput] = useState("");
   const [consent, setConsent] = useState(false); const [inviteCode, setInviteCode] = useState("");
-  const [busy, setBusy] = useState(false); const actionLock = useRef(false);
+  const [actionBusy, setBusy] = useState(false); const actionLock = useRef(false);
   const [phase, setPhase] = useState<Phase>("syncing"); const [retry, setRetry] = useState(0);
   const [confirmExit, setConfirmExit] = useState<"leave" | "delete" | "local" | null>(null);
   const [removeUid, setRemoveUid] = useState<string | null>(null);
   const [conflictChoice, setConflictChoice] = useState<string | null>(null);
+  const [repairSnapshot, setRepairSnapshot] = useState<SharedTripSnapshot | null>(null);
   const triggerRef = useRef<(() => void) | null>(null);
   const sync = ledger.sharedSync; const tripId = sync?.tripId; const uid = sync?.uid;
+  const busy = actionBusy || Boolean(sync?.trip.participantHistoryRemoval);
   const configured = SHARED_TRAVEL_FIREBASE_CONFIG !== null;
   const owner = Boolean(sync && sync.trip.ownerUid === uid);
   const exitMode = phase === "identity" ? "local" : owner ? "delete" : sync?.trip.deleted || phase === "permission" ? "local" : "leave";
@@ -43,6 +47,13 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
       const code = normalizeSharedError(error).code; recoverable = code === "unavailable";
       if (!disposed) setPhase(!navigator.onLine ? "offline" : code === "quota" ? "quota" : code === "permission-denied" || code === "not-found" ? "permission" : "error");
     };
+    const acceptSnapshot = async (snapshot: SharedTripSnapshot) => {
+      try { await onApply((current) => receiveSharedSnapshot(current, snapshot)); if (!disposed) setRepairSnapshot(null); }
+      catch (error) {
+        if (!disposed && normalizeSharedError(error).code === "orphan-shares") { setRepairSnapshot(snapshot); setExpanded(true); }
+        throw error;
+      }
+    };
     const run = async () => {
       if (disposed || running || halted || !client) return;
       if (!navigator.onLine) { setPhase("offline"); return; }
@@ -50,11 +61,11 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
       try {
         if (latestSnapshot) {
           const snapshot = latestSnapshot; latestSnapshot = null;
-          await onApply((current) => receiveSharedSnapshot(current, snapshot));
+          await acceptSnapshot(snapshot);
         }
         for (let count = 0; count < 25 && !disposed; count += 1) {
           const current = getLatest();
-          if (!current.sharedSync || current.sharedSync.tripId !== tripId || current.sharedSync.trip.deleted) break;
+          if (!current.sharedSync || current.sharedSync.tripId !== tripId || current.sharedSync.trip.deleted || current.sharedSync.trip.participantHistoryRemoval) break;
           const op = current.sharedSync.pending.find((item) => !item.conflict);
           if (!op) break;
           setPhase("syncing");
@@ -62,9 +73,13 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
             const result = await client.publishExpense(tripId, op);
             await onApply((latest) => latest.sharedSync?.tripId === tripId ? acknowledgeSharedMutation(latest, op, result) : latest);
           } catch (error) {
+            if (["history-busy", "permission-denied", "invalid-data"].includes(normalizeSharedError(error).code)) {
+              const snapshot = await client.getSnapshot(tripId);
+              if (snapshot.trip.participantHistoryRemoval || JSON.stringify(snapshot.trip.historyRemovedParticipantIds ?? []) !== JSON.stringify(getLatest().sharedSync?.trip.historyRemovedParticipantIds ?? [])) { await acceptSnapshot(snapshot); break; }
+            }
             if (normalizeSharedError(error).code !== "conflict") throw error;
             const snapshot = await client.getSnapshot(tripId);
-            await onApply((latest) => receiveSharedSnapshot(latest, snapshot));
+            await acceptSnapshot(snapshot);
             // Stop this pass if the backend could not supply the changed row.
             if (getLatest().sharedSync?.pending.find((p) => p.id === op.id)?.conflict !== true) throw error;
           }
@@ -73,7 +88,7 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
       } catch (error) { fail(error); }
       finally {
         running = false;
-        if (!disposed && !halted && navigator.onLine && !getLatest().sharedSync?.trip.deleted && (latestSnapshot || getLatest().sharedSync?.pending.some((p) => !p.conflict))) window.setTimeout(() => void run(), 50);
+        if (!disposed && !halted && navigator.onLine && !getLatest().sharedSync?.trip.deleted && (latestSnapshot || !getLatest().sharedSync?.trip.participantHistoryRemoval && getLatest().sharedSync?.pending.some((p) => !p.conflict))) window.setTimeout(() => void run(), 50);
       }
     };
     const wake = () => { if (!navigator.onLine) { setPhase("offline"); return; } void run(); };
@@ -96,7 +111,7 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
   useEffect(() => { triggerRef.current?.(); }, [ledger.sharedSync?.pending]);
 
   const action = async (task: (client: SharedTravelClient) => Promise<void>, deletion = false) => {
-    if (actionLock.current) return;
+    if (actionLock.current || getLatest().sharedSync?.trip.participantHistoryRemoval) return;
     actionLock.current = true; setBusy(true);
     try {
       const { getSharedTravelClient } = await import("../lib/sharedTravelClient");
@@ -138,10 +153,19 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
     }, true);
   };
   const resolve = async (id: string, keepLocal: boolean) => {
-    if (actionLock.current) return;
+    if (actionLock.current || getLatest().sharedSync?.trip.participantHistoryRemoval) return;
     actionLock.current = true; setBusy(true);
     try { await onApply((current) => resolveSharedConflict(current, id, keepLocal)); setConflictChoice(null); }
     catch { onNotify(s(locale, "error"), "error"); }
+    finally { actionLock.current = false; setBusy(false); }
+  };
+  const repairShares = async (expense: TravelExpense, participantIds: readonly string[]) => {
+    if (!repairSnapshot || actionLock.current) return;
+    actionLock.current = true; setBusy(true);
+    try {
+      await onApply((current) => repairPendingHistoryShares(current, repairSnapshot.trip, expense, participantIds));
+      setRetry((attempt) => attempt + 1);
+    } catch { onNotify(s(locale, "conflict"), "error"); }
     finally { actionLock.current = false; setBusy(false); }
   };
 
@@ -153,6 +177,7 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
         {configured ? <><label className="field-label">{s(locale, "name")}<input maxLength={80} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label><label className="shared-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>{s(locale, "consent")}</span></label><button type="button" className="wide-secondary" disabled={busy || !consent || !displayName.trim() || !ledger.participants.length || ledger.participants.length > MAX_SHARED_PARTICIPANTS} onClick={() => void connect(false)}>{s(locale, "create")}</button><label className="field-label">{s(locale, "code")}<input autoCapitalize="none" autoComplete="off" maxLength={200} value={inviteInput} onChange={(event) => setInviteInput(event.target.value)} /></label><button className="wide-secondary" type="button" disabled={busy || !consent || !displayName.trim() || !inviteInput.trim()} onClick={() => void connect(true)}>{s(locale, "join")}</button></> : <p role="status">{s(locale, "unavailable")}</p>}
       </> : <>
         <p className="storage-note">{s(locale, "locked")}</p><p role="status">{sync.trip.deleted ? s(locale, "deletedTrip") : s(locale, phase)}</p>
+        {repairSnapshot ? <section className="delete-confirm"><p role="alert">{p(locale, "repairHelp")}</p>{orphanedPendingHistoryExpenses(ledger, repairSnapshot.trip).map((expense) => <HistorySplitRepair key={`${expense.id}-${repairSnapshot.trip.revision}`} expense={expense} participants={repairSnapshot.trip.participants.filter((person) => !repairSnapshot.trip.historyRemovedParticipantIds?.includes(person.id) && ledger.participants.some((known) => known.id === person.id))} locale={locale} busy={actionBusy} onRepair={(ids) => repairShares(expense, ids)} />)}</section> : null}
         {configured ? <button className="wide-secondary" type="button" disabled={busy} onClick={() => { setPhase("syncing"); setRetry((r) => r + 1); }}>{s(locale, "retry")}</button> : null}
         {sync.pending.filter((op) => op.conflict).map((op) => {
           const remote = sync.records.find((r) => r.id === op.id)?.expense;
@@ -166,4 +191,9 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
       </>}
     </div> : null}
   </section>;
+}
+
+function HistorySplitRepair({ expense, participants, locale, busy, onRepair }: { expense: TravelExpense; participants: readonly Participant[]; locale: Locale; busy: boolean; onRepair: (ids: readonly string[]) => Promise<void> }) {
+  const [selected, setSelected] = useState<readonly string[]>([]);
+  return <fieldset className="participant-removal-options"><legend>{expense.description} · {formatMoney(expense.minorUnits, expense.currency, locale)} · {expense.occurredOn}</legend>{participants.map((person) => <label key={person.id}><input type="checkbox" disabled={busy} checked={selected.includes(person.id)} onChange={() => setSelected((ids) => ids.includes(person.id) ? ids.filter((id) => id !== person.id) : [...ids, person.id])} /><span>{person.name}</span></label>)}<button type="button" disabled={busy || !selected.length} onClick={() => void onRepair(selected)}>{p(locale, "repairConfirm")}</button></fieldset>;
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PDFArray, PDFDict, PDFDocument, PDFHexString, PDFName, PDFRawStream, decodePDFRawStream } from "pdf-lib";
-import { attachLedgerToPdf, isValidPdfDateRange, ledgerForPdf, ledgerPdfFilename } from "../src/lib/ledgerPdf";
+import { attachLedgerToPdf, isValidPdfDateRange, ledgerForPdf, ledgerPdfFilename, travelPdfParticipants } from "../src/lib/ledgerPdf";
 import { bytesToBase64, sharePdfFile } from "../src/lib/documentFiles";
 import { parseLedgerShareDocument } from "../src/lib/share";
 import { createLedger } from "../src/lib/wallet";
@@ -38,6 +38,23 @@ test("general PDF attachments omit local card and budget settings, preserving ex
   const parsed = parseLedgerShareDocument(text);
   assert.equal(parsed?.ledger.expenses[0].minorUnits, 124);
   assert.equal(parsed?.ledger.expenses[0].description, "Boulangerie");
+});
+
+test("travel PDF visible roster hides history removals while embedded data retains their permanent fence", async () => {
+  const ledger: TravelLedger = {
+    ...createLedger("travel", "Roster test", "EUR"),
+    participants: [{ id: "active", name: "Active person" }, { id: "archived", name: "Past settlement kept" }, { id: "removed", name: "History removed" }],
+    inactiveParticipantIds: ["archived", "removed"], historyRemovedParticipantIds: ["removed"],
+  };
+  assert.deepEqual(travelPdfParticipants(ledger).map((person) => person.id), ["active", "archived"]);
+  assert.equal(ledger.participants.length, 3, "display filtering never mutates the canonical roster");
+  const { text } = await attachment(await attachLedgerToPdf(await emptyPdf(), ledger));
+  const restored = parseLedgerShareDocument(text)?.ledger;
+  assert.ok(restored?.kind === "travel");
+  assert.deepEqual(restored.participants, ledger.participants);
+  assert.deepEqual(restored.historyRemovedParticipantIds, ["removed"]);
+  assert.deepEqual(restored.inactiveParticipantIds, ["archived", "removed"]);
+  assert.deepEqual(travelPdfParticipants(restored), travelPdfParticipants(ledger));
 });
 
 test("a real PDF attachment retains the transfer recipient, transaction type, date and exact money", async () => {

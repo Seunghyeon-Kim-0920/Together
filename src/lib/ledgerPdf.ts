@@ -5,10 +5,17 @@ import { expenseTransactionLabel, expenseTransactionType } from "./expenseTransa
 import { createLedgerSharePayload, parseLedgerShareDocument, safeFilename } from "./share";
 import { savePdfFile, sharePdfFile } from "./documentFiles";
 import { pdfExportText } from "./pdfExportI18n";
-import type { Ledger, Locale } from "./types";
+import type { Ledger, Locale, Participant, TravelLedger } from "./types";
 import { newestExpensesFirst, parseLedger, settleTravelExpenses } from "./wallet";
 
 export interface LedgerPdfDateRange { readonly from: string; readonly to: string }
+
+/** Visible roster only: retain archived people whose historical settlement was
+ * kept, but not permanent removal tombstones needed by the embedded backup. */
+export function travelPdfParticipants(ledger: TravelLedger): readonly Participant[] {
+  const removed = new Set(ledger.historyRemovedParticipantIds ?? []);
+  return Object.freeze(ledger.participants.filter((person) => !removed.has(person.id)));
+}
 
 export function isValidPdfDateRange(range: LedgerPdfDateRange): boolean {
   const calendarDate = (value: string) => {
@@ -124,7 +131,7 @@ export async function createLedgerPdf(sourceLedger: Ledger, locale: Locale, rang
     if (ledger.kind === "travel") {
       const names = new Map(ledger.participants.map((person) => [person.id, person.name]));
       heading(t(locale, "participants"));
-      for (const person of ledger.participants) row([person.name], "1fr", true);
+      for (const person of travelPdfParticipants(ledger)) row([person.name], "1fr", true);
       heading(t(locale, "settlement"));
       const transfers = settleTravelExpenses(ledger).flatMap((item) => item.transfers);
       if (!transfers.length) add(text("p", t(locale, "settlementEmpty"), { padding: "10px 0" }));

@@ -83,6 +83,18 @@ export function previewTravelLedgerMerge(target: TravelLedger, incoming: TravelL
   }
   if (errors.length) return failed(errors);
   const participants = Object.freeze([...parsedTarget.participants, ...newPeople.values()]);
+  // Carry exclusion status only for genuinely new identities. An imported
+  // historical copy must not archive or restore an existing local participant.
+  const importedInactive = (parsedSource.inactiveParticipantIds ?? []).flatMap((sourceId) => {
+    const destinationId = resolved.get(sourceId);
+    return destinationId && newPeople.has(destinationId) ? [destinationId] : [];
+  });
+  const inactiveParticipantIds = Object.freeze([...new Set([...(parsedTarget.inactiveParticipantIds ?? []), ...importedInactive])]);
+  const importedHistoryRemoved = (parsedSource.historyRemovedParticipantIds ?? []).flatMap((sourceId) => {
+    const destinationId = resolved.get(sourceId);
+    return destinationId && newPeople.has(destinationId) ? [destinationId] : [];
+  });
+  const historyRemovedParticipantIds = Object.freeze([...new Set([...(parsedTarget.historyRemovedParticipantIds ?? []), ...importedHistoryRemoved])]);
   if (participants.length > MAX_PARTICIPANTS) errors.push({ code: "participant-limit" });
   const currencies = Object.freeze([...new Set([...parsedTarget.currencies, ...parsedSource.currencies])]);
   if (currencies.length > 20) errors.push({ code: "currency-limit" });
@@ -97,6 +109,10 @@ export function previewTravelLedgerMerge(target: TravelLedger, incoming: TravelL
       mappedShares.set(participantId, (mappedShares.get(participantId) ?? 0) + share.minorUnits);
     }
     const mapped = Object.freeze({ ...expense, paidBy: resolved.get(expense.paidBy)!, shares: Object.freeze([...mappedShares].sort(([left], [right]) => left.localeCompare(right)).map(([participantId, minorUnits]) => Object.freeze({ participantId, minorUnits }))) });
+    // Old exports must not silently resurrect removed payers or shares. A user
+    // must explicitly remap the file to an eligible identity before importing.
+    const removedReference = [mapped.paidBy, ...mapped.shares.map((share) => share.participantId)].find((id) => historyRemovedParticipantIds.includes(id));
+    if (removedReference) { errors.push({ code: "invalid-participant-mapping", participantId: removedReference }); continue; }
     const existing = existingExpenses.get(mapped.id);
     if (!existing) additions.push(mapped);
     else if (sameExpense(existing, mapped)) duplicateExpenseCount += 1;
@@ -107,7 +123,7 @@ export function previewTravelLedgerMerge(target: TravelLedger, incoming: TravelL
   const addedTotals = totals(additions); const resultTotals = totals(expenses);
   if (!addedTotals || !resultTotals) errors.push({ code: "amount-overflow" });
   const changed = additions.length > 0 || newPeople.size > 0 || currencies.length !== parsedTarget.currencies.length;
-  const proposed = errors.length ? null : Object.freeze({ ...parsedTarget, participants, currencies, expenses, updatedAt: changed ? new Date().toISOString() : parsedTarget.updatedAt });
+  const proposed = errors.length ? null : Object.freeze({ ...parsedTarget, participants, ...(inactiveParticipantIds.length ? { inactiveParticipantIds } : {}), ...(historyRemovedParticipantIds.length ? { historyRemovedParticipantIds } : {}), currencies, expenses, updatedAt: changed ? new Date().toISOString() : parsedTarget.updatedAt });
   const ledger = proposed && parseLedger(proposed);
   return Object.freeze({ ok: errors.length === 0 && ledger?.kind === "travel", ledger: ledger?.kind === "travel" ? ledger : null, errors: Object.freeze(errors), addedExpenseCount: additions.length, duplicateExpenseCount, conflicts: Object.freeze(conflicts), addedParticipantCount: newPeople.size, addedTotals: addedTotals ?? Object.freeze([]), resultTotals: resultTotals ?? Object.freeze([]) });
 }

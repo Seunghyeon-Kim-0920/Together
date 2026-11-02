@@ -291,17 +291,185 @@ test("shared travel emulator: isolation, membership, validation, retries and con
       assert.equal((await owner.getSnapshot(base.id)).members.length, 2);
       assert.deepEqual((await owner.getSnapshot(base.id)).trip, before);
     });
+    await t.test("owner can append, exclude and restore participants without changing historical financial data", async () => {
+      const ledger = { ...base, id: "managed-participants" };
+      let trip = (await owner.createTrip(ledger, "Host")).trip;
+      const code = await owner.createInvite(ledger.id);
+      await alice.joinTrip(code, "Companion");
+      trip = (await owner.getSnapshot(ledger.id)).trip;
+      await owner.publishExpense(ledger.id, { id: expense.id, expense, expectedRevision: 0, mutationId: "initial" });
+      const people = [...trip.participants, { id: "carol", name: "Carol" }];
+      const changed = await owner.updateParticipants(ledger.id, people, ["bob"], trip.revision);
+      assert.deepEqual(changed.inactiveParticipantIds, ["bob"]);
+      assert.deepEqual(await owner.updateParticipants(ledger.id, people, ["bob"], trip.revision), changed);
+      assert.deepEqual((await alice.getSnapshot(ledger.id)).expenses[0].expense, expense);
+      await assert.rejects(alice.updateParticipants(ledger.id, people, [], changed.revision), isCode("permission-denied"));
+      for (const change of [
+        { participantIds: people.map((p) => p.id).slice(1), participantNames: people.map((p) => p.name).slice(1) },
+        { participantNames: people.map((p, index) => index === 0 ? "Renamed" : p.name) },
+        { participantMembers: { owner: "bob" } }, { inactiveParticipantIds: ["unknown"] },
+      ]) await assertFails(updateDoc(doc(ownerDb, "sharedTrips", ledger.id), { ...change, revision: changed.revision + 1, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(doc(aliceDb, "sharedTrips", ledger.id), { inactiveParticipantIds: [], revision: changed.revision + 1, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(doc(strangerDb, "sharedTrips", ledger.id), { inactiveParticipantIds: [], revision: changed.revision + 1, updatedAt: serverTimestamp() }));
+      const restored = await owner.updateParticipants(ledger.id, people, [], changed.revision);
+      assert.deepEqual(restored.inactiveParticipantIds, []);
+      const newcomer = createFirebaseSharedTravelClient(strangerDb, "stranger");
+      await newcomer.joinTrip(code, "New companion");
+      await assert.rejects(owner.updateParticipants(ledger.id, people, ["alice"], restored.revision), isCode("conflict"));
+      const joined = (await owner.getSnapshot(ledger.id)).trip;
+      assert.equal(joined.participants.length, people.length + 1);
+      await owner.updateParticipants(ledger.id, joined.participants, ["alice"], joined.revision);
+      await owner.deleteTrip(ledger.id);
+      await owner.deleteTrip(ledger.id);
+      await alice.leaveTrip(ledger.id);
+    });
+    await t.test("owner participant update works at the twenty-person rule bound", async () => {
+      const full = { ...base, id: "manage-full-trip", selfParticipantId: "p0", participants: Array.from({ length: 20 }, (_, i) => ({ id: `p${i}`, name: `Person ${i}` })) };
+      const trip = (await owner.createTrip(full, "Host")).trip;
+      const changed = await owner.updateParticipants(full.id, trip.participants, ["p19"], trip.revision);
+      assert.deepEqual(changed.inactiveParticipantIds, ["p19"]);
+      await owner.deleteTrip(full.id);
+    });
     await t.test("explicit leave removes access; only owner can delete the shared trip", async () => {
       await assert.rejects(alice.deleteTrip(base.id), isCode("permission-denied"));
       await alice.leaveTrip(base.id);
+      await alice.leaveTrip(base.id);
+      await bob.leaveTrip(base.id);
       await assert.rejects(alice.getSnapshot(base.id), isCode("permission-denied"));
       await assert.rejects(owner.leaveTrip(base.id), isCode("invalid-data"));
+      await owner.deleteTrip(base.id);
       await owner.deleteTrip(base.id);
       await assertSucceeds(getDoc(doc(ownerDb, "sharedTrips", base.id)));
       await environment.withSecurityRulesDisabled(async (context) => {
         const db = context.firestore() as unknown as Firestore;
         for (const name of ["expenses", "members", "invites", "blocked"]) assert.equal((await getDocs(collection(db, "sharedTrips", base.id, name))).empty, true);
       });
+    });
+    await t.test("owner removes history over multiple pages, preserves author and permanently fences offline resurrection", { timeout: 90_000 }, async () => {
+      const local = { ...base, id: "purge-multiple-pages", participants: [...base.participants, { id: "carol", name: "Carol" }] };
+      await owner.createTrip(local, "Host");
+      await alice.joinTrip(await owner.createInvite(local.id), "Companion");
+      let before = await owner.getSnapshot(local.id);
+      // Seed genuine validated records in batches; the operation spans 3 pages.
+      const writes = writeBatch(ownerDb);
+      for (let i = 0; i < 105; i++) {
+        const id = `entry-${String(i).padStart(3, "0")}`;
+        const row: TravelExpense = { ...expense, id, paidBy: i % 3 === 0 ? "bob" : "alice", shares: i % 3 === 2 ? [{ participantId: "alice", minorUnits: 1001 }] : [{ participantId: "carol", minorUnits: 1 }, { participantId: "bob", minorUnits: 999 }, { participantId: "alice", minorUnits: 1 }] };
+        writes.set(doc(ownerDb, "sharedTrips", local.id, "expenses", id), { ...toSharedExpenseData(row, before.trip, "owner", "owner", 1, `initial-${i}`), updatedAt: serverTimestamp() });
+      }
+      await assertSucceeds(writes.commit());
+      before = await owner.getSnapshot(local.id);
+      await assert.rejects(alice.removeParticipantHistory(local.id, "bob", before.trip.revision, before.expenses), isCode("permission-denied"));
+      const observations: SharedTripSnapshot[] = []; const listenerErrors: unknown[] = [];
+      let initialSeen!: () => void; let finalSeen!: () => void;
+      const initial = new Promise<void>((resolve) => { initialSeen = resolve; });
+      const final = new Promise<void>((resolve) => { finalSeen = resolve; });
+      const stop = alice.listenTrip(local.id, (snapshot) => {
+        if (snapshot.fromCache) return;
+        observations.push(snapshot); initialSeen();
+        if (snapshot.trip.historyRemovedParticipantIds?.includes("bob")) finalSeen();
+      }, (error) => { listenerErrors.push(error); initialSeen(); finalSeen(); });
+      let after: SharedTripSnapshot;
+      try {
+        await initial;
+        after = await owner.removeParticipantHistory(local.id, "bob", before.trip.revision, before.expenses);
+        await final;
+      } finally { stop(); }
+      assert.deepEqual(listenerErrors, []);
+      assert.ok(observations.length >= 2);
+      for (const observed of observations.filter((snapshot) => !snapshot.trip.participantHistoryRemoval)) {
+        const referenced = observed.expenses.filter((r) => r.expense && (r.expense.paidBy === "bob" || r.expense.shares.some((s) => s.participantId === "bob"))).length;
+        assert.equal(referenced, observed.trip.historyRemovedParticipantIds?.includes("bob") ? 0 : 70, "a partially rewritten page must never be emitted with an unlocked header");
+      }
+      assert.deepEqual(after.trip.historyRemovedParticipantIds, ["bob"]);
+      assert.equal(after.trip.participantHistoryRemoval, undefined);
+      assert.equal(after.expenses.filter((r) => r.deleted).length, 35);
+      const reshared = after.expenses.find((r) => r.id === "entry-001")!;
+      assert.equal(reshared.authorUid, "owner"); assert.equal(reshared.revision, 2);
+      assert.deepEqual(reshared.expense?.shares, [{ participantId: "alice", minorUnits: 501 }, { participantId: "carol", minorUnits: 500 }]);
+      assert.deepEqual(after.expenses.find((r) => r.id === "entry-002"), before.expenses.find((r) => r.id === "entry-002"));
+      const retried = await owner.removeParticipantHistory(local.id, "bob", before.trip.revision, before.expenses);
+      assert.deepEqual(retried.trip, after.trip); assert.deepEqual(retried.expenses, after.expenses);
+      const raw = toSharedExpenseData({ ...expense, id: "late-old-client" }, before.trip, "alice-device", "alice-device", 1, "late-create");
+      await assertFails(setDoc(doc(aliceDb, "sharedTrips", local.id, "expenses", "late-old-client"), { ...raw, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(doc(ownerDb, "sharedTrips", local.id), { inactiveParticipantIds: [], revision: after.trip.revision + 1, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(doc(ownerDb, "sharedTrips", local.id), { historyRemovedParticipantIds: [], revision: after.trip.revision + 1, updatedAt: serverTimestamp() }));
+      await owner.deleteTrip(local.id);
+    });
+    await t.test("history removal succeeds at the twenty-person rule bound and keeps all remaining original sharers", async () => {
+      const participants = Array.from({ length: 20 }, (_, index) => ({ id: `person-${String(index).padStart(2, "0")}`, name: `Person ${index}` }));
+      const local = { ...base, id: "purge-twenty-people", participants, selfParticipantId: participants[0].id };
+      await owner.createTrip(local, "Host");
+      const row: TravelExpense = { ...expense, paidBy: participants[0].id, minorUnits: 2001, shares: participants.map((person, index) => ({ participantId: person.id, minorUnits: index === 0 ? 101 : 100 })) };
+      await owner.publishExpense(local.id, { id: row.id, expense: row, expectedRevision: 0, mutationId: "initial" });
+      const before = await owner.getSnapshot(local.id);
+      const after = await owner.removeParticipantHistory(local.id, participants[19].id, before.trip.revision, before.expenses);
+      assert.deepEqual(after.trip.historyRemovedParticipantIds, [participants[19].id]);
+      const shares = after.expenses[0].expense!.shares;
+      assert.deepEqual(shares.map((share) => share.participantId), participants.slice(0, 19).map((person) => person.id));
+      assert.equal(shares.reduce((sum, share) => sum + share.minorUnits, 0), 2001);
+      assert.equal(Math.max(...shares.map((share) => share.minorUnits)) - Math.min(...shares.map((share) => share.minorUnits)), 1);
+      await owner.deleteTrip(local.id);
+    });
+    await t.test("history preflight rejects stale confirmation and orphan shares without deleting any financial row", async () => {
+      const local = { ...base, id: "purge-preflight" };
+      const trip = (await owner.createTrip(local, "Host")).trip;
+      const orphan: TravelExpense = { ...expense, shares: [{ participantId: "bob", minorUnits: 1001 }] };
+      await owner.publishExpense(local.id, { id: orphan.id, expense: orphan, expectedRevision: 0, mutationId: "orphan-create" });
+      await assert.rejects(owner.removeParticipantHistory(local.id, "bob", trip.revision, []), isCode("conflict"));
+      let current = await owner.getSnapshot(local.id);
+      assert.equal(current.trip.participantHistoryRemoval, undefined); assert.deepEqual(current.expenses[0].expense, orphan);
+      await assert.rejects(owner.removeParticipantHistory(local.id, "bob", current.trip.revision, current.expenses), isCode("orphan-shares"));
+      current = await owner.getSnapshot(local.id);
+      assert.equal(current.trip.participantHistoryRemoval, undefined); assert.equal(current.trip.historyRemovedParticipantIds, undefined);
+      assert.deepEqual(current.expenses[0].expense, orphan); assert.equal(current.expenses[0].revision, 1);
+      await owner.deleteTrip(local.id);
+    });
+    await t.test("retrying a completed removal never advances another participant's in-progress operation", async () => {
+      const local = { ...base, id: "purge-old-retry", participants: [...base.participants, { id: "carol", name: "Carol" }] };
+      await owner.createTrip(local, "Host");
+      const row: TravelExpense = { ...expense, shares: [{ participantId: "alice", minorUnits: 334 }, { participantId: "bob", minorUnits: 334 }, { participantId: "carol", minorUnits: 333 }] };
+      await owner.publishExpense(local.id, { id: row.id, expense: row, expectedRevision: 0, mutationId: "initial" });
+      const before = await owner.getSnapshot(local.id);
+      const completed = await owner.removeParticipantHistory(local.id, "bob", before.trip.revision, before.expenses);
+      const operation = { id: "next-removal", participantId: "carol", phase: "preflight", cursor: null };
+      await assertSucceeds(updateDoc(doc(ownerDb, "sharedTrips", local.id), { participantHistoryRemoval: operation, revision: completed.trip.revision + 1, updatedAt: serverTimestamp() }));
+      const locked = await owner.getSnapshot(local.id);
+      const retried = await owner.removeParticipantHistory(local.id, "bob", before.trip.revision, before.expenses);
+      assert.deepEqual(retried, locked, "an old request must only read, not start or change Carol's operation");
+      const resumed = await owner.removeParticipantHistory(local.id, "carol", locked.trip.revision);
+      assert.deepEqual(resumed.trip.historyRemovedParticipantIds, ["bob", "carol"]);
+      assert.deepEqual(resumed.expenses[0].expense?.shares, [{ participantId: "alice", minorUnits: 1001 }]);
+      await owner.deleteTrip(local.id);
+    });
+    await t.test("durable applying lock fences ordinary writes and resumes after a partially committed page", async () => {
+      const local = { ...base, id: "purge-resume" };
+      await owner.createTrip(local, "Host");
+      await alice.joinTrip(await owner.createInvite(local.id), "Companion");
+      let current = await owner.getSnapshot(local.id);
+      const first = { ...expense, id: "a-first" }; const second = { ...expense, id: "b-second", paidBy: "bob" };
+      await owner.publishExpense(local.id, { id: first.id, expense: first, expectedRevision: 0, mutationId: "initial-a" });
+      await owner.publishExpense(local.id, { id: second.id, expense: second, expectedRevision: 0, mutationId: "initial-b" });
+      const ref = doc(ownerDb, "sharedTrips", local.id);
+      const operation = { id: "durable-operation", participantId: "bob", phase: "preflight", cursor: null };
+      await assertSucceeds(updateDoc(ref, { participantHistoryRemoval: operation, revision: current.trip.revision + 1, updatedAt: serverTimestamp() }));
+      current = await owner.getSnapshot(local.id);
+      await assert.rejects(owner.publishExpense(local.id, { id: "forbidden", expense: { ...expense, id: "forbidden" }, expectedRevision: 0, mutationId: "ordinary-create" }), isCode("history-busy"));
+      const raw = toSharedExpenseData({ ...expense, id: "old-client" }, current.trip, "alice-device", "alice-device", 1, "ordinary-create");
+      await assertFails(setDoc(doc(aliceDb, "sharedTrips", local.id, "expenses", "old-client"), { ...raw, updatedAt: serverTimestamp() }));
+      await assertFails(updateDoc(doc(aliceDb, "sharedTrips", local.id), { participantHistoryRemoval: { ...operation, phase: "applying" }, revision: current.trip.revision + 1, updatedAt: serverTimestamp() }));
+      await assertSucceeds(updateDoc(ref, { participantHistoryRemoval: { ...operation, phase: "applying" }, revision: current.trip.revision + 1, updatedAt: serverTimestamp() }));
+      current = await owner.getSnapshot(local.id);
+      const partial = writeBatch(ownerDb);
+      partial.set(doc(ownerDb, "sharedTrips", local.id, "expenses", first.id), { ...toSharedExpenseData({ ...first, shares: [{ participantId: "alice", minorUnits: 1001 }] }, current.trip, "owner", "owner", 2, operation.id), updatedAt: serverTimestamp() });
+      partial.update(ref, { participantHistoryRemoval: { ...operation, phase: "applying", cursor: first.id }, revision: current.trip.revision + 1, updatedAt: serverTimestamp() });
+      await assertSucceeds(partial.commit());
+      // Simulates restart/ack loss: a new client uses stale revision and resumes its durable cursor.
+      const resumed = await createFirebaseSharedTravelClient(ownerDb, "owner").removeParticipantHistory(local.id, "bob", 1);
+      assert.equal(resumed.expenses.find((r) => r.id === first.id)?.revision, 2);
+      assert.equal(resumed.expenses.find((r) => r.id === second.id)?.deleted, true);
+      assert.equal(resumed.trip.participantHistoryRemoval, undefined);
+      await owner.deleteTrip(local.id);
     });
   } finally { await environment.cleanup(); }
 });

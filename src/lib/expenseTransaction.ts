@@ -12,6 +12,7 @@ export function expenseTransactionType(ledger: GeneralLedger, expense: GeneralEx
 }
 
 export function expenseTransactionLabel(locale: Locale, type: ExpenseTransactionType): string {
+  if (type === "cash_withdrawal") return t(locale, "cashWithdrawalEvent");
   if (type === "outgoing_transfer") return t(locale, "outgoingTransferEvent");
   if (type === "direct_debit") return t(locale, "directDebitEvent");
   if (type === "standing_order") return t(locale, "standingOrderEvent");

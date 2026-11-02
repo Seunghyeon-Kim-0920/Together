@@ -24,7 +24,7 @@ import org.json.JSONObject;
 
 final class PaymentNotificationParser {
 
-    static final int PARSER_VERSION = 14;
+    static final int PARSER_VERSION = 17;
 
     // Android uses ICU, not the desktop JDK regex engine. In particular the
     // embedded UNICODE_CHARACTER_CLASS flag (?U) is unsupported and throws
@@ -49,7 +49,60 @@ final class PaymentNotificationParser {
         "(?iu)(\\b(?:declined|failed|rejected|verification code|security code|one[ -]?time|otp|pin|pending|processing)\\b|en attente|refus[ée]|[ée]chou[ée]|abgelehnt|fehlgeschlagen|ausstehend|rechazad[oa]|fallid[oa]|pendiente|保留|失败|失敗|拒绝|拒絕|待处理|거절|실패|처리 ?중|승인 ?대기|인증|보안 ?코드|일회용|معلّق|مرفوض|فشل|अस्वीकृत)"
     );
     private static final Pattern ALWAYS_NON_PURCHASE = Pattern.compile(
-        "(?iu)(\\b(?:cashback|top[ -]?up|deposit|cash withdrawal|withdrawal|credit(?![-\\s]+card\\b))\\b|rechargement|retrait|versement|depósito|prelievo|入金|입금|현금\\s*(?:출금|인출)|(?:ATM|CD)\\s*(?:현금|출금|인출)|충전|캐시백|적립|إيداع)"
+        "(?iu)(\\b(?:cashback|top[ -]?up|deposit|cash withdrawal|withdrawal|credit(?![-\\s]+card\\b))\\b|rechargement|retrait|versement|depósito|prelievo|入金|입금|현금\\s*(?:출금|인출)|(?:ATM|CD)\\s*(?:현금|출금|인출)|충전|캐시백|적립|(?:캐시|인센티브|페이백)\\s*지급|إيداع)"
+    );
+    // Granted monetary rewards are credits, never purchases. No percentage is
+    // inferred: a concrete currency amount and a granted status are required.
+    private static final Pattern CASH_REWARD = Pattern.compile("(?imu)^[\\p{Zs}\\t]*(?:(?:캐시(?:백)?|인센티브|페이백)[\\p{Zs}\\t]*(?:지급|적립)|cashback[\\p{Zs}\\t]+(?:credited|received|earned))(?=[\\p{Zs}\\t]*(?:$|[:：+−\\-\\d₩€£$]|[A-Z]{3}[\\p{Zs}\\t]*[+−\\-\\d]|완료|되었습니다|예정|예상|이벤트|최대|취소))");
+    private static final Pattern CASH_REWARD_LABEL = Pattern.compile("(?iu)^(?:(?:캐시(?:백)?|인센티브|페이백)\\s*(?:지급|적립)(?:\\s*완료)?|cashback\\s+(?:credited|received|earned))\\s*[.!]*$");
+    private static final Pattern REWARD_OR_TOPUP = Pattern.compile("(?iu)캐시(?:백)?\\s*(?:지급|적립)|인센티브|페이백|충전|\\b(?:cashback|top[ -]?up)\\b");
+    private static final Pattern REWARD_NOT_GRANTED = Pattern.compile("(?iu)예정|예상|예고|혜택|이벤트|최대|포인트|마일리지|충전|할인|취소|환불|회수|\\b(?:points?|miles?|offer|upcoming|pending|expected|reversed|cancelled|canceled|top[ -]?up)\\b");
+    private static final Pattern STORED_VALUE_BALANCE = Pattern.compile("충전\\s*(?=잔액)");
+    private static final Pattern KOREAN_INSTALLMENT = Pattern.compile("일시불|\\d{1,2}\\s*개월(?:\\s*할부)?|할부\\s*\\d{1,2}\\s*개월");
+    // SMS apps may flatten an otherwise identical approval receipt into one
+    // line. The dated merchant still ends before an explicitly labelled
+    // cumulative/balance amount, never at an arbitrary word or guessed name.
+    private static final Pattern KOREAN_DATED_MERCHANT = Pattern.compile(
+        "(?m)(?<![\\d/.-])(?:(?:\\d{4}[-/.])?\\d{1,2}[-/.]\\d{1,2})[\\p{Zs}\\t]+\\d{1,2}:\\d{2}(?::\\d{2})?[\\p{Zs}\\t]+([^\\n|]{1,80}?)[\\p{Zs}\\t]*(?=$|[\\p{Zs}\\t]+(?:누적|누계|잔액|총\\s*이용|이용\\s*누계)(?:금액|액)?[\\p{Zs}\\t]*[:：]?[\\p{Zs}\\t]*[\\d,]+[\\p{Zs}\\t]*원)"
+    );
+    private static final Pattern KOREAN_RECEIPT_APPROVAL = Pattern.compile("승인(?!\\s*(?:번호|요청|대기))");
+    private static final Pattern CUMULATIVE_AMOUNT = Pattern.compile("(?:누적|누계|총\\s*이용|이용\\s*누계)(?:금액|액)?\\s*[:：]?\\s*$");
+    // A cash withdrawal is an outgoing cash movement, not a card purchase or
+    // a transfer to another person. Only receipt-shaped cash/ATM terminology
+    // can enter this path; a generic account "withdrawal" is still ambiguous.
+    private static final Pattern CASH_WITHDRAWAL_CONTEXT = Pattern.compile(
+        "(?iu)(\\b(?:cash\\s+(?:withdrawal|withdrawn)|ATM\\s+(?:cash\\s+)?withdrawal|(?:you\\s+)?withdrew)\\b|"
+            + "\\bwithdrawal\\s+(?:at|from)\\s+(?:an?\\s+)?ATM\\b|"
+            + "\\bretrait\\s+(?:d['’]esp[èe]ces|en\\s+esp[èe]ces|(?:au|sur|à)\\s+(?:un\\s+)?(?:DAB|GAB|distributeur)|DAB|GAB|ATM)\\b|"
+            + "\\b(?:bargeldabhebung|bargeld\\s+abgehoben|geld\\s+abgehoben|abhebung\\s+am\\s+geldautomaten)\\b|"
+            + "\\b(?:retiro|retirada)\\s+(?:de\\s+efectivo|en\\s+(?:un\\s+)?cajero)\\b|"
+            + "\\bprelievo\\s+(?:di\\s+)?(?:contanti|ATM|bancomat)\\b|\\b(?:geldopname|contant\\s+geld\\s+opgenomen)\\b|"
+            + "현금\\s*(?:출금|인출)|(?:ATM|CD)\\s*(?:현금|출금|인출)|CD현금)"
+    );
+    private static final Pattern CASH_INCOMING_OR_OTHER = Pattern.compile(
+        "(?iu)(\\b(?:deposit|cashback|top[ -]?up|credit(?![-\\s]+card\\b))\\b|rechargement|versement|dépôt|depósito|deposito|einzahlung|storting|入金|입금|충전|캐시백|적립|إيداع)"
+    );
+    private static final Pattern CASH_NOT_EXECUTED = Pattern.compile(
+        "(?iu)(\\b(?:withdrawal\\s+(?:request(?:ed)?|limit|scheduled|upcoming|pending)|available\\s+to\\s+withdraw|daily\\s+withdrawal\\s+limit|how\\s+to\\s+withdraw|will\\s+(?:be\\s+)?withdraw)\\b|"
+        + "\\bwithdrawal[^\\n]{0,65}\\b(?:request(?:ed|ing)?|scheduled|upcoming|requires?(?:\\s+your)?\\s+(?:approval|confirmation|verification)|needs?(?:\\s+your)?\\s+(?:approval|confirmation|verification)|awaiting\\s+(?:approval|confirmation))\\b|"
+        + "\\b(?:withdrawal|cash)[^\\n]{0,45}\\b(?:denied|unsuccessful|aborted|expired|initiated|attempted|not\\s+(?:completed|processed|successful))\\b|"
+        + "\\b(?:no\\s+cash(?:\\s+was)?\\s+(?:dispensed|received)|cash\\s+(?:(?:was|has\\s+been)\\s+)?not\\s+(?:dispensed|received)|(?:could\\s+not|unable\\s+to)\\s+dispense|cash\\s+dispens(?:ing|e)\\s+(?:error|failure))\\b|"
+        + "\\b(?:ready\\s+to\\s+(?:collect|withdraw)|collect\\s+your\\s+cash|withdrawal\\s+(?:code|fee)|withdrawal\\s+is\\s+ready)\\b|"
+        + "(?:출금|인출)[^\\n]{0,25}(?:요청|예정|대기|준비|신청|미지급|미수령)|현금\\s*(?:미지급|미수령)|(?:수령|출금|인출)\\s*준비|"
+        + "esp[èe]ces\\s+non\\s+(?:distribu[ée]es|d[ée]livr[ée]es)|retrait[^\\n]{0,35}(?:demand[ée]|programm[ée]|à\\s+venir)|"
+        + "\\b(?:verify|approve|confirm|authori[sz]e|request)(?:\\s+[\\p{L}'’]+){0,5}\\s+(?:withdrawal|withdraw|ATM)\\b|"
+        + "\\b(?:withdrawal|cash).{0,35}\\b(?:verification|confirmation|approval|authori[sz]ation)\\s+(?:required|needed)\\b|"
+        + "(?:demande\\s+de|plafond\\s+de|limite\\s+de|confirme[rz]|valide[rz]|vérifie[rz]|veuillez).{0,35}\\bretrait\\b|retrait.{0,35}(?:à\\s+confirmer|à\\s+valider|demandé|en\\s+attente)|"
+        + "(?:abhebung|bargeld).{0,35}(?:beantragt|anfrage|bestätigen|limit)|(?:bestätigen|beantragen).{0,35}(?:abhebung|bargeld)|"
+        + "(?:solicitud|solicitad[oa]|solicitar|límite|confirma[rd]).{0,35}(?:retiro|retirada)|(?:retiro|retirada).{0,35}(?:solicitad[oa]|pendiente)|"
+        + "(?:richiest[oa]|limite|conferma).{0,35}prelievo|prelievo.{0,35}(?:richiesto|in\\s+attesa)|(?:aanvraag|limiet|bevestig).{0,35}geldopname|"
+            + "(?:출금|인출)(?:을|를)?\\s*(?:요청|예정|대기|가능|한도|신청)|인출하시|인출하세요|현금을?\\s*인출하려면)"
+    );
+    private static final Pattern CASH_LOCATION = Pattern.compile(
+        "(?imu)^\\s*(?:ATM(?:\\s+(?:location|branch))?|location|인출\\s*장소|거래점|이용점|지점|lieu|distributeur)\\s*[:：]\\s*([^\\n]+)"
+    );
+    private static final Pattern CASH_LOCATION_NARRATIVE = Pattern.compile(
+        "(?iu)\\bat\\s+((?:ATM|[\\p{L}\\p{M}][\\p{L}\\p{M} .’'-]{1,45}\\s+ATM)(?:[\\p{Zs}\\t]+[^\\n]+)?)"
     );
     private static final Pattern CREDIT_BALANCE_LABEL = Pattern.compile("(?iu)\\b(?:available\\s+credit|credit\\s+(?:available|remaining))\\b");
     // These are destination labels, not an incoming credit. Only mask them
@@ -236,7 +289,7 @@ final class PaymentNotificationParser {
     // Some Korean bank alerts omit the space between a field label and its
     // value. Keep the ordinary currency boundary strict for unrelated words.
     private static final Pattern KOREAN_LABELLED_AMOUNT = Pattern.compile(
-        "(?u)(출금(?:금액|액)?|(?:이체|송금|결제|이용|승인)(?:금액)?|잔액)([+−-]?\\d[\\d, .]*원)(?![\\p{L}\\p{N}])"
+        "(?u)((?:출금|인출|누적|누계)(?:금액|액)?|(?:이체|송금|결제|이용|승인)(?:금액)?|잔액)([+−-]?\\d[\\d, .]*원)(?![\\p{L}\\p{N}])"
     );
     private static final Pattern MERCHANT_FIELD_BOUNDARY = Pattern.compile(
         "(?iu)\\s+(?:(?:결제|승인|이용|사용|출금|송금|이체)\\s*금액|입금\\s*(?:은행|계좌)|출금\\s*계좌|잔액)(?:\\s|[:：]|(?=\\d))"
@@ -356,15 +409,43 @@ final class PaymentNotificationParser {
         String safeTitle = clean(title);
         String body = join(text, bigText, subText);
         String combined = join(safeTitle, body);
+        AmountMatch grantedReward = null;
+        boolean rewardOnly = false;
+        if (CASH_REWARD.matcher(combined).find()) {
+            // A promotion/request must never become a cash credit merely
+            // because it mentions the wording of a future reward.
+            String rewardContext = STORED_VALUE_BALANCE.matcher(combined).replaceAll("");
+            if (REWARD_NOT_GRANTED.matcher(rewardContext).find() || ALWAYS_IGNORE.matcher(combined).find()
+                || hasNegatedExecution(combined) || NOT_EXECUTED_PAYMENT.matcher(combined).find()
+                || AUTHORIZATION_ACTION_REQUEST.matcher(combined).find()) return null;
+            RewardParts parts = extractGrantedReward(combined, currencyHint);
+            if (parts == null) return null;
+            grantedReward = parts.amount;
+            safeTitle = "";
+            body = parts.remaining;
+            combined = body;
+            rewardOnly = !PAYMENT_SIGNAL.matcher(combined).find() && !hasKoreanCardReceiptShape(combined)
+                && findSingleAmount(combined, currencyHint, false, 0) == null;
+            if (rewardOnly) return rewardCandidate(packageName, sourceName, body, grantedReward,
+                postedAt, deliveredAt, notificationKey, explicitlyConfigured, manualOnly);
+        }
+        boolean cashWithdrawal = CASH_WITHDRAWAL_CONTEXT.matcher(combined).find();
         // A credit-limit balance is metadata, not an incoming credit. The
         // original text is still used for per-amount balance exclusion below.
-        String incomeContext = CREDIT_BALANCE_LABEL.matcher(combined).replaceAll("available funds");
-        boolean explicitCardApproval = KOREAN_CARD_APPROVAL.matcher(combined).find();
+        String incomeContext = STORED_VALUE_BALANCE.matcher(CREDIT_BALANCE_LABEL.matcher(combined).replaceAll("available funds")).replaceAll("");
+        if (cashWithdrawal) {
+            // Banks reuse an "입금/출금" service heading for outgoing ATM
+            // receipts too. Only mask that heading, never an incoming body.
+            incomeContext = CREDIT_BALANCE_LABEL.matcher(join(
+                KOREAN_MIXED_ALERT_TITLE.matcher(safeTitle).replaceAll("거래"), body
+            )).replaceAll("available funds");
+        }
+        boolean explicitCardApproval = KOREAN_CARD_APPROVAL.matcher(combined).find() || hasKoreanCardReceiptShape(combined);
         boolean cardPurchase = CARD_PURCHASE_CONTEXT.matcher(combined).find() || explicitCardApproval;
         boolean recipientFirstSend = KOREAN_RECIPIENT_BEFORE.matcher(combined).find() && KOREAN_SENT.matcher(combined).find();
         boolean explicitTransferContext = TRANSFER_CONTEXT.matcher(combined).find() || recipientFirstSend;
-        boolean transferContext = explicitTransferContext
-            || !cardPurchase && KOREAN_DEBIT_CONTEXT.matcher(combined).find();
+        boolean transferContext = !cashWithdrawal && (explicitTransferContext
+            || !cardPurchase && KOREAN_DEBIT_CONTEXT.matcher(combined).find());
         // A bare account owner (예금주) is not evidence of sending money to
         // somebody else. Withdrawal-only alerts need a recipient field.
         if (transferContext && !explicitTransferContext && !KOREAN_WITHDRAWAL_RECIPIENT.matcher(combined).find()) return null;
@@ -377,10 +458,16 @@ final class PaymentNotificationParser {
             incomeContext = KOREAN_DESTINATION_LABEL.matcher(join(directionTitle, body)).replaceAll("목적지");
             incomeContext = CREDIT_BALANCE_LABEL.matcher(incomeContext).replaceAll("available funds");
         }
-        if (combined.isEmpty() || ALWAYS_IGNORE.matcher(combined).find() || hasNegatedExecution(combined) || ALWAYS_NON_PURCHASE.matcher(incomeContext).find()
+        if (combined.isEmpty() || ALWAYS_IGNORE.matcher(combined).find() || hasNegatedExecution(combined)
+            || (cashWithdrawal ? CASH_INCOMING_OR_OTHER : ALWAYS_NON_PURCHASE).matcher(incomeContext).find()
+            || CASH_NOT_EXECUTED.matcher(AUTHORIZATION_NOT_REQUIRED.matcher(combined).replaceAll("")).find()
+            || cashWithdrawal && MARKETING.matcher(combined).find()
             || NOT_EXECUTED_PAYMENT.matcher(combined).find()
             || AUTHORIZATION_ACTION_REQUEST.matcher(AUTHORIZATION_NOT_REQUIRED.matcher(combined).replaceAll("")).find()) return null;
         boolean reversal = REVERSAL.matcher(combined).find();
+        // A cash reversal is not a card cancellation and must never delete an
+        // unrelated purchase. The cash-movement model does not yet reconcile it.
+        if (cashWithdrawal && reversal) return null;
         if (reversal && NON_TERMINAL_REVERSAL.matcher(combined).find()) return null;
         // Receiving a payment is income even when the alert does not use the
         // word "transfer". A completed refund remains a reversal candidate.
@@ -400,7 +487,7 @@ final class PaymentNotificationParser {
         // "Sent" can describe notification delivery or a merchant name in a
         // card alert. Only use the broad outbound fallback when no explicit
         // purchase is present, or when the alert actually names a transfer.
-        String debitEventType = transferContext || !cardPurchase
+        String debitEventType = cashWithdrawal ? "cash_withdrawal" : transferContext || !cardPurchase
             ? classifyDebitEvent(combined) : null;
         // Never let an ambiguous transfer fall through the broad signed-payment
         // fallback. Generic wording such as "Transfer completed" does not prove
@@ -419,6 +506,8 @@ final class PaymentNotificationParser {
         int bodyStart = body.isEmpty() || !combined.endsWith(body) ? 0 : combined.length() - body.length();
         AmountMatch amount = findSingleAmount(combined, currencyHint, reversal, bodyStart);
         if (amount == null || amount.minorUnits <= 0) return null;
+        if (grantedReward != null && (!amount.currency.equals(grantedReward.currency)
+            || grantedReward.minorUnits >= amount.minorUnits || reversal)) return null;
         // Korean card receipts can put only "[승인] <amount>" in the title,
         // with the merchant and card/date/balance fields in the body. This is
         // stronger evidence than an isolated approval word or approval ID.
@@ -434,14 +523,14 @@ final class PaymentNotificationParser {
         // after posting the debit. Accept that compact form only when the amount
         // itself carries an explicit minus sign; unsigned alerts need an
         // unambiguous completion word.
-        if (debitEventType != null && !amount.explicitDebit && !EXECUTED_DEBIT.matcher(combined).find() && !recipientFirstSend) return null;
+        if (debitEventType != null && !cashWithdrawal && !amount.explicitDebit && !EXECUTED_DEBIT.matcher(combined).find() && !recipientFirstSend) return null;
         // Compact debit alerts are not restricted to pre-registered apps. The
         // confidence gate below still requires the user to trust the exact app
         // before any high-confidence event may be recorded automatically.
         boolean explicitPurchase = paymentSignal && (!approvalSignal || approvalReceipt) && !reversal && debitEventType == null;
         // Weak approvals can also name a merchant away from the amount. Find
         // it for review without promoting the weak event to automatic posting.
-        MerchantMatch merchant = findMerchant(safeTitle, body, sourceName, amount.raw, debitEventType != null,
+        MerchantMatch merchant = cashWithdrawal ? findCashWithdrawalLocation(combined, sourceName, amount.raw) : findMerchant(safeTitle, body, sourceName, amount.raw, debitEventType != null,
             explicitPurchase || debitEventType != null || approvalSignal || reversal);
         boolean requiresMerchant = merchant == null || merchant.value.isEmpty();
         String merchantValue = requiresMerchant ? "" : merchant.value;
@@ -459,6 +548,7 @@ final class PaymentNotificationParser {
             String eventId = fingerprint(packageName + "|" + notificationKey + "|" + postedAt);
             String queueToken = fingerprint(
                 eventId + "|" + eventType + "|" + amount.currency + "|" + amount.minorUnits + "|" + merchantValue + "|" + requiresMerchant
+                    + (grantedReward == null ? "" : "|cashback:" + grantedReward.minorUnits)
             );
             JSONObject result = new JSONObject();
             result.put("id", eventId);
@@ -466,10 +556,11 @@ final class PaymentNotificationParser {
             result.put("packageName", packageName);
             result.put("sourceName", clean(sourceName).isEmpty() ? packageName : clean(sourceName));
             result.put("merchant", merchantValue);
-            String categoryHint = PaymentCategoryHints.infer(merchantValue, safeTitle, body);
+            String categoryHint = cashWithdrawal ? "other" : PaymentCategoryHints.infer(merchantValue, safeTitle, body);
             if (categoryHint != null) result.put("categoryHint", categoryHint);
             result.put("requiresMerchant", requiresMerchant);
             result.put("minorUnits", amount.minorUnits);
+            if (grantedReward != null) result.put("cashbackMinorUnits", grantedReward.minorUnits);
             result.put("currency", amount.currency);
             result.put("occurredAt", isoTimestamp(postedAt));
             // Android's actual notification post time is independent of
@@ -484,6 +575,88 @@ final class PaymentNotificationParser {
         } catch (JSONException ignored) {
             return null;
         }
+    }
+
+    private static MerchantMatch findCashWithdrawalLocation(String value, String sourceName, String rawAmount) {
+        for (Pattern pattern : new Pattern[] { CASH_LOCATION, CASH_LOCATION_NARRATIVE }) {
+            Matcher matcher = pattern.matcher(value);
+            if (matcher.find()) {
+                String location = trimMerchant(matcher.group(1), rawAmount);
+                if (isMerchantShape(location) && !CASH_WITHDRAWAL_CONTEXT.matcher(location).find()
+                    && !STATUS_ONLY_MERCHANT.matcher(location).matches()) {
+                    return new MerchantMatch(location.startsWith("ATM") ? location : "ATM · " + location, true);
+                }
+            }
+        }
+        // The source bank is known; do not invent a store or ATM address when
+        // the bank's receipt does not include a location.
+        String bank = clean(sourceName);
+        return new MerchantMatch(bank.isEmpty() ? "ATM" : "ATM · " + bank, true);
+    }
+
+    static boolean hasKoreanCardReceiptShape(String content) {
+        return content != null && KOREAN_RECEIPT_APPROVAL.matcher(content).find()
+            && KOREAN_INSTALLMENT.matcher(content).find() && KOREAN_DATED_MERCHANT.matcher(content).find();
+    }
+
+    static boolean hasGrantedCashRewardLabel(String content) {
+        return content != null && CASH_REWARD_LABEL.matcher(content.trim()).matches();
+    }
+
+    static boolean hasCashRewardReceiptShape(String content) {
+        return content != null && CASH_REWARD.matcher(content).find()
+            && !REWARD_NOT_GRANTED.matcher(STORED_VALUE_BALANCE.matcher(content).replaceAll("")).find();
+    }
+
+    /** Extract only separately labelled granted reward fields, not percentages
+     * or a top-up benefit. Different rewards in one alert are ambiguous. */
+    private static RewardParts extractGrantedReward(String content, String currencyHint) {
+        String[] lines = LINE_BREAK.split(content);
+        List<String> remaining = new ArrayList<>();
+        AmountMatch reward = null;
+        for (int index = 0; index < lines.length; index++) {
+            String line = lines[index];
+            if (!CASH_REWARD.matcher(line).find()) { remaining.add(line); continue; }
+            AmountMatch found = findSingleAmount(line, currencyHint, true, 0);
+            if (found == null && index + 1 < lines.length) {
+                String following = lines[index + 1].trim();
+                AmountMatch next = findSingleAmount(following, currencyHint, true, 0);
+                if (next != null && following.equals(next.raw.trim())) { found = next; index++; }
+            }
+            if (found == null || found.explicitDebit || reward != null
+                && (!reward.currency.equals(found.currency) || reward.minorUnits != found.minorUnits)) return null;
+            reward = found;
+        }
+        return reward == null ? null : new RewardParts(reward, String.join("\n", remaining));
+    }
+
+    private static JSONObject rewardCandidate(String packageName, String sourceName, String content, AmountMatch reward,
+        long postedAt, long deliveredAt, String notificationKey, boolean trusted, boolean manualOnly) {
+        // Remaining text must not contain another monetary value. A reward
+        // balance and an earned credit are not interchangeable.
+        if (REWARD_OR_TOPUP.matcher(STORED_VALUE_BALANCE.matcher(content).replaceAll("")).find() || TRANSFER_CONTEXT.matcher(content).find()
+            || CASH_WITHDRAWAL_CONTEXT.matcher(content).find() || REVERSAL.matcher(content).find()) return null;
+        MerchantMatch merchant = findMerchant("", content, sourceName, reward.raw, false, true);
+        String merchantValue = merchant == null ? "" : merchant.value;
+        try {
+            JSONObject result = new JSONObject();
+            result.put("id", fingerprint(packageName + "|" + notificationKey + "|" + postedAt));
+            result.put("packageName", packageName);
+            result.put("sourceName", clean(sourceName).isEmpty() ? packageName : clean(sourceName));
+            result.put("merchant", merchantValue);
+            result.put("requiresMerchant", merchantValue.isEmpty());
+            result.put("minorUnits", reward.minorUnits);
+            result.put("currency", reward.currency);
+            result.put("occurredAt", isoTimestamp(postedAt));
+            result.put("deliveredAt", isoTimestamp(deliveredAt));
+            result.put("occurredOn", localDate(postedAt));
+            result.put("confidence", trusted && !manualOnly && !merchantValue.isEmpty() ? "high" : "review");
+            result.put("eventType", "cashback");
+            result.put("manualOnly", manualOnly);
+            result.put("parserVersion", PARSER_VERSION);
+            result.put("queueToken", contentToken(result));
+            return result;
+        } catch (JSONException ignored) { return null; }
     }
 
     private static boolean hasApprovalReceiptLine(String content, String rawAmount) {
@@ -558,6 +731,7 @@ final class PaymentNotificationParser {
         if (afterBoundary >= 0) after = after.substring(0, afterBoundary);
         if (BALANCE_BEFORE_AMOUNT.matcher(before).find()
             || NEW_BALANCE_BEFORE_AMOUNT.matcher(before).find()
+            || CUMULATIVE_AMOUNT.matcher(before).find()
             || BALANCE_AFTER_AMOUNT.matcher(after).find()) return true;
         return false;
     }
@@ -656,6 +830,20 @@ final class PaymentNotificationParser {
         }
         if (labelledCandidates.size() == 1) return new MerchantMatch(labelledCandidates.values().iterator().next(), true);
         if (labelledCandidates.size() > 1) return null;
+        if (explicitPurchase && !allowCounterparty) {
+            // Korean receipts put the actual shop on the transaction date/time
+            // line. Do not discard that entire line as date metadata.
+            Map<String, String> datedCandidates = new LinkedHashMap<>();
+            Matcher dated = KOREAN_DATED_MERCHANT.matcher(join(title, body));
+            while (dated.find()) {
+                if (KOREAN_CARD_PRODUCT_LINE.matcher(dated.group(1).trim()).matches()) continue;
+                String candidate = trimMerchant(dated.group(1), rawAmount);
+                if (isMerchantShape(candidate) && isUsableMerchant(candidate, sourceName)
+                    && !GENERIC_TITLE.matcher(candidate).find()) datedCandidates.putIfAbsent(candidate.toLowerCase(Locale.ROOT), candidate);
+            }
+            if (datedCandidates.size() == 1) return new MerchantMatch(datedCandidates.values().iterator().next(), true);
+            if (datedCandidates.size() > 1) return null;
+        }
         Set<String> titleCandidates = new HashSet<>();
         for (String titleLine : LINE_BREAK.split(title)) {
             if (KOREAN_CARD_PRODUCT_LINE.matcher(titleLine.trim()).matches()) continue;
@@ -710,6 +898,9 @@ final class PaymentNotificationParser {
         int paymentLines = 0;
         for (int index = 0; index < Math.min(lines.length, 20); index++) {
             String line = clean(lines[index] == null ? "" : lines[index].toString());
+            // A labelled reward beside one purchase is not a second purchase.
+            // The complete parser still validates grant status and exact money.
+            if (hasCashRewardReceiptShape(line) && findSingleAmount(line, currencyHint, true, 0) != null) continue;
             // Identical summary rows may still be two distinct real purchases.
             if (findSingleAmount(line, currencyHint, true, 0) != null && ++paymentLines > 1) return true;
         }
@@ -867,7 +1058,8 @@ final class PaymentNotificationParser {
             || !event.has("currency") || !event.has("minorUnits") || !event.has("merchant")) return null;
         return fingerprint(event.optString("id") + "|" + event.optString("eventType") + "|"
             + event.optString("currency") + "|" + event.optLong("minorUnits") + "|"
-            + event.optString("merchant") + "|" + event.optBoolean("requiresMerchant", false));
+            + event.optString("merchant") + "|" + event.optBoolean("requiresMerchant", false)
+            + (event.has("cashbackMinorUnits") ? "|cashback:" + event.optLong("cashbackMinorUnits") : ""));
     }
 
     private static String isoTimestamp(long time) {
@@ -920,5 +1112,11 @@ final class PaymentNotificationParser {
         final String value;
         final boolean highConfidence;
         MerchantMatch(String value, boolean highConfidence) { this.value = value; this.highConfidence = highConfidence; }
+    }
+
+    private static final class RewardParts {
+        final AmountMatch amount;
+        final String remaining;
+        RewardParts(AmountMatch amount, String remaining) { this.amount = amount; this.remaining = remaining; }
     }
 }

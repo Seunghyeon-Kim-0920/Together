@@ -1,6 +1,7 @@
 import { currencyDigits } from "./currency";
 import { publicExpenseId } from "./expenseIdentity";
 import { merchantDisplayName } from "./merchant";
+import { activeTravelParticipants } from "./travelParticipants";
 import type { LedgerShareDocument } from "./share";
 import { EXPENSE_TRANSACTION_TYPES, GENERAL_CATEGORIES, TRAVEL_CATEGORIES, type ExpenseTransactionType, type GeneralCategory, type GeneralExpense, type Ledger, type StatementImportReceipt, type WalletState } from "./types";
 import { createLedger, MAX_EXPENSES_PER_LEDGER, MAX_LEDGERS, parseWalletStateStrict, splitEvenly } from "./wallet";
@@ -584,7 +585,7 @@ export function applyStatementImport(state: WalletState, rows: readonly Statemen
       if ([...accepted, ...acceptedAcknowledgements].some((row) => row.currency !== ledger.currency)) throw new Error("currency_mismatch");
       const imported = accepted.map(toGeneralExpense); ledgers[index] = { ...ledger, expenses: [...ledger.expenses, ...imported], statementImportHistory: [...(ledger.statementImportHistory ?? []), ...accepted.flatMap(importReceipts), ...acknowledgementReceipts], updatedAt: new Date().toISOString() };
     } else {
-      const participantIds = target.participantIds ?? []; const allowed = new Set(ledger.participants.map((person) => person.id));
+      const participantIds = target.participantIds ?? []; const allowed = new Set(activeTravelParticipants(ledger).map((person) => person.id));
       if (accepted.length && (!target.paidBy || !allowed.has(target.paidBy) || !participantIds.length || participantIds.some((id) => !allowed.has(id)) || new Set(participantIds).size !== participantIds.length)) throw new Error("participants_required");
       const paidBy = target.paidBy ?? ""; const currencies = [...new Set([...ledger.currencies, ...accepted.map((row) => row.currency)])];
       if (currencies.length > 20) throw new Error("currency_limit");

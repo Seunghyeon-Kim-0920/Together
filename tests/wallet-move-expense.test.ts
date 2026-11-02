@@ -72,6 +72,20 @@ test("validation failures never remove or alter the original expense", () => {
   assert.equal(JSON.stringify(state), snapshot);
 });
 
+test("new moves reject people archived after selection while replaying a historical move remains idempotent", () => {
+  const { state, input, target } = fixtures();
+  const excludedTarget = { ...target, inactiveParticipantIds: ["friend"] };
+  const excludedState = { ...state, ledgers: state.ledgers.map((ledger) => ledger.id === target.id ? excludedTarget : ledger) };
+  assert.throws(() => moveGeneralExpenseToTravel(excludedState, input), /invalid move participants/u);
+  assert.throws(() => moveGeneralExpenseToTravel(excludedState, { ...input, paidBy: "friend", participantIds: ["me"] }), /invalid move participants/u);
+  assert.equal(general(excludedState, input.sourceLedgerId).expenses.length, 1);
+  const activeOnly = moveGeneralExpenseToTravel(excludedState, { ...input, participantIds: ["me"] });
+  assert.deepEqual(travel(activeOnly, target.id).expenses[0].shares, [{ participantId: "me", minorUnits: expense.minorUnits }]);
+  const moved = moveGeneralExpenseToTravel(state, input);
+  const archivedAfterMove = { ...moved, ledgers: moved.ledgers.map((ledger) => ledger.id === target.id ? { ...ledger, inactiveParticipantIds: ["friend"] } : ledger) };
+  assert.equal(moveGeneralExpenseToTravel(archivedAfterMove, input), archivedAfterMove);
+});
+
 test("destination capacity and currency limits fail atomically", () => {
   const { state, target, input } = fixtures();
   const fullTarget = Object.freeze({ ...target, expenses: Object.freeze(Array.from({ length: MAX_EXPENSES_PER_LEDGER }, (_, index) => Object.freeze({ id: `travel-${index}`, description: "Existing", category: "food" as const, currency: "USD", minorUnits: 1, occurredOn: "2026-09-01", paidBy: "me", shares: Object.freeze([{ participantId: "me", minorUnits: 1 }]) }))) });

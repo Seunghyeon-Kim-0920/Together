@@ -4,6 +4,8 @@ import { availableCurrencies, currencyName } from "../lib/currency";
 import { designText } from "../lib/designI18n";
 import { t } from "../lib/i18n";
 import type { Ledger, LedgerKind, Locale } from "../lib/types";
+import type { LedgerDeletionScope } from "../lib/ledgerDeletion";
+import { ledgerDeletionText as deletion } from "../lib/ledgerDeletionI18n";
 
 const openSheets: HTMLElement[] = [];
 let backgroundOverflow = "";
@@ -93,13 +95,21 @@ export function NewLedgerSheet({ locale, onClose, onCreate }: { locale: Locale; 
   );
 }
 
-export function LedgerMenuSheet({ ledger, locale, onClose, onRename, onDelete }: { ledger: Ledger; locale: Locale; onClose: () => void; onRename: (title: string) => void; onDelete: () => void }) {
+export function LedgerMenuSheet({ ledger, locale, busy, onClose, onRename, onDelete }: { ledger: Ledger; locale: Locale; busy: boolean; onClose: () => void; onRename: (title: string) => void; onDelete: (scope: LedgerDeletionScope) => Promise<void> }) {
   const [title, setTitle] = useState(ledger.title); const [confirmDelete, setConfirmDelete] = useState(false);
+  const sync = ledger.kind === "travel" ? ledger.sharedSync : undefined;
+  const owner = sync?.trip.ownerUid === sync?.uid;
+  const [scope, setScope] = useState<LedgerDeletionScope>(sync ? owner ? "everyone" : "leave" : "device");
+  const effectiveScope = sync ? scope : "device";
   return (
-    <SheetFrame title={ledger.title} locale={locale} onClose={onClose}>
-      <label className="field-label">{t(locale, "ledgerName")}<input value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} /></label>
-      <button className="wide-secondary" type="button" disabled={!title.trim() || title.trim() === ledger.title} onClick={() => onRename(title)}>{t(locale, "renameLedger")}</button>
-      {!confirmDelete ? <button className="wide-danger" type="button" onClick={() => setConfirmDelete(true)}><Trash2 />{t(locale, "deleteLedger")}</button> : <div className="delete-confirm"><p>{t(locale, "deleteLedgerConfirm")}</p><div><button type="button" onClick={() => setConfirmDelete(false)}>{t(locale, "cancel")}</button><button className="danger-button" type="button" onClick={onDelete}>{t(locale, "delete")}</button></div></div>}
+    <SheetFrame title={ledger.title} locale={locale} onClose={() => { if (!busy) onClose(); }}>
+      <label className="field-label">{t(locale, "ledgerName")}<input disabled={busy || Boolean(sync)} value={title} maxLength={80} onChange={(event) => setTitle(event.target.value)} /></label>
+      {sync ? <p className="storage-note">{deletion(locale, "sharedRename")}</p> : <button className="wide-secondary" type="button" disabled={busy || !title.trim() || title.trim() === ledger.title} onClick={() => onRename(title)}>{t(locale, "renameLedger")}</button>}
+      {!confirmDelete ? <button className="wide-danger" type="button" onClick={() => setConfirmDelete(true)}><Trash2 />{t(locale, "deleteLedger")}</button> : <div className="delete-confirm">
+        {sync ? <><label className="field-label">{deletion(locale, "scope")}<select disabled={busy} value={effectiveScope} onChange={(event) => setScope(event.target.value as LedgerDeletionScope)}><option value={owner ? "everyone" : "leave"}>{deletion(locale, owner ? "everyone" : "leave")}</option><option value="device">{deletion(locale, "device")}</option></select></label><p>{deletion(locale, effectiveScope === "everyone" ? "everyoneWarning" : effectiveScope === "leave" ? "leaveWarning" : "deviceWarning")}</p>{sync.pending.length ? <p>{deletion(locale, "pendingWarning")}</p> : null}</> : <p>{t(locale, "deleteLedgerConfirm")}</p>}
+        {busy ? <p role="status">{deletion(locale, "busy")}</p> : null}
+        <div><button type="button" disabled={busy} onClick={() => setConfirmDelete(false)}>{t(locale, "cancel")}</button><button className="danger-button" type="button" disabled={busy} onClick={() => void onDelete(effectiveScope)}>{t(locale, "delete")}</button></div>
+      </div>}
     </SheetFrame>
   );
 }

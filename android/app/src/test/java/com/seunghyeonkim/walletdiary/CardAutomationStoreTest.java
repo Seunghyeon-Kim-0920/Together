@@ -8,6 +8,17 @@ import org.json.JSONObject;
 
 public class CardAutomationStoreTest {
 
+    @Test public void legacyRewardStatusDraftsAreDroppedWithoutGuessingPastPurchases() throws Exception {
+        JSONArray stored = new JSONArray();
+        for (String merchant : new String[] {"캐시 지급", "인센티브 지급", "캐시백 적립 완료", "캐시 지급 카페"})
+            stored.put(new JSONObject().put("id", merchant).put("merchant", merchant).put("eventType", "purchase").put("parserVersion", 15));
+        stored.put(new JSONObject().put("id", "new-credit").put("merchant", "").put("eventType", "cashback").put("parserVersion", 16));
+        JSONArray retained = CardAutomationStore.retainCurrentParserEvents(stored);
+        assertEquals(2, retained.length());
+        assertEquals("캐시 지급 카페", retained.getJSONObject(0).getString("merchant"));
+        assertEquals("cashback", retained.getJSONObject(1).getString("eventType"));
+    }
+
     @Test
     public void sourceRemovalDiscoveryOptOutAndFinalLedgerDeletionPurgePendingScope() throws Exception {
         JSONArray pending = new JSONArray().put(new JSONObject().put("packageName", "bank.first"))

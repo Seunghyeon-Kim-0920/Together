@@ -8,6 +8,141 @@ import { moveGeneralExpenseToTravel } from "../src/lib/moveExpense";
 import { createLedgerSharePayload, parseLedgerSharePayload } from "../src/lib/share";
 import { getAutomationPaymentHistory, undoPaymentMerge } from "../src/lib/paymentDuplicates";
 import { expenseTransactionLabel, expenseTransactionType } from "../src/lib/expenseTransaction";
+import { cashbackMatchOptions, selectCashbackExpense } from "../src/lib/cardAutomation";
+
+const localPurchase: NativeCardCandidate = { id: "local-payment-1", queueToken: "payment-1", packageName: "example.local.wallet", sourceName: "지역화폐 예시", merchant: "예시김밥", minorUnits: 14000, currency: "KRW", occurredAt: "2026-10-26T11:37:00+09:00", deliveredAt: "2026-10-26T11:37:00+09:00", occurredOn: "2026-10-26", confidence: "high", eventType: "purchase", manualOnly: false };
+const localReward: NativeCardCandidate = { ...localPurchase, id: "reward-1", queueToken: "reward-1", minorUnits: 1400, eventType: "cashback", deliveredAt: "2026-10-26T11:37:05+09:00" };
+function localWallet(): WalletState {
+  return wallet({ ...createLedger("general", "생활", "KRW"), automationSources: [{ packageName: localPurchase.packageName, displayName: localPurchase.sourceName, trustedDirectApp: true }] });
+}
+function general(state: WalletState): GeneralLedger { assert.equal(state.ledgers[0].kind, "general"); return state.ledgers[0] as GeneralLedger; }
+
+test("regional cashback nets only the real original payment and survives restart without duplicate deduction", () => {
+  const result = applyHighConfidenceCardAutomation(localWallet(), [localReward, localPurchase]);
+  assert.equal(general(result.state).expenses.length, 1);
+  assert.equal(general(result.state).expenses[0].minorUnits, 12600);
+  assert.equal(general(result.state).automationPaymentReceipts![0].minorUnits, 14000);
+  assert.equal(general(result.state).automationPaymentReceipts![0].cashback!.minorUnits, 1400);
+  const restored = parseWalletStateStrict(JSON.parse(JSON.stringify(result.state)))!;
+  assert.ok(restored);
+  assert.equal(applyHighConfidenceCardAutomation(restored, [localReward, localPurchase]).state, restored);
+  const share = createLedgerSharePayload(general(restored));
+  assert.ok(!share.includes('"cashback"'));
+  assert.equal(parseLedgerSharePayload(share)!.expenses[0].minorUnits, 12600);
+});
+
+test("cashback alone never creates expense; before-purchase events remain available", () => {
+  const first = applyHighConfidenceCardAutomation(localWallet(), [localReward]);
+  assert.equal(general(first.state).expenses.length, 0);
+  assert.equal(first.pending.length, 1); assert.deepEqual(first.acknowledgedIds, []);
+  const payment = applyHighConfidenceCardAutomation(first.state, [localPurchase]);
+  const reward = applyHighConfidenceCardAutomation(payment.state, first.pending);
+  // Review confidence is intentionally not promoted merely by repeating a draft.
+  const retry = applyHighConfidenceCardAutomation(payment.state, [localReward]);
+  assert.equal(general(retry.state).expenses[0].minorUnits, 12600);
+  assert.equal(general(reward.state).expenses.length, 1);
+});
+
+test("generic incentive credit requires explicit original-purchase choice, not a ten-percent guess", () => {
+  const reward = { ...localReward, merchant: "", requiresMerchant: true, confidence: "review" as const };
+  const result = applyHighConfidenceCardAutomation(localWallet(), [reward, localPurchase]);
+  const ledger = general(result.state);
+  assert.equal(ledger.expenses[0].minorUnits, 14000); assert.equal(result.pending.length, 1);
+  assert.throws(() => confirmCardCandidate(result.state, ledger.id, reward), /original-payment-required/);
+  const selected = selectCashbackExpense(reward, ledger.expenses[0].id);
+  const applied = confirmCardCandidate(result.state, ledger.id, selected);
+  assert.equal(general(applied.state).expenses[0].minorUnits, 12600);
+  assert.equal(confirmCardCandidate(applied.state, ledger.id, selected).state, applied.state);
+  const another = { ...localReward, id: "reward-other-rate", minorUnits: 700 };
+  const otherRate = applyHighConfidenceCardAutomation(localWallet(), [localPurchase, another]);
+  assert.equal(general(otherRate.state).expenses[0].minorUnits, 13300);
+});
+
+test("combined gross/payment benefit and later separate reward are deducted only once", () => {
+  const combined = { ...localPurchase, cashbackMinorUnits: 1400 };
+  const result = applyHighConfidenceCardAutomation(localWallet(), [combined, localReward]);
+  assert.equal(general(result.state).expenses[0].minorUnits, 12600);
+  assert.deepEqual(result.pending, []);
+  assert.equal(general(result.state).automationPaymentReceipts![0].cashback!.eventIds.length, 2);
+  const original = applyHighConfidenceCardAutomation(localWallet(), [localPurchase]);
+  const enriched = applyHighConfidenceCardAutomation(original.state, [{ ...combined, queueToken: "richer" }]);
+  assert.equal(general(enriched.state).expenses[0].minorUnits, 12600);
+});
+
+test("cross-wallet duplicate after cashback keeps net, and full gross cancellation removes net once", () => {
+  const starting = localWallet(); const ledger = general(starting);
+  const secondPackage = "example.other.wallet";
+  const configured = wallet({ ...ledger, automationSources: [...ledger.automationSources, { packageName: secondPackage, displayName: "Wallet", trustedDirectApp: true }] });
+  const result = applyHighConfidenceCardAutomation(configured, [localPurchase, localReward]);
+  const duplicate = applyHighConfidenceCardAutomation(result.state, [{ ...localPurchase, id: "wallet-copy", packageName: secondPackage }]);
+  assert.equal(general(duplicate.state).expenses.length, 1); assert.equal(general(duplicate.state).expenses[0].minorUnits, 12600);
+  const reversal = { ...localPurchase, id: "reversal", eventType: "reversal" as const, occurredAt: "2026-10-26T11:40:00+09:00" };
+  const cancelled = applyHighConfidenceCardAutomation(duplicate.state, [reversal]);
+  assert.equal(general(cancelled.state).expenses.length, 0);
+  assert.deepEqual(cancelled.reversedIds, [reversal.id]);
+  assert.equal(applyHighConfidenceCardAutomation(cancelled.state, [localReward, localPurchase]).state, cancelled.state);
+});
+
+test("cashback does not overwrite edited prices, match another source/currency, or guess between repeated purchases", () => {
+  const original = applyHighConfidenceCardAutomation(localWallet(), [localPurchase]).state;
+  const ledger = general(original); const expense = ledger.expenses[0];
+  const edited = wallet({ ...ledger, expenses: [{ ...expense, minorUnits: 13000 }] });
+  assert.equal(applyHighConfidenceCardAutomation(edited, [localReward]).state, edited);
+  assert.deepEqual(cashbackMatchOptions(general(edited), localReward), []);
+  for (const reward of [{ ...localReward, currency: "EUR" }, { ...localReward, packageName: "example.unrelated.bank" }]) {
+    assert.equal(applyHighConfidenceCardAutomation(original, [reward]).state, original);
+  }
+  const second = confirmCardCandidate(original, ledger.id, { ...localPurchase, id: "second-real-payment" }, { asNewTransaction: true }).state;
+  const ambiguous = applyHighConfidenceCardAutomation(second, [localReward]);
+  assert.equal(general(ambiguous.state).expenses.length, 2); assert.equal(ambiguous.pending.length, 1);
+});
+
+test("untrusted or malformed cashback cannot create a debit or corrupt the ledger schema", () => {
+  const discovered = wallet({ ...createLedger("general", "생활", "KRW"), automationAllApps: true });
+  assert.equal(applyHighConfidenceCardAutomation(discovered, [localReward]).insertedIds.length, 0);
+  for (const amount of [0, -1, 14000, Infinity, 1.5]) assert.equal(parseNativeCardCandidate({ ...localPurchase, cashbackMinorUnits: amount }), null);
+  assert.equal(parseNativeCardCandidate({ ...localReward, cashbackMinorUnits: 100 }), null);
+  const result = applyHighConfidenceCardAutomation(localWallet(), [{ ...localPurchase, cashbackMinorUnits: 1400 }]).state;
+  const json = JSON.parse(JSON.stringify(result));
+  json.ledgers[0].automationPaymentReceipts[0].cashback.minorUnits = 14001;
+  assert.equal(parseWalletStateStrict(json), null);
+});
+
+test("manual combined cashback confirmation enriches a matched or same-identity receipt", () => {
+  const original = applyHighConfidenceCardAutomation(localWallet(), [localPurchase]).state;
+  const ledger = general(original);
+  const confirmed = confirmCardCandidate(original, ledger.id, { ...localPurchase, packageName: "example.issuer", id: "issuer", confidence: "review", cashbackMinorUnits: 1400 });
+  assert.equal(general(confirmed.state).expenses.length, 1);
+  assert.equal(general(confirmed.state).expenses[0].minorUnits, 12600);
+  assert.ok(parseWalletStateStrict(confirmed.state));
+  const same = confirmCardCandidate(original, ledger.id, { ...localPurchase, confidence: "review", cashbackMinorUnits: 1400 });
+  assert.equal(general(same.state).expenses[0].minorUnits, 12600);
+});
+
+test("undoing a cashback issuer merge transfers its benefit once and remains reloadable", () => {
+  const original = applyHighConfidenceCardAutomation(localWallet(), [localPurchase]).state;
+  const ledger = general(original); const issuer = { ...localPurchase, packageName: "example.issuer", id: "issuer", confidence: "review" as const, cashbackMinorUnits: 1400 };
+  const combined = confirmCardCandidate(original, ledger.id, issuer).state;
+  const restored = undoPaymentMerge(combined, ledger.id, ledger.expenses[0].id, automationExpenseId(issuer));
+  const result = general(restored.state);
+  assert.deepEqual(result.expenses.map((expense) => expense.minorUnits), [14000, 12600]);
+  assert.equal(result.automationPaymentReceipts![0].cashback, undefined);
+  assert.equal(result.automationPaymentReceipts![1].cashback!.packageName, issuer.packageName);
+  assert.ok(parseWalletStateStrict(JSON.parse(JSON.stringify(restored.state))));
+  const edited = wallet({ ...general(combined), expenses: [{ ...general(combined).expenses[0], minorUnits: 12000 }] });
+  assert.throws(() => undoPaymentMerge(edited, ledger.id, ledger.expenses[0].id, automationExpenseId(issuer)), /conflict/);
+});
+
+test("delayed historical cashback and changed reward identities cannot reduce newer spending", () => {
+  const original = applyHighConfidenceCardAutomation(localWallet(), [localPurchase]).state;
+  const delayed = { ...localReward, occurredAt: "2026-10-20T09:00:00+09:00", occurredOn: "2026-10-20" };
+  const result = applyHighConfidenceCardAutomation(original, [delayed]);
+  assert.equal(result.state, original); assert.equal(result.pending.length, 1);
+  const net = applyHighConfidenceCardAutomation(original, [localReward]).state;
+  const changed = { ...localReward, minorUnits: 700 };
+  assert.equal(applyHighConfidenceCardAutomation(net, [changed]).state, net);
+  assert.throws(() => confirmCardCandidate(net, general(net).id, selectCashbackExpense(changed, general(net).expenses[0].id)), /conflict/);
+});
 
 const candidate: NativeCardCandidate = Object.freeze({ id: "native-1", queueToken: null, packageName: "com.revolut.revolut", sourceName: "Revolut", merchant: "Lidl Paris", minorUnits: 1299, currency: "EUR", occurredAt: "2026-08-30T10:15:00+02:00", occurredOn: "2026-08-30", confidence: "high", eventType: "purchase", manualOnly: false });
 
@@ -294,6 +429,89 @@ test("stable ids and category inference are deterministic", () => {
   assert.equal(inferGeneralCategory("Lidl Paris"), "food");
   assert.equal(inferGeneralCategory("SNCF Connect"), "transport");
   assert.equal(inferGeneralCategory("Unknown merchant"), "other");
+});
+
+test("ATM withdrawal candidates retain type, money, dates, editability and labels through storage and export", () => {
+  const cash = { ...candidate, id: "synthetic-cash", merchant: "ATM · Example Bank", minorUnits: 5000, categoryHint: "other" as const, eventType: "cash_withdrawal" as const };
+  assert.equal(parseNativeCardCandidate(cash)?.eventType, "cash_withdrawal");
+  const result = applyHighConfidenceCardAutomation(wallet(), [cash]);
+  assert.deepEqual(result.insertedIds, [cash.id]);
+  const ledger = result.state.ledgers[0];
+  if (ledger.kind !== "general") throw new Error("expected general");
+  const expense = ledger.expenses[0];
+  assert.equal(expense.description, cash.merchant);
+  assert.equal(expense.minorUnits, 5000);
+  assert.equal(expense.currency, "EUR");
+  assert.equal(expense.occurredOn, cash.occurredOn);
+  assert.equal(expense.category, "other");
+  assert.equal(expense.transactionType, "cash_withdrawal");
+  assert.equal(ledger.automationPaymentReceipts?.[0].sources[0].eventType, "cash_withdrawal");
+  assert.deepEqual(parseWalletStateStrict(JSON.parse(JSON.stringify(result.state))), result.state);
+  const shared = parseLedgerSharePayload(createLedgerSharePayload(ledger));
+  assert.ok(shared);
+  assert.equal(shared.kind, "general");
+  if (shared.kind !== "general") throw new Error("expected general");
+  assert.equal(shared.expenses[0].transactionType, "cash_withdrawal");
+  assert.equal(calculateMonthlyLimitStatus(ledger, "2026-08").spentMinor, 5000);
+  const edited = { ...expense, description: "ATM · Example Branch", category: "shopping" as const };
+  const editedLedger = { ...ledger, expenses: replaceExpenseById(ledger.expenses, edited) };
+  const replay = applyHighConfidenceCardAutomation(wallet(editedLedger), [cash]);
+  assert.deepEqual(replay.acknowledgedIds, [cash.id]);
+  assert.deepEqual(replay.pending, []);
+  assert.deepEqual(replay.state.ledgers[0].expenses[0], edited);
+  assert.equal(expenseTransactionType(ledger, { ...expense, transactionType: undefined }), "cash_withdrawal");
+  assert.equal(expenseTransactionLabel("ko", "cash_withdrawal"), "현금 인출");
+  assert.equal(expenseTransactionLabel("en", "cash_withdrawal"), "Cash withdrawal");
+  assert.equal(expenseTransactionLabel("fr", "cash_withdrawal"), "Retrait d’espèces");
+});
+
+test("ATM automation does not bypass app trust, currency review or separate SMS consent", () => {
+  const cash = { ...candidate, id: "synthetic-cash-gates", merchant: "ATM · Example Bank", eventType: "cash_withdrawal" as const };
+  const untrusted = wallet({ ...configuredLedger(), automationAllApps: true, automationSources: [] });
+  assert.equal(applyHighConfidenceCardAutomation(untrusted, [cash]).insertedIds.length, 0);
+  assert.equal(applyHighConfidenceCardAutomation(untrusted, [cash]).pending.length, 1);
+  const foreign = applyHighConfidenceCardAutomation(wallet(), [{ ...cash, currency: "USD" }]);
+  assert.equal(foreign.insertedIds.length, 0);
+  assert.equal(foreign.pending[0].currencyReview, true);
+  const sms = { ...cash, packageName: `walletdiary.sms.s${"a".repeat(64)}` };
+  const off = { ...configuredLedger(), automationSmsNotifications: false, automationSources: [{ packageName: sms.packageName, displayName: "SMS · Example Bank", trustedDirectApp: true as const }] };
+  assert.equal(applyHighConfidenceCardAutomation(wallet(off), [sms]).insertedIds.length, 0);
+  const on = applyHighConfidenceCardAutomation(wallet({ ...off, automationSmsNotifications: true }), [sms]);
+  assert.deepEqual(on.insertedIds, [sms.id]);
+});
+
+test("card cancellation never removes ATM cash, including an exact native id and legacy receipt evidence", () => {
+  const cash = { ...candidate, id: "synthetic-cash-reversal", merchant: "ATM · Example Bank", eventType: "cash_withdrawal" as const };
+  const result = applyHighConfidenceCardAutomation(wallet(), [cash]);
+  const ledger = result.state.ledgers[0];
+  if (ledger.kind !== "general") throw new Error("expected general");
+  for (const legacy of [false, true]) {
+    const protectedLedger: GeneralLedger = { ...ledger, expenses: ledger.expenses.map(expense => legacy ? { ...expense, transactionType: undefined } : expense) };
+    for (const id of [cash.id, "synthetic-new-cancellation-id"]) {
+      const reversal = { ...cash, id, eventType: "reversal" as const };
+      assert.deepEqual(reversalMatchIndexes(protectedLedger.expenses, reversal, protectedLedger.automationPaymentReceipts), []);
+      const state = wallet(protectedLedger);
+      const canceled = applyHighConfidenceCardAutomation(state, [reversal]);
+      assert.deepEqual(canceled.reversedIds, []);
+      assert.equal(canceled.state.ledgers[0].expenses.length, 1);
+      assert.throws(() => confirmCardCandidate(state, ledger.id, reversal), /ambiguous reversal/);
+    }
+  }
+});
+
+test("equal ATM and card amounts are never silently merged as duplicate payments", () => {
+  const cash = { ...candidate, id: "synthetic-cash-pair", merchant: "ATM · Example Bank", eventType: "cash_withdrawal" as const };
+  const issuer = { packageName: "com.example.issuer", displayName: "Example Issuer", trustedDirectApp: true as const };
+  const ledger = { ...configuredLedger(), automationSources: [...configuredLedger().automationSources, issuer] };
+  const first = applyHighConfidenceCardAutomation(wallet(ledger), [cash]);
+  const purchase = { ...candidate, id: "synthetic-card-pair", packageName: issuer.packageName };
+  const second = applyHighConfidenceCardAutomation(first.state, [purchase]);
+  assert.deepEqual(second.insertedIds, []);
+  assert.equal(second.pending[0].possibleDuplicate, true);
+  assert.equal(second.state.ledgers[0].expenses.length, 1);
+  const savedLedger = second.state.ledgers[0];
+  if (savedLedger.kind !== "general") throw new Error("expected general");
+  assert.equal(savedLedger.automationPaymentReceipts?.[0].sources.length, 1);
 });
 
 test("only high-confidence uniquely configured candidates auto-merge and replays are acknowledged", () => {

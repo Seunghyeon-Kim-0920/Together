@@ -4,7 +4,7 @@ import { TRAVEL_CATEGORIES, type Participant, type TravelExpense, type TravelLed
 export const MAX_SHARED_PARTICIPANTS = 20;
 export const MAX_SHARED_EXPENSES = 5_000;
 export const MAX_SHARED_DESCRIPTION_LENGTH = 200;
-export type SharedTravelErrorCode = "not-configured" | "invalid-data" | "conflict" | "unavailable" | "quota" | "permission-denied" | "not-found" | "limit";
+export type SharedTravelErrorCode = "not-configured" | "invalid-data" | "conflict" | "unavailable" | "quota" | "permission-denied" | "not-found" | "limit" | "history-busy" | "orphan-shares";
 export class SharedTravelError extends Error {
   constructor(readonly code: SharedTravelErrorCode) { super(code); this.name = "SharedTravelError"; }
 }
@@ -14,6 +14,15 @@ export interface SharedTrip {
   readonly defaultCurrency: string; readonly revision: number; readonly deleted: boolean;
   /** Stable account-to-settlement identity; absent on trips created before 1.8.5. */
   readonly participantMembers?: Readonly<Record<string, string>>;
+  /** Hidden from new-expense choices, but retained for historical shares and device mappings. */
+  readonly inactiveParticipantIds?: readonly string[];
+  /** Permanent fence against old/offline devices resurrecting removed history. */
+  readonly historyRemovedParticipantIds?: readonly string[];
+  readonly participantHistoryRemoval?: ParticipantHistoryRemoval;
+}
+export interface ParticipantHistoryRemoval {
+  readonly id: string; readonly participantId: string;
+  readonly phase: "preflight" | "applying"; readonly cursor: string | null;
 }
 export interface SharedMember { readonly uid: string; readonly displayName: string; readonly role: "owner" | "member"; }
 export interface SharedExpenseRecord {
@@ -41,6 +50,9 @@ export interface SharedTravelClient {
   listenTrip(tripId: string, onSnapshot: (snapshot: SharedTripSnapshot) => void, onError: (error: SharedTravelError) => void): () => void;
   publishExpense(tripId: string, mutation: SharedExpenseMutation): Promise<SharedExpenseRecord>;
   updateTrip(tripId: string, ledger: TravelLedger, expectedRevision: number): Promise<SharedTrip>;
+  /** Owner-only: append people or archive/restore them without deleting settlement identities. */
+  updateParticipants(tripId: string, participants: readonly Participant[], inactiveParticipantIds: readonly string[], expectedRevision: number): Promise<SharedTrip>;
+  removeParticipantHistory(tripId: string, participantId: string, expectedRevision: number, expectedRecords?: readonly SharedExpenseRecord[]): Promise<SharedTripSnapshot>;
   revokeMember(tripId: string, memberUid: string): Promise<void>;
   leaveTrip(tripId: string): Promise<void>;
   /** First revokes access, then deletes cloud documents. Retry on failure to complete cleanup. */
@@ -58,7 +70,7 @@ function validDate(value: unknown): value is string {
   const date = new Date(`${value}T00:00:00Z`);
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
-export function validateSharedExpense(expense: TravelExpense, trip: Pick<SharedTrip, "participants" | "currencies">): void {
+export function validateSharedExpense(expense: TravelExpense, trip: Pick<SharedTrip, "participants" | "currencies" | "historyRemovedParticipantIds">): void {
   if (!object(expense) || !sharedId(expense.id) || !nonempty(expense.description, MAX_SHARED_DESCRIPTION_LENGTH) || !TRAVEL_CATEGORIES.includes(expense.category) || !currency(expense.currency) || !trip.currencies.includes(expense.currency) || !Number.isSafeInteger(expense.minorUnits) || expense.minorUnits <= 0 || expense.minorUnits > 1_000_000_000_000 || !validDate(expense.occurredOn) || !trip.participants.some((person) => person.id === expense.paidBy) || !Array.isArray(expense.shares) || !expense.shares.length || expense.shares.length > MAX_SHARED_PARTICIPANTS) throw new SharedTravelError("invalid-data");
   let total = 0; const ids = new Set<string>();
   for (const share of expense.shares) {
@@ -66,19 +78,65 @@ export function validateSharedExpense(expense: TravelExpense, trip: Pick<SharedT
     ids.add(share.participantId); total += share.minorUnits;
   }
   if (total !== expense.minorUnits) throw new SharedTravelError("invalid-data");
+  if (trip.historyRemovedParticipantIds?.some((id) => expense.paidBy === id || ids.has(id))) throw new SharedTravelError("invalid-data");
 }
 export function toSharedTripData(ledger: TravelLedger, ownerUid: string, nextRevision = 1): Record<string, unknown> {
-  const data = { schema: 1, ownerUid, title: ledger.title, participantIds: ledger.participants.map((person) => person.id), participantNames: ledger.participants.map((person) => person.name), currencies: [...ledger.currencies], defaultCurrency: ledger.defaultCurrency, revision: nextRevision, deleted: false };
+  const data = { schema: 1, ownerUid, title: ledger.title, participantIds: ledger.participants.map((person) => person.id), participantNames: ledger.participants.map((person) => person.name), ...(ledger.inactiveParticipantIds !== undefined ? { inactiveParticipantIds: [...ledger.inactiveParticipantIds] } : {}), ...(ledger.historyRemovedParticipantIds !== undefined ? { historyRemovedParticipantIds: [...ledger.historyRemovedParticipantIds] } : {}), currencies: [...ledger.currencies], defaultCurrency: ledger.defaultCurrency, revision: nextRevision, deleted: false };
   if (!parseSharedTrip(ledger.id, data)) throw new SharedTravelError("invalid-data");
   return data;
 }
 export function parseSharedTrip(id: string, value: unknown): SharedTrip | null {
-  if (!sharedId(id) || !object(value) || !keys(value, ["schema", "ownerUid", "title", "participantIds", "participantNames", "participantMembers", "currencies", "defaultCurrency", "revision", "deleted", "updatedAt"]) || value.schema !== 1 || !sharedId(value.ownerUid) || !nonempty(value.title, 80) || !revision(value.revision) || typeof value.deleted !== "boolean" || !Array.isArray(value.participantIds) || !Array.isArray(value.participantNames) || value.participantIds.length !== value.participantNames.length || value.participantIds.length > MAX_SHARED_PARTICIPANTS || !value.participantIds.every(sharedId) || new Set(value.participantIds).size !== value.participantIds.length || !value.participantNames.every((name) => nonempty(name, 80)) || !Array.isArray(value.currencies) || !value.currencies.length || value.currencies.length > 20 || !value.currencies.every(currency) || new Set(value.currencies).size !== value.currencies.length || !currency(value.defaultCurrency) || !value.currencies.includes(value.defaultCurrency)) return null;
+  if (!sharedId(id) || !object(value) || !keys(value, ["schema", "ownerUid", "title", "participantIds", "participantNames", "participantMembers", "inactiveParticipantIds", "historyRemovedParticipantIds", "participantHistoryRemoval", "currencies", "defaultCurrency", "revision", "deleted", "updatedAt"]) || value.schema !== 1 || !sharedId(value.ownerUid) || !nonempty(value.title, 80) || !revision(value.revision) || typeof value.deleted !== "boolean" || !Array.isArray(value.participantIds) || !Array.isArray(value.participantNames) || value.participantIds.length !== value.participantNames.length || value.participantIds.length > MAX_SHARED_PARTICIPANTS || !value.participantIds.every(sharedId) || new Set(value.participantIds).size !== value.participantIds.length || !value.participantNames.every((name) => nonempty(name, 80)) || !Array.isArray(value.currencies) || !value.currencies.length || value.currencies.length > 20 || !value.currencies.every(currency) || new Set(value.currencies).size !== value.currencies.length || !currency(value.defaultCurrency) || !value.currencies.includes(value.defaultCurrency)) return null;
   const names = value.participantNames as string[];
   // Match the server's bounded list encoding.
   if (!names.length || names.some((name) => name.includes("|"))) return null;
   if (value.participantMembers !== undefined && !validParticipantMembers(value.participantMembers, value.participantIds as string[])) return null;
-  return { id, ownerUid: value.ownerUid, title: value.title, participants: value.participantIds.map((participantId, index) => ({ id: participantId as string, name: names[index] })), currencies: value.currencies as string[], defaultCurrency: value.defaultCurrency, revision: value.revision, deleted: value.deleted, ...(value.participantMembers !== undefined ? { participantMembers: { ...value.participantMembers as Record<string, string> } } : {}) };
+  if (value.inactiveParticipantIds !== undefined && !validInactiveParticipantIds(value.inactiveParticipantIds, value.participantIds as string[])) return null;
+  if (value.historyRemovedParticipantIds !== undefined && (!validInactiveParticipantIds(value.historyRemovedParticipantIds, value.participantIds as string[]) || !value.historyRemovedParticipantIds.every((person) => (value.inactiveParticipantIds as string[] | undefined)?.includes(person)))) return null;
+  if (value.participantHistoryRemoval !== undefined && !validParticipantHistoryRemoval(value.participantHistoryRemoval, value.participantIds as string[], value.historyRemovedParticipantIds as string[] | undefined)) return null;
+  return { id, ownerUid: value.ownerUid, title: value.title, participants: value.participantIds.map((participantId, index) => ({ id: participantId as string, name: names[index] })), currencies: value.currencies as string[], defaultCurrency: value.defaultCurrency, revision: value.revision, deleted: value.deleted, ...(value.participantMembers !== undefined ? { participantMembers: { ...value.participantMembers as Record<string, string> } } : {}), ...(value.inactiveParticipantIds !== undefined ? { inactiveParticipantIds: [...value.inactiveParticipantIds as string[]] } : {}), ...(value.historyRemovedParticipantIds !== undefined ? { historyRemovedParticipantIds: [...value.historyRemovedParticipantIds as string[]] } : {}), ...(value.participantHistoryRemoval !== undefined ? { participantHistoryRemoval: { ...value.participantHistoryRemoval as ParticipantHistoryRemoval } } : {}) };
+}
+
+export function validParticipantHistoryRemoval(value: unknown, ids: readonly string[], removed: readonly string[] = []): value is ParticipantHistoryRemoval {
+  return object(value) && keys(value, ["id", "participantId", "phase", "cursor"]) && sharedId(value.id) && sharedId(value.participantId) && ids.includes(value.participantId) && !removed.includes(value.participantId) && (value.phase === "preflight" && value.cursor === null || value.phase === "applying" && (value.cursor === null || sharedId(value.cursor)));
+}
+
+/** Deterministic, idempotent transformation, keyed by payer/participant IDs, not names. */
+export function removeParticipantFromSharedExpense(expense: TravelExpense, participantId: string): TravelExpense | null {
+  return removeParticipantsFromSharedExpense(expense, [participantId]);
+}
+export function removeParticipantsFromSharedExpense(expense: TravelExpense, participantIds: readonly string[]): TravelExpense | null {
+  const removed = new Set(participantIds);
+  if (removed.has(expense.paidBy)) return null;
+  if (!expense.shares.some((share) => removed.has(share.participantId))) return expense;
+  const remaining = expense.shares.filter((share) => !removed.has(share.participantId)).sort((a, b) => a.participantId < b.participantId ? -1 : a.participantId > b.participantId ? 1 : 0);
+  if (!remaining.length) throw new SharedTravelError("orphan-shares");
+  const each = Math.floor(expense.minorUnits / remaining.length); const remainder = expense.minorUnits % remaining.length;
+  return { ...expense, shares: remaining.map((share, index) => ({ participantId: share.participantId, minorUnits: each + (index < remainder ? 1 : 0) })) };
+}
+
+export function validInactiveParticipantIds(value: unknown, participantIds: readonly string[]): value is string[] {
+  return Array.isArray(value) && value.length <= MAX_SHARED_PARTICIPANTS && value.every((id) => sharedId(id) && participantIds.includes(id)) && new Set(value).size === value.length;
+}
+
+/** CAS-protected owner changes; canonical IDs/names and account mappings never disappear. */
+export function updateSharedParticipants(trip: SharedTrip, uid: string, participants: readonly Participant[], inactiveParticipantIds: readonly string[], expectedRevision: number): SharedTrip {
+  if (trip.ownerUid !== uid) throw new SharedTravelError("permission-denied");
+  if (trip.deleted) throw new SharedTravelError("not-found");
+  if (trip.participantHistoryRemoval) throw new SharedTravelError("history-busy");
+  if (!revision(expectedRevision) || !Array.isArray(participants)) throw new SharedTravelError("invalid-data");
+  if (participants.length > MAX_SHARED_PARTICIPANTS) throw new SharedTravelError("limit");
+  if (!participants.length || participants.some((person) => !object(person) || !sharedId(person.id) || !nonempty(person.name, 80) || person.name.includes("|"))
+    || new Set(participants.map((person) => person.id)).size !== participants.length
+    || !validInactiveParticipantIds(inactiveParticipantIds, participants.map((person) => person.id)) || trip.historyRemovedParticipantIds?.some((id) => !inactiveParticipantIds.includes(id))) throw new SharedTravelError("invalid-data");
+  const samePeople = JSON.stringify(trip.participants) === JSON.stringify(participants);
+  const sameInactive = JSON.stringify(trip.inactiveParticipantIds ?? []) === JSON.stringify(inactiveParticipantIds);
+  // A lost acknowledgement can be retried without consuming another revision.
+  if (samePeople && sameInactive) return trip;
+  if (trip.revision !== expectedRevision) throw new SharedTravelError("conflict");
+  if (trip.participants.some((person, index) => participants[index]?.id !== person.id || participants[index]?.name !== person.name)
+    || !revision(trip.revision + 1)) throw new SharedTravelError("invalid-data");
+  return { ...trip, participants: participants.map((person) => ({ id: person.id, name: person.name })), inactiveParticipantIds: [...inactiveParticipantIds], revision: trip.revision + 1 };
 }
 
 export function validParticipantMembers(value: unknown, participantIds: readonly string[]): value is Record<string, string> {
@@ -92,11 +150,13 @@ export function registerSharedParticipant(trip: SharedTrip, uid: string, display
   const name = displayName.trim();
   if (!sharedId(uid) || !nonempty(name, 80) || name.includes("|") || trip.deleted) throw new SharedTravelError("invalid-data");
   if (Object.hasOwn(trip.participantMembers ?? {}, uid)) return trip;
+  if (trip.participantHistoryRemoval) throw new SharedTravelError("history-busy");
   const claimed = new Set(Object.values(trip.participantMembers ?? {}));
-  const preferred = trip.ownerUid === uid ? trip.participants.find((person) => person.id === preferredParticipantId && !claimed.has(person.id)) : undefined;
+  const inactive = new Set(trip.inactiveParticipantIds ?? []);
+  const preferred = trip.ownerUid === uid ? trip.participants.find((person) => person.id === preferredParticipantId && !claimed.has(person.id) && !inactive.has(person.id)) : undefined;
   // Reuse one exact, unclaimed name; never merge two connected people merely because their names match.
   const matches = trip.participants.filter((person) => person.name === name);
-  const existing = preferred ?? (matches.length === 1 && !claimed.has(matches[0].id) ? matches[0] : undefined);
+  const existing = preferred ?? (matches.length === 1 && !claimed.has(matches[0].id) && !inactive.has(matches[0].id) ? matches[0] : undefined);
   let participants = trip.participants;
   let participantId = existing?.id;
   if (!participantId) {

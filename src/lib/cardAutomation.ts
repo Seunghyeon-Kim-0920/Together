@@ -12,14 +12,16 @@ const DATE_PREFIX = /^\d{4}-\d{2}-\d{2}/;
 const PACKAGE_NAME = /^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$/;
 
 export type CardCandidateConfidence = "high" | "review";
-export type CardCandidateEventType = "purchase" | "outgoing_transfer" | "direct_debit" | "standing_order" | "reversal";
+export type CardCandidateEventType = "purchase" | "outgoing_transfer" | "direct_debit" | "standing_order" | "cash_withdrawal" | "reversal" | "cashback";
 
 const CARD_CANDIDATE_EVENT_TYPES: readonly CardCandidateEventType[] = Object.freeze([
   "purchase",
   "outgoing_transfer",
   "direct_debit",
   "standing_order",
+  "cash_withdrawal",
   "reversal",
+  "cashback",
 ]);
 
 export interface NativeCardCandidate {
@@ -47,6 +49,10 @@ export interface NativeCardCandidate {
   readonly possibleDuplicate?: boolean;
   readonly categoryHint?: GeneralCategory;
   readonly currencyReview?: boolean;
+  /** Granted monetary benefit explicitly linked within this purchase receipt. */
+  readonly cashbackMinorUnits?: number;
+  /** Local review selection, never trusted merely because native JSON supplies it. */
+  readonly cashbackExpenseId?: string;
 }
 
 export interface ParsedCandidateBatch {
@@ -113,7 +119,9 @@ export function parseNativeCardCandidate(value: unknown): NativeCardCandidate | 
   const occurredOn = value.occurredOn === undefined ? localCalendarDate(occurredAt) : validCalendarDate(value.occurredOn);
   if (!occurredOn) return null;
   const categoryHint = GENERAL_CATEGORIES.includes(value.categoryHint as GeneralCategory) ? value.categoryHint as GeneralCategory : undefined;
-  return Object.freeze({ ...(categoryHint ? { categoryHint } : {}), id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, ...(deliveredAt ? { deliveredAt } : {}), occurredOn, confidence: requiresMerchant ? "review" : value.confidence, eventType: eventType as CardCandidateEventType, manualOnly, ...(requiresMerchant ? { requiresMerchant: true } : {}) });
+  const cashbackMinorUnits = value.cashbackMinorUnits;
+  if (cashbackMinorUnits !== undefined && (eventType !== "purchase" || !Number.isSafeInteger(cashbackMinorUnits) || (cashbackMinorUnits as number) <= 0 || (cashbackMinorUnits as number) >= (value.minorUnits as number))) return null;
+  return Object.freeze({ ...(categoryHint ? { categoryHint } : {}), id, queueToken, packageName, sourceName, merchant, minorUnits: value.minorUnits as number, currency, occurredAt, ...(deliveredAt ? { deliveredAt } : {}), occurredOn, confidence: requiresMerchant ? "review" : value.confidence, eventType: eventType as CardCandidateEventType, manualOnly, ...(requiresMerchant ? { requiresMerchant: true } : {}), ...(cashbackMinorUnits !== undefined ? { cashbackMinorUnits: cashbackMinorUnits as number } : {}) });
 }
 
 export function completeCandidateMerchant(candidate: NativeCardCandidate, merchant: string): NativeCardCandidate {
@@ -202,23 +210,26 @@ function likelyExistingExpense(expenses: readonly GeneralExpense[], candidate: N
 }
 
 function candidateExpense(candidate: NativeCardCandidate, category: GeneralCategory, id = automationExpenseId(candidate)): GeneralExpense {
+  if (candidate.eventType === "cashback") throw new Error("cashback-is-not-an-expense");
   // When a user supplies a missing merchant, retain the fingerprint of the
   // original native draft. A replay of that unchanged alert must remain an
   // idempotent acknowledgement rather than looking like a changed identity.
   const automationFingerprint = completedDraftOrigins.get(candidate) ?? automationOriginFingerprint(candidate);
-  return Object.freeze({ id, description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits, occurredOn: candidateDate(candidate), ...(candidate.eventType !== "reversal" ? { transactionType: candidate.eventType } : {}), automationFingerprint, automationReversalFingerprint: automationReversalFingerprint(candidate) });
+  return Object.freeze({ id, description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits - (candidate.cashbackMinorUnits ?? 0), occurredOn: candidateDate(candidate), ...(candidate.eventType !== "reversal" ? { transactionType: candidate.eventType } : {}), automationFingerprint, automationReversalFingerprint: automationReversalFingerprint(candidate) });
 }
 
 function duplicateEvidence(candidate: NativeCardCandidate, id = automationExpenseId(candidate), category?: GeneralCategory): PaymentDuplicateEvidence {
-  return { ...candidate, ...(category ? { category } : {}), expenseId: id, originFingerprint: completedDraftOrigins.get(candidate) ?? automationOriginFingerprint(candidate), reversalFingerprint: automationReversalFingerprint(candidate) };
+  if (candidate.eventType === "cashback") throw new Error("cashback-is-not-a-payment");
+  return { ...candidate, eventType: candidate.eventType, ...(category ? { category } : {}), expenseId: id, originFingerprint: completedDraftOrigins.get(candidate) ?? automationOriginFingerprint(candidate), reversalFingerprint: automationReversalFingerprint(candidate) };
 }
 
 function recordPaymentReceipt(ledger: GeneralLedger, candidate: NativeCardCandidate, expenseId = automationExpenseId(candidate)): GeneralLedger {
   // Manual-only sources reach this function only after explicit user
   // confirmation. Their receipt is still needed to avoid a later issuer alert
   // recording that confirmed purchase for a second time.
-  if (candidate.eventType === "reversal" || candidate.requiresMerchant) return ledger;
-  const receipts = [...ledger.automationPaymentReceipts ?? [], paymentReceipt(duplicateEvidence(candidate, expenseId, ledger.expenses.find((expense) => expense.id === expenseId)?.category), expenseId)];
+  if (candidate.eventType === "reversal" || candidate.eventType === "cashback" || candidate.requiresMerchant) return ledger;
+  const receipt = paymentReceipt(duplicateEvidence(candidate, expenseId, ledger.expenses.find((expense) => expense.id === expenseId)?.category), expenseId);
+  const receipts = [...ledger.automationPaymentReceipts ?? [], Object.freeze({ ...receipt, ...(candidate.cashbackMinorUnits ? { cashback: Object.freeze({ minorUnits: candidate.cashbackMinorUnits, packageName: candidate.packageName, eventIds: Object.freeze([`inline:${automationExpenseId(candidate)}`]) }) } : {}) })];
   return Object.freeze({ ...ledger, automationPaymentReceipts: Object.freeze(receipts.slice(-MAX_AUTOMATION_PAYMENT_RECEIPTS)) });
 }
 
@@ -278,11 +289,80 @@ function appendReversalIds(existing: readonly string[], additions: readonly stri
 export function reversalMatchIndexes(expenses: readonly GeneralExpense[], candidate: NativeCardCandidate, receipts: readonly AutomationPaymentReceipt[] = []): readonly number[] {
   if (candidate.eventType !== "reversal") return Object.freeze([]);
   const fingerprint = automationReversalFingerprint(candidate);
+  const cashExpenseIds = new Set(receipts.filter((receipt) => receipt.sources.some((source) => source.eventType === "cash_withdrawal")).map((receipt) => receipt.expenseId));
   const linkedIds = new Set(receipts.filter((receipt) => receipt.sources.some((source) => source.reversalFingerprint === fingerprint)).map((receipt) => receipt.expenseId));
-  return Object.freeze(expenses.flatMap((expense, index) => isAutomatedExpense(expense) && expense.occurredOn <= candidate.occurredOn && (expense.automationReversalFingerprint === fingerprint || linkedIds.has(expense.id)) ? [index] : []));
+  return Object.freeze(expenses.flatMap((expense, index) => expense.transactionType !== "cash_withdrawal" && !cashExpenseIds.has(expense.id) && isAutomatedExpense(expense) && expense.occurredOn <= candidate.occurredOn && (expense.automationReversalFingerprint === fingerprint || linkedIds.has(expense.id)) ? [index] : []));
 }
 
 const AUTOMATIC_REVERSAL_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
+
+function receiptNet(receipt: AutomationPaymentReceipt): number { return receipt.minorUnits - (receipt.cashback?.minorUnits ?? 0); }
+
+function cashbackAlreadyHandled(ledgers: WalletState["ledgers"], candidate: NativeCardCandidate): boolean {
+  const id = automationExpenseId(candidate);
+  return ledgers.some((ledger) => ledger.kind === "general" && ledger.automationPaymentReceipts?.some((receipt) => receipt.cashback?.eventIds.includes(id)
+    && receipt.cashback.minorUnits === candidate.minorUnits && receipt.currency === candidate.currency && receipt.cashback.packageName === candidate.packageName));
+}
+
+function cashbackIdentityConflict(ledgers: WalletState["ledgers"], candidate: NativeCardCandidate): boolean {
+  return !cashbackAlreadyHandled(ledgers, candidate) && ledgers.some((ledger) => ledger.kind === "general"
+    && ledger.automationPaymentReceipts?.some((receipt) => receipt.cashback?.eventIds.includes(automationExpenseId(candidate))));
+}
+
+/** Review choices require a real original payment, not a percentage-based guess.
+ * Deleted, moved, manually re-priced and non-purchase receipts are ineligible. */
+export function cashbackMatchOptions(ledger: GeneralLedger, candidate: NativeCardCandidate): readonly GeneralExpense[] {
+  if (candidate.eventType !== "cashback" || candidate.currency !== ledger.currency) return Object.freeze([]);
+  if (cashbackIdentityConflict([ledger], candidate)) return Object.freeze([]);
+  const time = Date.parse(candidate.deliveredAt ?? candidate.occurredAt);
+  return Object.freeze(ledger.expenses.filter((expense) => (ledger.automationPaymentReceipts ?? []).some((receipt) => {
+    if (receipt.expenseId !== expense.id || receipt.currency !== candidate.currency || receipt.minorUnits <= candidate.minorUnits
+      || expense.minorUnits !== receiptNet(receipt) || ledger.movedExpenseIds.includes(expense.id)
+      || receipt.cashback && (receipt.cashback.minorUnits !== candidate.minorUnits || receipt.cashback.packageName !== candidate.packageName)) return false;
+    return receipt.sources.every((source) => !source.eventType || source.eventType === "purchase")
+      && receipt.sources.some((source) => source.packageName === candidate.packageName
+        && Math.abs(time - Date.parse(source.deliveredAt ?? source.occurredAt)) <= 7 * 24 * 60 * 60_000);
+  })));
+}
+
+export function selectCashbackExpense(candidate: NativeCardCandidate, expenseId: string): NativeCardCandidate {
+  if (candidate.eventType !== "cashback" || !boundedText(expenseId, 100)) throw new Error("invalid cashback selection");
+  return Object.freeze({ ...candidate, cashbackExpenseId: expenseId });
+}
+
+function automaticCashbackExpense(ledger: GeneralLedger, candidate: NativeCardCandidate): string | null {
+  if (!candidate.merchant || candidate.requiresMerchant || candidate.manualOnly || candidate.confidence !== "high") return null;
+  // Include tombstones in ambiguity counting, so a replay cannot attach to a
+  // later purchase just because the earlier expense was removed.
+  const matches = (ledger.automationPaymentReceipts ?? []).filter((receipt) => receipt.currency === candidate.currency
+    && receipt.minorUnits > candidate.minorUnits && merchantFingerprint(receipt.merchant) === merchantFingerprint(candidate.merchant)
+    && receipt.sources.every((source) => !source.eventType || source.eventType === "purchase")
+    && receipt.sources.some((source) => source.packageName === candidate.packageName
+      && Math.abs(Date.parse(candidate.deliveredAt ?? candidate.occurredAt) - Date.parse(source.deliveredAt ?? source.occurredAt)) <= 120_000
+      && Math.abs(Date.parse(candidate.occurredAt) - Date.parse(source.occurredAt)) <= 120_000));
+  return matches.length === 1 && cashbackMatchOptions(ledger, candidate).some((expense) => expense.id === matches[0].expenseId) ? matches[0].expenseId : null;
+}
+
+function attachCashback(ledger: GeneralLedger, expenseId: string, minorUnits: number, packageName: string, eventId: string): GeneralLedger {
+  const receipt = ledger.automationPaymentReceipts?.find((item) => item.expenseId === expenseId);
+  if (!receipt || receipt.cashback?.eventIds.includes(eventId)) return ledger;
+  const expense = ledger.expenses.find((item) => item.id === expenseId);
+  if (!expense || expense.minorUnits !== receiptNet(receipt) || ledger.movedExpenseIds.includes(expenseId)
+    || !Number.isSafeInteger(minorUnits) || minorUnits <= 0 || minorUnits >= receipt.minorUnits
+    || receipt.cashback && (receipt.cashback.minorUnits !== minorUnits || receipt.cashback.packageName !== packageName || receipt.cashback.eventIds.length >= 16)) return ledger;
+  const cashback = Object.freeze({ minorUnits, packageName, eventIds: Object.freeze([...receipt.cashback?.eventIds ?? [], eventId]) });
+  return Object.freeze({ ...ledger, updatedAt: new Date().toISOString(),
+    expenses: Object.freeze(ledger.expenses.map((item) => item.id === expenseId ? Object.freeze({ ...item, minorUnits: receipt.minorUnits - minorUnits }) : item)),
+    automationPaymentReceipts: Object.freeze(ledger.automationPaymentReceipts!.map((item) => item === receipt ? Object.freeze({ ...item, cashback }) : item)) });
+}
+
+function attachInlineCashback(ledger: GeneralLedger, candidate: NativeCardCandidate, explicitlyConfirmed = false): GeneralLedger {
+  if (!candidate.cashbackMinorUnits || candidate.eventType !== "purchase" || !explicitlyConfirmed && (candidate.manualOnly || candidate.confidence !== "high")) return ledger;
+  const id = automationExpenseId(candidate);
+  const receipt = ledger.automationPaymentReceipts?.find((item) => item.minorUnits === candidate.minorUnits && item.currency === candidate.currency
+    && item.sources.some((source) => source.expenseId === id && source.packageName === candidate.packageName));
+  return receipt ? attachCashback(ledger, receipt.expenseId, candidate.cashbackMinorUnits, candidate.packageName, `inline:${id}`) : ledger;
+}
 
 function hasUniqueRecentReversalReceipt(ledger: GeneralLedger, candidate: NativeCardCandidate, expense: GeneralExpense): boolean {
   const fingerprint = automationReversalFingerprint(candidate);
@@ -314,7 +394,8 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
   const appliedReversals = new Set(state.ledgers.flatMap((ledger) => ledger.kind === "general" ? ledger.automationReversalIds : []));
   // Purchases are processed before reversals regardless of notification order,
   // so a delayed or out-of-order cancellation wins within the same batch.
-  const orderedCandidates = [...candidates].sort((left, right) => Number(left.eventType === "reversal") - Number(right.eventType === "reversal")
+  const eventOrder = (candidate: NativeCardCandidate) => candidate.eventType === "reversal" ? 2 : candidate.eventType === "cashback" ? 1 : 0;
+  const orderedCandidates = [...candidates].sort((left, right) => eventOrder(left) - eventOrder(right)
     || Number(Boolean(left.requiresMerchant)) - Number(Boolean(right.requiresMerchant))
     || Number(left.confidence !== "high") - Number(right.confidence !== "high"));
   for (const candidate of orderedCandidates) {
@@ -322,6 +403,19 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     // earlier or broad bank-app discovery is enabled. Never acknowledge a
     // stale opt-out event; native code purges it when configuration arrives.
     if (isSmsSenderSource(candidate.packageName) && !ledgers.some((ledger) => ledger.kind === "general" && ledger.automationSmsNotifications)) continue;
+    if (candidate.eventType === "cashback") {
+      if (cashbackAlreadyHandled(ledgers, candidate)) { acknowledgedIds.add(candidate.id); continue; }
+      if (cashbackIdentityConflict(ledgers, candidate)) { pending.push(identityConflictCandidate(candidate)); continue; }
+      const owners = ownerIndexes(ledgers, candidate);
+      const index = owners.length === 1 ? owners[0] : -1; const ledger = ledgers[index];
+      const foreignTrust = ledgers.some((item) => item.kind === "general" && item.currency !== candidate.currency && item.automationSources.some((source) => source.packageName === candidate.packageName));
+      const target = ledger?.kind === "general" && !foreignTrust && ledger.automationSources.some((source) => source.packageName === candidate.packageName) ? automaticCashbackExpense(ledger, candidate) : null;
+      if (ledger?.kind === "general" && target) {
+        const updated = attachCashback(ledger, target, candidate.minorUnits, candidate.packageName, automationExpenseId(candidate));
+        if (updated !== ledger) { ledgers[index] = updated; receiptsChanged = true; acknowledgedIds.add(candidate.id); continue; }
+      }
+      pending.push(Object.freeze({ ...candidate, confidence: "review", ...(foreignTrust ? { currencyReview: true } : {}) })); continue;
+    }
     const expenseId = automationExpenseId(candidate);
     const origin = automationOriginFingerprint(candidate);
     if (candidate.eventType !== "reversal") {
@@ -336,7 +430,12 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     }
     if (candidate.eventType !== "reversal") {
       const receiptIdentity = paymentReceiptIdentity(ledgers, duplicateEvidence(candidate));
-      if (receiptIdentity === "same") { acknowledgedIds.add(candidate.id); continue; }
+      if (receiptIdentity === "same") {
+        for (const [index, ledger] of ledgers.entries()) if (ledger.kind === "general" && ledger.automationSources.some((source) => source.packageName === candidate.packageName)) {
+          const updated = attachInlineCashback(ledger, candidate); if (updated !== ledger) { ledgers[index] = updated; receiptsChanged = true; }
+        }
+        acknowledgedIds.add(candidate.id); continue;
+      }
       if (receiptIdentity === "conflict") { pending.push(identityConflictCandidate(candidate)); continue; }
     }
     if (candidate.eventType !== "reversal" && movedExpenseIds.has(expenseId)) {
@@ -379,8 +478,8 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
         if (duplicate.ledgerIndex !== owners[0]) {
           pending.push(Object.freeze({ ...candidate, confidence: "review", possibleDuplicate: true })); continue;
         }
-        ledgers[owners[0]] = joinPaymentReceipt(owner, duplicate, { ...evidence,
-          category: resolveCategory(candidate.merchant || duplicate.receipt.merchant, owner.id, candidate.categoryHint) });
+        ledgers[owners[0]] = attachInlineCashback(joinPaymentReceipt(owner, duplicate, { ...evidence,
+          category: resolveCategory(candidate.merchant || duplicate.receipt.merchant, owner.id, candidate.categoryHint) }), candidate);
         receiptsChanged = true; acknowledgedIds.add(candidate.id); continue;
       }
     }
@@ -419,7 +518,9 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
       const linkedIds = new Set((ledger.automationPaymentReceipts ?? []).filter((receipt) => receipt.sources.some((source) => source.expenseId === expenseId)).map((receipt) => receipt.expenseId));
       const exactMatches = matches.filter((expenseIndex) => {
         const expense = ledger.expenses[expenseIndex];
-        return expense.currency === candidate.currency && expense.minorUnits === candidate.minorUnits
+        const receipt = ledger.automationPaymentReceipts?.find((item) => item.expenseId === expense.id);
+        const amountMatches = receipt?.cashback ? receipt.minorUnits === candidate.minorUnits && expense.minorUnits === receiptNet(receipt) : expense.minorUnits === candidate.minorUnits;
+        return expense.currency === candidate.currency && amountMatches
           && (expense.id === expenseId || linkedIds.has(expense.id)
             || matches.length === 1 && hasUniqueRecentReversalReceipt(ledger, candidate, expense));
       });
@@ -443,10 +544,19 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
 }
 
 export function confirmCardCandidate(state: WalletState, ledgerId: string, candidate: NativeCardCandidate, options: { readonly asNewTransaction?: boolean } = {}): { readonly state: WalletState; readonly inserted: boolean; readonly reversed: boolean } {
-  if (candidate.requiresMerchant || !parseNativeCardCandidate(candidate)) throw new Error("incomplete candidate");
+  if (candidate.eventType !== "cashback" && candidate.requiresMerchant || !parseNativeCardCandidate(candidate)) throw new Error("incomplete candidate");
   const index = state.ledgers.findIndex((ledger) => ledger.id === ledgerId); const ledger = state.ledgers[index];
   if (!ledger || ledger.kind !== "general" || ledger.currency !== candidate.currency) throw new Error("incompatible candidate");
   if (isSmsSenderSource(candidate.packageName) && !ledger.automationSmsNotifications) throw new Error("incompatible candidate");
+  if (candidate.eventType === "cashback") {
+    if (cashbackAlreadyHandled(state.ledgers, candidate)) return Object.freeze({ state, inserted: false, reversed: false });
+    if (cashbackIdentityConflict(state.ledgers, candidate)) throw new Error("candidate-conflict");
+    if (!candidate.cashbackExpenseId || !cashbackMatchOptions(ledger, candidate).some((expense) => expense.id === candidate.cashbackExpenseId)) throw new Error("cashback-original-payment-required");
+    const updated = attachCashback(ledger, candidate.cashbackExpenseId, candidate.minorUnits, candidate.packageName, automationExpenseId(candidate));
+    if (updated === ledger) throw new Error("cashback-original-payment-changed");
+    const ledgers = [...state.ledgers]; ledgers[index] = updated;
+    return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: false, reversed: false });
+  }
   const category = createCategoryResolver(state.ledgers)(candidate.merchant, ledger.id, candidate.categoryHint);
   const expenseId = automationExpenseId(candidate);
   const movedExpenseIds = new Set(state.ledgers.flatMap((item) => item.kind === "general" ? item.movedExpenseIds ?? [] : []));
@@ -469,13 +579,18 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
   }
   if (!options.asNewTransaction) {
     const evidence = duplicateEvidence(candidate); const receiptIdentity = paymentReceiptIdentity(state.ledgers, evidence);
-    if (receiptIdentity === "same") return Object.freeze({ state, inserted: false, reversed: false });
+    if (receiptIdentity === "same") {
+      const updated = attachInlineCashback(ledger, candidate, true);
+      if (updated === ledger) return Object.freeze({ state, inserted: false, reversed: false });
+      const ledgers = [...state.ledgers]; ledgers[index] = updated;
+      return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: false, reversed: false });
+    }
     if (receiptIdentity === "conflict") throw new Error("candidate-conflict");
     const duplicate = findCrossSourcePayment(state.ledgers, evidence);
     if (duplicate) {
       if (duplicate.ledgerIndex !== index) throw new Error("candidate-possible-duplicate");
       const owner = state.ledgers[duplicate.ledgerIndex]; const ledgers = [...state.ledgers];
-      if (owner.kind === "general") ledgers[duplicate.ledgerIndex] = joinPaymentReceipt(owner, duplicate, { ...evidence, category: createCategoryResolver(state.ledgers)(candidate.merchant, owner.id, candidate.categoryHint) });
+      if (owner.kind === "general") ledgers[duplicate.ledgerIndex] = attachInlineCashback(joinPaymentReceipt(owner, duplicate, { ...evidence, category: createCategoryResolver(state.ledgers)(candidate.merchant, owner.id, candidate.categoryHint) }), candidate, true);
       return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: false, reversed: false });
     }
     if (hasPossibleCrossSourcePayment(state.ledgers, evidence)) throw new Error("candidate-possible-duplicate");

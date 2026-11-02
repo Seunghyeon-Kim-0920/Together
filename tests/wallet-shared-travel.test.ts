@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeSharedError, parseSharedExpense, parseSharedTrip, registerSharedParticipant, SharedTravelError, toSharedExpenseData, toSharedTripData, validateSharedExpense, type SharedTravelClient } from "../src/lib/sharedTravel";
+import { normalizeSharedError, parseSharedExpense, parseSharedTrip, registerSharedParticipant, removeParticipantFromSharedExpense, SharedTravelError, toSharedExpenseData, toSharedTripData, updateSharedParticipants, validateSharedExpense, type SharedTravelClient } from "../src/lib/sharedTravel";
 import { createSharedTravelClientLoader } from "../src/lib/sharedTravelClient";
 import { createLedger } from "../src/lib/wallet";
 import type { TravelExpense, TravelLedger } from "../src/lib/types";
@@ -8,6 +8,27 @@ import type { TravelExpense, TravelLedger } from "../src/lib/types";
 const ledger: TravelLedger = { ...createLedger("travel", "Paris", "EUR"), id: "trip-one", participants: [{ id: "alice", name: "Alice" }, { id: "bob", name: "Bob" }], selfParticipantId: "alice" };
 const expense: TravelExpense = { id: "expense-one", description: "Cafe", category: "food", currency: "EUR", minorUnits: 1001, occurredOn: "2026-09-19", paidBy: "alice", shares: [{ participantId: "alice", minorUnits: 501 }, { participantId: "bob", minorUnits: 500 }] };
 const trip = parseSharedTrip(ledger.id, toSharedTripData(ledger, "owner"))!;
+
+test("history removal deletes the actual payer and rebalances only the remaining original sharers", () => {
+  assert.equal(removeParticipantFromSharedExpense(expense, "alice"), null);
+  assert.deepEqual(removeParticipantFromSharedExpense(expense, "bob")?.shares, [{ participantId: "alice", minorUnits: 1001 }]);
+  assert.equal(removeParticipantFromSharedExpense(expense, "not-in-this-split"), expense);
+  const three = { ...expense, minorUnits: 1001, shares: [{ participantId: "alice", minorUnits: 1 }, { participantId: "bob", minorUnits: 100 }, { participantId: "carol", minorUnits: 900 }] };
+  assert.deepEqual(removeParticipantFromSharedExpense(three, "bob")?.shares, [{ participantId: "alice", minorUnits: 501 }, { participantId: "carol", minorUnits: 500 }]);
+  assert.throws(() => removeParticipantFromSharedExpense({ ...expense, shares: [{ participantId: "bob", minorUnits: 1001 }] }, "bob"), (e) => e instanceof SharedTravelError && e.code === "orphan-shares");
+});
+
+test("history metadata is allowlisted, durable, monotonic through owner controls, and fences stale expense references", () => {
+  const data = { ...toSharedTripData(ledger, "owner"), inactiveParticipantIds: ["bob"], historyRemovedParticipantIds: ["bob"] };
+  const purged = parseSharedTrip(ledger.id, data)!; assert.ok(purged);
+  assert.throws(() => validateSharedExpense(expense, purged));
+  assert.throws(() => updateSharedParticipants(purged, "owner", purged.participants, [], purged.revision));
+  assert.equal(parseSharedTrip(ledger.id, { ...data, inactiveParticipantIds: [] }), null);
+  const locked = parseSharedTrip(ledger.id, { ...toSharedTripData(ledger, "owner"), participantHistoryRemoval: { id: "operation-one", participantId: "bob", phase: "preflight", cursor: null } })!;
+  assert.ok(locked);
+  assert.throws(() => updateSharedParticipants(locked, "owner", locked.participants, [], locked.revision), (e) => e instanceof SharedTravelError && e.code === "history-busy");
+  assert.equal(parseSharedTrip(ledger.id, { ...data, participantHistoryRemoval: { id: "op", participantId: "bob", phase: "applying", cursor: null } }), null);
+});
 
 test("shared travel is disabled without a configured free project; no implicit anonymous sign-in", async () => {
   let calls = 0;
@@ -111,4 +132,43 @@ test("cloud mapping preserves legacy headers and rejects forged or duplicate set
   for (const invalid of [[], null, { owner: "missing" }, { owner: "alice", guest: "alice" }, { "bad/uid": "bob" }, { owner: 42 }]) {
     assert.equal(parseSharedTrip(ledger.id, { ...data, participantMembers: invalid }), null);
   }
+});
+
+test("owner participant changes append or archive while preserving historical identities and retry safely", () => {
+  const mapped = registerSharedParticipant(trip, "owner", "Owner", "alice");
+  const people = [...mapped.participants, { id: "carol", name: "Carol" }];
+  const updated = updateSharedParticipants(mapped, "owner", people, ["bob"], mapped.revision);
+  assert.deepEqual(updated.participants, people);
+  assert.deepEqual(updated.inactiveParticipantIds, ["bob"]);
+  assert.deepEqual(updated.participantMembers, mapped.participantMembers);
+  assert.equal(updated.revision, mapped.revision + 1);
+  assert.equal(updateSharedParticipants(updated, "owner", people, ["bob"], mapped.revision), updated);
+  assert.doesNotThrow(() => validateSharedExpense(expense, updated));
+  assert.deepEqual(parseSharedTrip(ledger.id, toSharedTripData({ ...ledger, participants: people, inactiveParticipantIds: ["bob"] }, "owner"))?.inactiveParticipantIds, ["bob"]);
+  const restored = updateSharedParticipants(updated, "owner", people, [], updated.revision);
+  assert.deepEqual(restored.inactiveParticipantIds, []);
+  assert.deepEqual(mapped.inactiveParticipantIds, undefined);
+});
+
+test("participant management rejects stale, foreign, destructive and malformed changes", () => {
+  const mapped = registerSharedParticipant(trip, "owner", "Owner", "alice");
+  const people = [...mapped.participants, { id: "carol", name: "Carol" }];
+  assert.throws(() => updateSharedParticipants(mapped, "guest", people, [], mapped.revision), /permission-denied/);
+  assert.throws(() => updateSharedParticipants(mapped, "owner", people, [], mapped.revision - 1), /conflict/);
+  for (const candidates of [mapped.participants.slice(0, 1), [...mapped.participants].reverse(), [{ id: "alice", name: "Changed" }, mapped.participants[1]], [...people, people[2]], [...people, { id: "bad/id", name: "Bad" }], [...people, { id: "bad", name: "Two|Names" }]]) {
+    assert.throws(() => updateSharedParticipants(mapped, "owner", candidates, [], mapped.revision), /invalid-data/);
+  }
+  for (const ids of [["missing"], ["bob", "bob"]]) assert.throws(() => updateSharedParticipants(mapped, "owner", people, ids, mapped.revision), /invalid-data/);
+  const concurrentlyJoined = registerSharedParticipant(mapped, "new-device", "New person");
+  assert.throws(() => updateSharedParticipants(concurrentlyJoined, "owner", people, [], mapped.revision), /conflict/);
+  assert.throws(() => updateSharedParticipants({ ...mapped, deleted: true }, "owner", people, [], mapped.revision), /not-found/);
+});
+
+test("archived settlement identities cannot be claimed by a newly joining namesake", () => {
+  const archived = { ...trip, inactiveParticipantIds: ["bob"] };
+  const joined = registerSharedParticipant(archived, "new-bob", "Bob");
+  assert.equal(joined.participantMembers?.["new-bob"], "member_new-bob");
+  assert.deepEqual(joined.inactiveParticipantIds, ["bob"]);
+  const data = toSharedTripData(ledger, "owner");
+  for (const invalid of [["missing"], ["bob", "bob"], "bob", null, [123]]) assert.equal(parseSharedTrip(ledger.id, { ...data, inactiveParticipantIds: invalid }), null);
 });

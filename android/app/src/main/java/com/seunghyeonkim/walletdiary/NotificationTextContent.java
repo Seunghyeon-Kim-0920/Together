@@ -40,4 +40,13 @@ final class NotificationTextContent {
         // title is just the app label. Preserve both for payment classification.
         return joinLines(new CharSequence[] {collapsedTitle, expandedTitle});
     }
+
+    static String smsSender(CharSequence collapsedTitle, CharSequence expandedTitle) {
+        // A notification title is a sender identity for SMS, not merchant
+        // evidence. Concatenating it with BIG_TITLE (often "알림") inserts a
+        // newline and causes the strict sender identity validator to reject
+        // the entire receipt. Never derive a sender from message body text.
+        String collapsed = collapsedTitle == null ? "" : collapsedTitle.toString().trim();
+        return collapsed.isEmpty() ? (expandedTitle == null ? "" : expandedTitle.toString().trim()) : collapsed;
+    }
 }

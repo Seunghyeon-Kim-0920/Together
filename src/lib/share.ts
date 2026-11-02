@@ -24,6 +24,8 @@ function omitTravelPrivacySettings(ledger: TravelLedger): TravelLedger {
   // machine-readable data embedded in PDFs and from forwarded share files.
   return Object.freeze({ id: ledger.id, title: ledger.title, kind: "travel", createdAt: ledger.createdAt, updatedAt: ledger.updatedAt,
     currencies: ledger.currencies, defaultCurrency: ledger.defaultCurrency, participants: ledger.participants, selfParticipantId: null,
+    ...(ledger.inactiveParticipantIds?.length ? { inactiveParticipantIds: ledger.inactiveParticipantIds } : {}),
+    ...(ledger.historyRemovedParticipantIds?.length ? { historyRemovedParticipantIds: ledger.historyRemovedParticipantIds } : {}),
     expenses: Object.freeze(ledger.expenses.map((expense) => Object.freeze({ id: expense.id, description: expense.description,
       category: expense.category, currency: expense.currency, minorUnits: expense.minorUnits, paidBy: expense.paidBy,
       shares: expense.shares, occurredOn: expense.occurredOn }))) });

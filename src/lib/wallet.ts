@@ -63,6 +63,16 @@ function parseAutomationPaymentReceipts(value: unknown, ledgerCurrency: string):
     if (!isRecord(entry)) return null;
     const expenseId = text(entry.expenseId, 100); const merchant = text(entry.merchant, 500); const minorUnits = positiveMinor(entry.minorUnits);
     if (!expenseId || !merchant || !minorUnits || entry.currency !== ledgerCurrency || ids.has(expenseId) || !Array.isArray(entry.sources) || !entry.sources.length || entry.sources.length > 8) return null;
+    let cashback: AutomationPaymentReceipt["cashback"];
+    if (entry.cashback !== undefined) {
+      const benefit = entry.cashback;
+      if (!isRecord(benefit) || !positiveMinor(benefit.minorUnits) || (benefit.minorUnits as number) >= minorUnits
+        || typeof benefit.packageName !== "string" || !isValidPackageName(benefit.packageName)
+        || !Array.isArray(benefit.eventIds) || !benefit.eventIds.length || benefit.eventIds.length > 16
+        || benefit.eventIds.some((id) => typeof id !== "string" || !/^(?:inline:)?card-auto-[0-9a-f]{16}$/.test(id))
+        || new Set(benefit.eventIds).size !== benefit.eventIds.length) return null;
+      cashback = Object.freeze({ minorUnits: benefit.minorUnits as number, packageName: benefit.packageName, eventIds: Object.freeze([...benefit.eventIds]) });
+    }
     const restoredFromExpenseId = entry.restoredFromExpenseId === undefined ? undefined : text(entry.restoredFromExpenseId, 100);
     if (entry.restoredFromExpenseId !== undefined && (!restoredFromExpenseId || restoredFromExpenseId === expenseId)) return null;
     if (entry.separatedSourceIds !== undefined && (!Array.isArray(entry.separatedSourceIds) || entry.separatedSourceIds.length > 64)) return null;
@@ -74,7 +84,7 @@ function parseAutomationPaymentReceipts(value: unknown, ledgerCurrency: string):
       const sourceId = text(source.expenseId, 100); const packageName = text(source.packageName, 200); const occurredAt = timestamp(source.occurredAt);
       const deliveredAt = source.deliveredAt === undefined ? undefined : timestamp(source.deliveredAt);
       const eventType = source.eventType;
-      if (eventType !== undefined && eventType !== "purchase" && eventType !== "outgoing_transfer" && eventType !== "direct_debit" && eventType !== "standing_order") return null;
+      if (eventType !== undefined && eventType !== "purchase" && eventType !== "outgoing_transfer" && eventType !== "direct_debit" && eventType !== "standing_order" && eventType !== "cash_withdrawal") return null;
       const originFingerprint = text(source.originFingerprint, 40); const reversalFingerprint = text(source.reversalFingerprint, 42);
       if (!sourceId || !/^card-auto-[0-9a-f]{16}$/.test(sourceId) || sourceIds.has(sourceId) || !packageName || !isValidPackageName(packageName) || packages.has(packageName) || !occurredAt || !/^\d{4}-\d{2}-\d{2}T/.test(occurredAt) || !date(occurredAt.slice(0, 10)) || source.deliveredAt !== undefined && (!deliveredAt || !/^\d{4}-\d{2}-\d{2}T/.test(deliveredAt) || !date(deliveredAt.slice(0, 10))) || !originFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(originFingerprint) || !reversalFingerprint || !/^card-reversal-[0-9a-f]{16}$/.test(reversalFingerprint)) return null;
       const hasSnapshot = source.merchant !== undefined || source.category !== undefined || source.occurredOn !== undefined;
@@ -83,7 +93,8 @@ function parseAutomationPaymentReceipts(value: unknown, ledgerCurrency: string):
       sources.push(Object.freeze({ expenseId: sourceId, packageName, occurredAt, ...(deliveredAt ? { deliveredAt } : {}), ...(eventType ? { eventType } : {}), originFingerprint, reversalFingerprint,
         ...(hasSnapshot ? { merchant: sourceMerchant!, category: source.category as GeneralExpense["category"], occurredOn: occurredOn! } : {}) })); sourceIds.add(sourceId); packages.add(packageName);
     }
-    ids.add(expenseId); receipts.push(Object.freeze({ expenseId, merchant, minorUnits, currency: ledgerCurrency, sources: Object.freeze(sources),
+    if (cashback && (!sources.some((source) => source.packageName === cashback.packageName) || sources.some((source) => source.eventType && source.eventType !== "purchase"))) return null;
+    ids.add(expenseId); receipts.push(Object.freeze({ expenseId, merchant, minorUnits, currency: ledgerCurrency, sources: Object.freeze(sources), ...(cashback ? { cashback } : {}),
       ...(separatedSourceIds.length ? { separatedSourceIds: Object.freeze([...separatedSourceIds]) } : {}), ...(restoredFromExpenseId ? { restoredFromExpenseId } : {}) }));
   }
   return Object.freeze(receipts);
@@ -180,15 +191,22 @@ export function parseLedger(value: unknown): Ledger | null {
     const defaultCurrency = currency(value.defaultCurrency);
     if (!defaultCurrency || !currencies.includes(defaultCurrency)) return null;
     const participantIds = new Set(participants.map((participant) => participant.id));
+    const inactive = value.inactiveParticipantIds;
+    if (inactive !== undefined && (!Array.isArray(inactive) || new Set(inactive).size !== inactive.length || !inactive.every((item) => typeof item === "string" && participantIds.has(item)))) return null;
+    const inactiveParticipantIds = inactive?.length ? Object.freeze([...(inactive as string[])]) : undefined;
+    const historyRemoved = value.historyRemovedParticipantIds;
+    if (historyRemoved !== undefined && (!Array.isArray(historyRemoved) || new Set(historyRemoved).size !== historyRemoved.length || !historyRemoved.every((item) => typeof item === "string" && inactiveParticipantIds?.includes(item)))) return null;
+    const historyRemovedParticipantIds = historyRemoved?.length ? Object.freeze([...(historyRemoved as string[])]) : undefined;
+    const expenseParticipantIds = new Set([...participantIds].filter((participantId) => !historyRemovedParticipantIds?.includes(participantId)));
     const selfParticipantId = value.selfParticipantId === null ? null : text(value.selfParticipantId, 100);
     if (selfParticipantId !== null && !participantIds.has(selfParticipantId)) return null;
     const expenses: TravelExpense[] = [];
     for (const candidate of value.expenses) {
-      const expense = parseTravelExpense(candidate, participantIds, new Set(currencies as string[]));
+      const expense = parseTravelExpense(candidate, expenseParticipantIds, new Set(currencies as string[]));
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "travel", createdAt, updatedAt, currencies: Object.freeze(currencies as string[]), defaultCurrency, participants, selfParticipantId, expenses: Object.freeze(expenses), ...(sharedSync ? { sharedSync } : {}), ...privateHistory } satisfies TravelLedger);
+    return Object.freeze({ id, title, kind: "travel", createdAt, updatedAt, currencies: Object.freeze(currencies as string[]), defaultCurrency, participants, ...(inactiveParticipantIds ? { inactiveParticipantIds } : {}), ...(historyRemovedParticipantIds ? { historyRemovedParticipantIds } : {}), selfParticipantId, expenses: Object.freeze(expenses), ...(sharedSync ? { sharedSync } : {}), ...privateHistory } satisfies TravelLedger);
   }
   if (value.kind === "general") {
     const ledgerCurrency = currency(value.currency);
@@ -350,12 +368,24 @@ export function mergeTravelLedgerMutation(base: TravelLedger, desired: TravelLed
   const beforeCurrencies = new Set(base.currencies); const wantedCurrencies = new Set(desired.currencies);
   const currencies = [...latest.currencies.filter((code) => !beforeCurrencies.has(code) || wantedCurrencies.has(code))];
   for (const code of desired.currencies) if (!beforeCurrencies.has(code) && !currencies.includes(code)) currencies.push(code);
+  const beforeInactive = new Set(base.inactiveParticipantIds ?? []);
+  const wantedInactive = new Set(desired.inactiveParticipantIds ?? []);
+  const historyRemovedParticipantIds = Object.freeze([...new Set([...(latest.historyRemovedParticipantIds ?? []), ...(desired.historyRemovedParticipantIds ?? [])])]);
+  const participantChanges = mergeChangedEntities(base.participants, desired.participants, latest.participants);
+  // A stale view cannot remove a tombstone identity, even if it once had no expenses.
+  const participants = Object.freeze([...participantChanges, ...latest.participants.filter((person) => historyRemovedParticipantIds.includes(person.id) && !participantChanges.some((other) => other.id === person.id))]);
+  const inactive = new Set((latest.inactiveParticipantIds ?? []).filter((id) => !beforeInactive.has(id) || wantedInactive.has(id)));
+  for (const id of wantedInactive) if (!beforeInactive.has(id)) inactive.add(id);
+  for (const id of historyRemovedParticipantIds) inactive.add(id);
+  const inactiveParticipantIds = Object.freeze([...inactive].filter((id) => participants.some((person) => person.id === id)));
   return Object.freeze({
     ...latest,
     title: desired.title !== base.title ? desired.title : latest.title,
     defaultCurrency: desired.defaultCurrency !== base.defaultCurrency ? desired.defaultCurrency : latest.defaultCurrency,
     selfParticipantId: desired.selfParticipantId !== base.selfParticipantId ? desired.selfParticipantId : latest.selfParticipantId,
-    participants: mergeChangedEntities(base.participants, desired.participants, latest.participants),
+    participants,
+    inactiveParticipantIds,
+    ...(historyRemovedParticipantIds.length ? { historyRemovedParticipantIds } : {}),
     currencies: Object.freeze(currencies),
     expenses: mergeChangedEntities(base.expenses, desired.expenses, latest.expenses),
     updatedAt: new Date().toISOString(),

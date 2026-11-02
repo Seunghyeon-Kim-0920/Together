@@ -6,7 +6,7 @@ export const TRAVEL_CATEGORIES = ["accommodation", "transport", "food", "activit
 export type TravelCategory = (typeof TRAVEL_CATEGORIES)[number];
 export const GENERAL_CATEGORIES = ["food", "transport", "housing", "utilities", "shopping", "health", "leisure", "education", "subscriptions", "travel", "other"] as const;
 export type GeneralCategory = (typeof GENERAL_CATEGORIES)[number];
-export const EXPENSE_TRANSACTION_TYPES = ["purchase", "outgoing_transfer", "direct_debit", "standing_order"] as const;
+export const EXPENSE_TRANSACTION_TYPES = ["purchase", "outgoing_transfer", "direct_debit", "standing_order", "cash_withdrawal"] as const;
 export type ExpenseTransactionType = (typeof EXPENSE_TRANSACTION_TYPES)[number];
 
 export interface Participant {
@@ -66,6 +66,13 @@ export interface AutomationPaymentReceipt {
   readonly merchant: string;
   readonly currency: string;
   readonly minorUnits: number;
+  /** Gross stays immutable for issuer matching; the expense stores net spending.
+   * This private evidence is never included in shared files. */
+  readonly cashback?: {
+    readonly minorUnits: number;
+    readonly packageName: string;
+    readonly eventIds: readonly string[];
+  };
   /** Explicit local corrections: these native source ids must never rejoin. */
   readonly separatedSourceIds?: readonly string[];
   /** A restored notification remains auditable without exposing raw text. */
@@ -77,7 +84,7 @@ export interface AutomationPaymentReceipt {
     /** Android notification post time; older receipts may not have it. */
     readonly deliveredAt?: string;
     /** Receipts before v1.8.4 were created for purchases only. */
-    readonly eventType?: "purchase" | "outgoing_transfer" | "direct_debit" | "standing_order";
+    readonly eventType?: ExpenseTransactionType;
     readonly originFingerprint: string;
     readonly reversalFingerprint: string;
     /** Immutable display fields captured before any later expense edits.
@@ -109,6 +116,10 @@ export interface TravelLedger extends LedgerBase {
   readonly currencies: readonly string[];
   readonly defaultCurrency: string;
   readonly participants: readonly Participant[];
+  /** Kept for past expenses/settlement, excluded from new expense defaults. */
+  readonly inactiveParticipantIds?: readonly string[];
+  /** Permanent tombstones: these identities cannot be restored or referenced by expenses. */
+  readonly historyRemovedParticipantIds?: readonly string[];
   readonly selfParticipantId: string | null;
   readonly expenses: readonly TravelExpense[];
   /** Private opt-in collaboration identity, cloud baseline and durable outbox. */

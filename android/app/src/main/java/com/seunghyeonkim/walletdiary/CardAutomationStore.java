@@ -215,6 +215,11 @@ final class CardAutomationStore {
                 // do not acknowledge it or suppress a later completed receipt.
                 if (item.optInt("parserVersion", 0) < 14 && "purchase".equals(item.optString("eventType"))
                     && PaymentNotificationParser.hasLeakedAuthorizationRequest(item.optString("merchant"))) continue;
+                // Only an exact credit-status label proves these legacy drafts
+                // were not stores. Raw notifications are not retained, so do
+                // not invent a missing original purchase or alter saved expenses.
+                if (item.optInt("parserVersion", 0) < 16 && "purchase".equals(item.optString("eventType"))
+                    && PaymentNotificationParser.hasGrantedCashRewardLabel(item.optString("merchant"))) continue;
                 // Pre-v14 candidates may have been approval challenges rather
                 // than completed transactions. Raw text is intentionally not
                 // stored, so do not guess which drafts were real or delete them.

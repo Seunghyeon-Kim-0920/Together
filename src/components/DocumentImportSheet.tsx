@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, FileUp, Plus } from "lucide-react";
-import { SheetFrame } from "./Sheets";
+import { SheetFrame } from "./Sheets"; import { activeTravelParticipants } from "../lib/travelParticipants";
 import { availableCurrencies, currencyDigits, currencyName, formatMoney, parseMinorUnits } from "../lib/currency";
 import { documentText as d } from "../lib/documentI18n";
 import { readExpenseDocument, type ReadDocument } from "../lib/documentReader";
@@ -58,7 +58,7 @@ function DocumentReview({ source, state, locale, options, onOptions, onConfirm }
   const [title, setTitle] = useState((source.ledger?.ledger.title ?? source.name.replace(/\.[^.]+$/, "")).slice(0, 70));
   const [payer, setPayer] = useState(""); const [people, setPeople] = useState<string[]>([]);
   const [page, setPage] = useState(0); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  const target = state.ledgers.find((ledger) => ledger.id === targetId);
+  const target = state.ledgers.find((ledger) => ledger.id === targetId); const activePeople = target?.kind === "travel" ? activeTravelParticipants(target) : [];
   const selected = rows.filter((row) => row.selected);
   const selectedAdjustments = adjustments.filter((adjustment) => adjustment.selected);
   const selectedAcknowledgements = acknowledgements.filter((item) => item.selected);
@@ -75,7 +75,7 @@ function DocumentReview({ source, state, locale, options, onOptions, onConfirm }
   const dates = selected.map((row) => row.occurredOn).sort();
   const invalid = selected.some((row) => !validateStatementImportRow(row));
   const wrongCurrency = target?.kind === "general" && [...selected, ...selectedAcknowledgements].some((row) => row.currency !== target.currency);
-  const badTarget = (selected.length > 0 || selectedAcknowledgements.length > 0) && (targetId === "new" ? !title.trim() : !target || selected.length > 0 && target.kind === "travel" && (!payer || !people.length));
+  const badTarget = (selected.length > 0 || selectedAcknowledgements.length > 0) && (targetId === "new" ? !title.trim() : !target || selected.length > 0 && target.kind === "travel" && (!activePeople.some((person) => person.id === payer) || !people.length || people.some((id) => !activePeople.some((person) => person.id === id))));
   const canSave = (selected.length > 0 || selectedAdjustments.length > 0 || selectedAcknowledgements.length > 0) && !invalid && !wrongCurrency && !badTarget && [...totals.values()].every(Number.isSafeInteger);
   const update = (id: string, patch: Partial<StatementImportRow>) => setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
   const confirm = async () => {
@@ -99,7 +99,7 @@ function DocumentReview({ source, state, locale, options, onOptions, onConfirm }
     </details>}
     <label className="field-label">{d(locale, "target")}<select value={targetId} disabled={busy} onChange={(event) => { setTargetId(event.target.value); setPayer(""); setPeople([]); }}><option value="new">{d(locale, "newGeneral")}</option>{state.ledgers.map((ledger) => <option value={ledger.id} key={ledger.id}>{ledger.title}{ledger.kind === "general" ? ` (${ledger.currency})` : ""}</option>)}</select></label>
     {targetId === "new" && <label className="field-label">{d(locale, "newTitle")}<input value={title} maxLength={70} disabled={busy} onChange={(event) => setTitle(event.target.value)} /></label>}
-    {target?.kind === "travel" && <div className="expense-form-grid"><p className="sheet-intro">{d(locale, "payerHelp")}</p><label>{t(locale, "payer")}<select disabled={busy} value={payer} onChange={(event) => setPayer(event.target.value)}><option value="">{d(locale, "none")}</option>{target.participants.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><fieldset><legend>{t(locale, "splitWith")}</legend><div className="split-grid">{target.participants.map((person) => <label key={person.id}><input type="checkbox" disabled={busy} checked={people.includes(person.id)} onChange={(event) => setPeople((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id))} />{person.name}</label>)}</div>{!target.participants.length && <p>{t(locale, "atLeastOneParticipant")}</p>}</fieldset></div>}
+    {target?.kind === "travel" && <div className="expense-form-grid"><p className="sheet-intro">{d(locale, "payerHelp")}</p><label>{t(locale, "payer")}<select disabled={busy} value={payer} onChange={(event) => setPayer(event.target.value)}><option value="">{d(locale, "none")}</option>{activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label><fieldset><legend>{t(locale, "splitWith")}</legend><div className="split-grid">{activePeople.map((person) => <label key={person.id}><input type="checkbox" disabled={busy} checked={people.includes(person.id)} onChange={(event) => setPeople((current) => event.target.checked ? [...current, person.id] : current.filter((id) => id !== person.id))} />{person.name}</label>)}</div>{!activePeople.length && <p>{t(locale, "atLeastOneParticipant")}</p>}</fieldset></div>}
     <h3>{d(locale, "rows")} · {rows.length}</h3><p className="sheet-intro">{d(locale, "incomplete")}</p>
     <div className="document-buttons"><button type="button" disabled={busy} onClick={() => setRows((current) => current.map((row) => ({ ...row, selected: validateStatementImportRow(row) && !row.reviewReasons.some((reason) => ["duplicate", "ambiguous_direction", "cancelled", "refund_unmatched", "conflicting_duplicate"].includes(reason)) })))}>{d(locale, "selectAll")}</button><button type="button" disabled={busy} onClick={() => setRows((current) => current.map((row) => ({ ...row, selected: false })))}>{d(locale, "selectNone")}</button></div>
     {!rows.length && <p className="document-notice">{d(locale, "empty")}</p>}

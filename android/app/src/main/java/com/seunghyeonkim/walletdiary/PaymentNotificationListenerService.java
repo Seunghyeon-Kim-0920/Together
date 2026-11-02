@@ -185,7 +185,8 @@ public final class PaymentNotificationListenerService extends NotificationListen
             Bundle extras = notification.extras;
             if (extras == null) return;
             String title = NotificationTextContent.title(extras.getCharSequence(Notification.EXTRA_TITLE), extras.getCharSequence(Notification.EXTRA_TITLE_BIG));
-            String smsSender = smsNotification ? title : "";
+            String smsSender = smsNotification ? NotificationTextContent.smsSender(
+                extras.getCharSequence(Notification.EXTRA_TITLE), extras.getCharSequence(Notification.EXTRA_TITLE_BIG)) : "";
             String message = text(extras.getCharSequence(Notification.EXTRA_TEXT));
             String subText = text(extras.getCharSequence(Notification.EXTRA_SUB_TEXT));
             CharSequence[] lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);

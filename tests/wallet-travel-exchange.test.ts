@@ -79,6 +79,23 @@ test("repeated imports and independently cloned tabs do not duplicate people or 
   assert.equal(roundtrip.ledger?.expenses.length, 1);
 });
 
+test("merging preserves imported exclusions only for new identities, without rewriting historical shares or local decisions", () => {
+  const source = { ...trip("source", [paidDinner]), inactiveParticipantIds: ["bob"] };
+  const target = { ...trip("target"), participants: [], selfParticipantId: null };
+  const first = previewTravelLedgerMerge(target, source, newPeople);
+  assert.equal(first.ok, true);
+  assert.deepEqual(first.ledger?.inactiveParticipantIds, ["bob"]);
+  assert.deepEqual(first.ledger?.expenses, source.expenses);
+  assert.deepEqual(settleTravelExpenses(first.ledger!), settleTravelExpenses(source));
+  const restored = { ...first.ledger!, inactiveParticipantIds: [] };
+  const repeated = previewTravelLedgerMerge(restored, source, newPeople);
+  assert.deepEqual(repeated.ledger?.inactiveParticipantIds ?? [], []);
+  const localExcluded = { ...trip("local"), inactiveParticipantIds: ["alice"] };
+  const mergedExisting = previewTravelLedgerMerge(localExcluded, source, { alice: { kind: "existing", participantId: "alice" }, bob: { kind: "existing", participantId: "bob" } });
+  assert.deepEqual(mergedExisting.ledger?.inactiveParticipantIds, ["alice"]);
+  assert.equal(mergedExisting.addedExpenseCount, 1);
+});
+
 test("a same-ID conflict preserves local corrections and reports both records", () => {
   const edited = Object.freeze({ ...paidDinner, description: "Edited locally", minorUnits: 2000, shares: [{ participantId: "alice", minorUnits: 1000 }, { participantId: "bob", minorUnits: 1000 }] });
   const result = previewTravelLedgerMerge(trip("local", [edited]), trip("incoming", [paidDinner]), newPeople);

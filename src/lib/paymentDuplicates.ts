@@ -13,7 +13,7 @@ export interface PaymentDuplicateEvidence {
   readonly packageName: string;
   readonly occurredAt: string;
   readonly deliveredAt?: string;
-  readonly eventType?: "purchase" | "outgoing_transfer" | "direct_debit" | "standing_order" | "reversal";
+  readonly eventType?: "purchase" | "outgoing_transfer" | "direct_debit" | "standing_order" | "cash_withdrawal" | "reversal";
   readonly originFingerprint: string;
   readonly reversalFingerprint: string;
   readonly merchant: string;
@@ -214,22 +214,26 @@ export function undoPaymentMerge(state: WalletState, ledgerId: string, primaryEx
   if (state.ledgers.some((item) => item.expenses.some((expense) => expense.id === sourceExpenseId)
     || item.kind === "general" && (item.movedExpenseIds.includes(sourceExpenseId) || item.automationReversalIds.includes(sourceExpenseId)))) throw new Error("payment-undo-conflict");
   const source = receipt.sources[sourceIndex];
+  const restoredCashback = receipt.cashback?.packageName === source.packageName ? receipt.cashback : undefined;
+  // The benefit belongs to the issuer being separated, not both purchases.
+  // Do not overwrite a user re-price to make this split balance automatically.
+  if (restoredCashback && primary.minorUnits !== receipt.minorUnits - restoredCashback.minorUnits) throw new Error("payment-undo-conflict");
   const remaining = receipt.sources.filter((_, index) => index !== sourceIndex);
   const originalExclusions = [...new Set([...receipt.separatedSourceIds ?? [], sourceExpenseId])];
   const restoredExclusions = [...new Set([...receipt.separatedSourceIds ?? [], ...remaining.map((item) => item.expenseId)])];
   if (originalExclusions.length > 64 || restoredExclusions.length > 64) throw new Error("payment-undo-limit");
   const usedLegacySnapshot = !source.merchant || !source.category || !source.occurredOn;
   const expense: GeneralExpense = Object.freeze({ id: sourceExpenseId, description: source.merchant ?? receipt.merchant,
-    category: source.category ?? primary.category, currency: receipt.currency, minorUnits: receipt.minorUnits,
+    category: source.category ?? primary.category, currency: receipt.currency, minorUnits: receipt.minorUnits - (restoredCashback?.minorUnits ?? 0),
     occurredOn: source.occurredOn ?? source.occurredAt.slice(0, 10),
     ...(source.eventType ? { transactionType: source.eventType } : {}),
     automationFingerprint: source.originFingerprint, automationReversalFingerprint: source.reversalFingerprint });
-  const total = ledger.expenses.reduce((sum, item) => sum + BigInt(item.minorUnits), BigInt(expense.minorUnits));
+  const total = ledger.expenses.reduce((sum, item) => sum + BigInt(item.minorUnits), BigInt(expense.minorUnits) + BigInt(restoredCashback?.minorUnits ?? 0));
   if (total > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("payment-undo-limit");
-  receipts[receiptIndex] = Object.freeze({ ...receipt, sources: Object.freeze(remaining), separatedSourceIds: Object.freeze(originalExclusions) });
+  receipts[receiptIndex] = Object.freeze({ ...receipt, ...(restoredCashback ? { cashback: undefined } : {}), sources: Object.freeze(remaining), separatedSourceIds: Object.freeze(originalExclusions) });
   receipts.push(Object.freeze({ expenseId: sourceExpenseId, merchant: expense.description, currency: receipt.currency, minorUnits: receipt.minorUnits,
-    sources: Object.freeze([source]), separatedSourceIds: Object.freeze(restoredExclusions), restoredFromExpenseId: primaryExpenseId }));
+    sources: Object.freeze([source]), separatedSourceIds: Object.freeze(restoredExclusions), restoredFromExpenseId: primaryExpenseId, ...(restoredCashback ? { cashback: restoredCashback } : {}) }));
   const ledgers = [...state.ledgers];
-  ledgers[ledgerIndex] = Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, expense]), automationPaymentReceipts: Object.freeze(receipts), updatedAt: new Date().toISOString() });
+  ledgers[ledgerIndex] = Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses.map((item) => restoredCashback && item.id === primary.id ? Object.freeze({ ...item, minorUnits: receipt.minorUnits }) : item), expense]), automationPaymentReceipts: Object.freeze(receipts), updatedAt: new Date().toISOString() });
   return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), restoredExpenseId: sourceExpenseId, usedLegacySnapshot });
 }
