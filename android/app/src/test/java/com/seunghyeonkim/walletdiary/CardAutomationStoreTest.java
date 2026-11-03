@@ -169,6 +169,52 @@ public class CardAutomationStoreTest {
     }
 
     @Test
+    public void oldPromotionDraftsAreRemovedWithoutAcknowledgingLaterCompletedPayments() throws Exception {
+        JSONObject promotion = new JSONObject().put("id", "same-notification").put("queueToken", "offer-token")
+            .put("parserVersion", 17).put("eventType", "purchase").put("merchant", "(광고) 예시카드 신규가입 혜택")
+            .put("minorUnits", 12000).put("currency", "KRW").put("confidence", "high").put("manualOnly", false);
+        JSONObject completed = new JSONObject(promotion.toString()).put("queueToken", "completed-token")
+            .put("merchant", "Example Market").put("parserVersion", PaymentNotificationParser.PARSER_VERSION);
+        String originalPromotion = promotion.toString();
+        String originalCompleted = completed.toString();
+        JSONArray retained = CardAutomationStore.retainCurrentParserEvents(new JSONArray().put(promotion).put(completed));
+        assertEquals(1, retained.length());
+        assertEquals(originalCompleted, retained.getJSONObject(0).toString());
+        assertEquals(originalPromotion, promotion.toString());
+        assertEquals(originalCompleted, completed.toString());
+        assertEquals(retained.toString(), CardAutomationStore.retainCurrentParserEvents(retained).toString());
+
+        JSONArray cleared = CardAutomationStore.retainCurrentParserEvents(new JSONArray().put(promotion));
+        JSONArray history = CardAutomationStore.mergeAcknowledgements(new JSONArray(), cleared, new JSONArray().put(promotion));
+        assertEquals(0, cleared.length());
+        assertEquals(0, history.length());
+        assertEquals(false, CardAutomationStore.containsAcknowledgement(history, completed));
+    }
+
+    @Test
+    public void promotionCleanupOnlyUsesDemonstrableLegacyPurchaseText() throws Exception {
+        JSONArray stored = new JSONArray();
+        for (String merchant : new String[] {"Discount Store", "Point Cafe", "Loan Coffee", "혜택식당", "캐시 지급 카페", ""})
+            stored.put(new JSONObject().put("id", "merchant-" + merchant).put("queueToken", "stable-token")
+                .put("parserVersion", 17).put("eventType", "purchase").put("merchant", merchant)
+                .put("sourceName", "(광고) Sender label").put("minorUnits", 12000).put("currency", "KRW"));
+        for (String type : new String[] {"reversal", "outgoing_transfer", "cash_withdrawal", "direct_debit", "standing_order", "cashback"})
+            stored.put(new JSONObject().put("id", type).put("parserVersion", 17).put("eventType", type)
+                .put("merchant", "(광고) Legacy label").put("minorUnits", 1200).put("currency", "KRW"));
+        stored.put(new JSONObject().put("id", "modern").put("parserVersion", PaymentNotificationParser.PARSER_VERSION)
+            .put("eventType", "purchase").put("merchant", "(광고) Legacy label"));
+        stored.put(new JSONObject().put("id", "unknown-old-format").put("parserVersion", 17).put("merchant", "(광고) Legacy label"));
+        stored.put(new JSONObject().put("id", "real-inline-cashback").put("parserVersion", 17).put("eventType", "purchase")
+            .put("merchant", "Example Market").put("minorUnits", 12000).put("cashbackMinorUnits", 1200).put("currency", "KRW"));
+        String original = stored.toString();
+        JSONArray retained = CardAutomationStore.retainCurrentParserEvents(stored);
+        assertEquals(stored.length(), retained.length());
+        assertEquals(original, retained.toString());
+        assertEquals(original, stored.toString());
+        assertEquals(original, CardAutomationStore.retainCurrentParserEvents(retained).toString());
+    }
+
+    @Test
     public void currentAndV3ReviewQueueArePreserved() throws Exception {
         JSONArray stored = new JSONArray().put(new JSONObject().put("id", "v3").put("parserVersion", 3)).put(new JSONObject().put("id", "v4").put("parserVersion", 4)).put(new JSONObject().put("id", "unsafe-old").put("parserVersion", 2));
         assertEquals(2, CardAutomationStore.retainCurrentParserEvents(stored).length());

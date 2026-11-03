@@ -220,6 +220,12 @@ final class CardAutomationStore {
                 // not invent a missing original purchase or alter saved expenses.
                 if (item.optInt("parserVersion", 0) < 16 && "purchase".equals(item.optString("eventType"))
                     && PaymentNotificationParser.hasGrantedCashRewardLabel(item.optString("merchant"))) continue;
+                // Only promotion text still present in an old draft proves it
+                // was an offer, not a payment. Never infer an advertisement
+                // from an app name, amount or an ordinary merchant word, and
+                // do not acknowledge it or touch already saved expenses.
+                if (item.optInt("parserVersion", 0) < 18 && "purchase".equals(item.optString("eventType"))
+                    && PaymentNotificationParser.hasLeakedPromotion(item.optString("merchant"))) continue;
                 // Pre-v14 candidates may have been approval challenges rather
                 // than completed transactions. Raw text is intentionally not
                 // stored, so do not guess which drafts were real or delete them.

@@ -208,6 +208,10 @@ public final class PaymentNotificationListenerService extends NotificationListen
             }
             if (style != null) {
                 if (smsNotification && style.isGroupConversation()) return;
+                // App conversation titles may carry the only explicit ad
+                // label. Preserve that veto before discarding the title, but
+                // never classify an SMS sender/contact label as message text.
+                if (!smsNotification && PaymentNotificationParser.hasExplicitAdvertisingLabel(title)) return;
                 // Conversation titles usually identify the sender, not the merchant.
                 title = "";
                 List<NotificationCompat.MessagingStyle.Message> messages = style.getMessages();
@@ -227,6 +231,12 @@ public final class PaymentNotificationListenerService extends NotificationListen
                     }
                 }
             }
+            // expandedBody puts TEXT_LINES before BIG_TEXT. Preserve the ad
+            // label on the original expanded body before that merge can make
+            // it look like a footer following receipt-shaped example lines.
+            // MessagingStyle uses only the latest message, never old history.
+            if (style == null && PaymentNotificationParser.hasLeadingAdvertisingLabel(
+                text(extras.getCharSequence(Notification.EXTRA_BIG_TEXT)))) return;
             if (smsNotification) {
                 String senderSource = SmsPaymentPolicy.sourceId(packageName, smsSender);
                 // A contact/sender label is never a merchant. A plain money

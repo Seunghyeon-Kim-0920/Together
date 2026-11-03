@@ -65,7 +65,7 @@ public class SamsungSmsNotificationRegressionTest {
             assertEquals("KRW", result.optString("currency"));
             assertEquals("예시병원", result.optString("merchant"));
             assertEquals("high", result.optString("confidence"));
-            assertEquals(17, result.optInt("parserVersion"));
+            assertEquals(PaymentNotificationParser.PARSER_VERSION, result.optInt("parserVersion"));
         }
     }
 

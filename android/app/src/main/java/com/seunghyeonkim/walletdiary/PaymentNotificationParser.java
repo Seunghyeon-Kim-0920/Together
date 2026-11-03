@@ -24,7 +24,7 @@ import org.json.JSONObject;
 
 final class PaymentNotificationParser {
 
-    static final int PARSER_VERSION = 17;
+    static final int PARSER_VERSION = 18;
 
     // Android uses ICU, not the desktop JDK regex engine. In particular the
     // embedded UNICODE_CHARACTER_CLASS flag (?U) is unsupported and throws
@@ -262,6 +262,48 @@ final class PaymentNotificationParser {
     private static final Pattern MARKETING = Pattern.compile(
         "(?iu)(\\b(?:weekend offer|special offer|promotion|promo code|save|discount|coupon|sale|price|offer)\\b|offre|promotion|remise|économisez|prix|angebot|rabatt|oferta|descuento|promoção|desconto|割引|优惠|優惠|할인|쿠폰|프로모션|판매가|가격)"
     );
+    // These describe a MESSAGE, not a merchant. Unlike the weak MARKETING
+    // fallback they apply even when a trusted source says "payment/approved",
+    // and before reward, reversal, transfer or compact-amount parsing.
+    private static final Pattern ADVERTISING_LABEL = Pattern.compile(
+        "(?imu)^[\\p{Zs}\\t]*(?:\\[Web발신\\]\\s*)?(?:[\\[(【]\\s*(?:광\\s*고|AD|ADS|advertisement|publicit[ée]|werbung|publicidad|publicidade|広告|广告|廣告)\\s*[\\])】]|(?:광고성\\s*(?:정보|메시지)|sponsored|advertisement|publicit[ée]|werbung)\\s*(?:[:：]|$))"
+    );
+    private static final Pattern ADVERTISING_OPTOUT = Pattern.compile(
+        "(?iu)(?:무료\\s*수신\\s*거부|수신\\s*거부\\s*[:：0-9]|\\b(?:unsubscribe|reply\\s+(?:with\\s+)?STOP|opt[ -]?out|se d[ée]sabonner|d[ée]sinscription|abbestellen|darse de baja)\\b)"
+    );
+    private static final Pattern LOAN_OR_LIMIT_OFFER = Pattern.compile(
+        "(?iu)(?:대출\\s*(?:한도|가능|승인|사전|상담|신청|추천|상품|금리|안내)|(?:이용|신용)\\s*한도\\s*(?:상향|증액|승인)|"
+        + "\\b(?:pre[ -]?approved|pre[ -]?qualified|loan\\s+(?:(?:has\\s+been|was|is)\\s+)?(?:approved|available|offer|eligibility|limit)|credit\\s+limit\\s+(?:increased|approved|available)|apply\\s+(?:now|for\\s+(?:a\\s+)?loan))\\b|"
+        + "(?:cr[ée]dit|pr[êe]t)\\s+(?:pr[ée]approuv[ée]|approuv[ée]|disponible)|kredit\\s+(?:genehmigt|angebot)|pr[ée]stamo\\s+(?:aprobado|disponible)|empr[ée]stimo\\s+(?:aprovado|dispon[íi]vel)|prestito\\s+(?:approvato|disponibile)|"
+        + "融資(?:可能|限度|審査)|贷款(?:额度|获批|审批)|貸款(?:額度|獲批|審批))"
+    );
+    private static final Pattern REWARD_PROMOTION = Pattern.compile(
+        "(?iu)(?:(?:포인트|적립금|리워드|보너스)\\s*(?:지급|적립|소멸|안내|혜택|잔액)|포인트[^\\n]{0,30}(?:지급|적립|소멸)(?![\\p{L}])|(?:사용\\s*가능한|보유)\\s*포인트|"
+        + "쿠폰\\s*(?:발급|지급|도착|받기|증정)|상품권\\s*(?:증정|지급|선물)|(?:특별|결제|구매|이용)\\s*혜택|(?:결제|구매)\\s*(?:즉시\\s*|청구\\s*)?할인\\s*(?:혜택|쿠폰|받|[\\d₩])|"
+        + "\\b(?:(?:reward|loyalty|bonus)\\s+points?|(?:points?|bonus|rewards?)\\s+(?:credited|earned|awarded|expir(?:e|ing)|balance)|shopping\\s+voucher|claim\\s+(?:your\\s+)?(?:reward|coupon|bonus)|(?:coupon|voucher)\\s+(?:worth|for))\\b|\\d[\\d.,]*\\s*%?\\s+(?:coupon|voucher|discount|off)\\b|"
+        + "\\b(?:redeem|claim)\\s+(?:your\\s+)?(?:[€$£\\d]|EUR\\b|USD\\b|GBP\\b)|"
+        + "points?\\s+(?:de fid[ée]lit[ée]|cr[ée]dit[ée]s|offerts)|treuepunkte|puntos?\\s+(?:de recompensa|abonados)|punti\\s+(?:premio|accreditati)|"
+        + "ポイント(?:付与|獲得|失効|プレゼント)|(?:积分|積分)(?:到账|到賬|赠送|贈送|到期)|クーポン(?:配布|プレゼント))"
+    );
+    private static final Pattern CONDITIONAL_PROMOTION = Pattern.compile(
+        "(?iu)(?:(?:결제|사용|이용|구매|송금|이체|출금|가입|신청|충전|참여)(?:\\s*(?:시(?:마다|에는|에)?(?![\\p{L}])|하면|하시면|할\\s*때|만\\s*(?:해도|하면)|하고[^\\n]{0,35}(?:혜택|선물|포인트|캐시백|할인)))|"
+        + "\\b(?:spend|pay|shop|purchase|transfer|withdraw)[^\\n]{0,80}\\b(?:and\\s+(?:get|save)|to\\s+(?:earn|get|save)|earn\\s+(?:a\\s+)?reward)|"
+        + "\\b(?:earn|win|get)[^\\n]{0,55}\\b(?:cashback|bonus|reward)|\\b(?:next\\s+purchase|limited[ -]?time\\s+offer|special\\s+offer|promo\\s+code)\\b|"
+        + "(?:payez|achetez)[^\\n]{0,60}(?:pour\\s+obtenir|et\\s+gagnez)|(?:profitez|b[ée]n[ée]ficiez)\\s+(?:de|d['’])|"
+        + "jetzt[^\\n]{0,40}(?:sparen|sichern)|gana[^\\n]{0,50}(?:pr[óo]xima\\s+compra|recompensa)|ganhe[^\\n]{0,50}(?:pr[óo]xima\\s+compra|b[oô]nus)|ricevi\\s+(?:un\\s+)?buono|"
+        + "(?:ご利用|お支払い|購入)で[^\\n]{0,30}(?:ポイント|プレゼント|還元)|(?:消费|消費|支付)满|(?:消費|支付)滿)"
+    );
+    private static final Pattern NON_TRANSACTION_SUMMARY = Pattern.compile(
+        "(?imu)^(?:\\s*\\[Web발신\\]\\s*)?\\s*(?:(?:카드\\s*)?(?:이용대금|청구)\\s*명세서|(?:이번\\s*달\\s*)?결제\\s*예정\\s*금액|"
+        + "(?:monthly|billing|credit\\s+card|account)\\s+statement|relev[ée]\\s+(?:mensuel|de\\s+compte)|kontoauszug|"
+        + "price\\s+alert|stock\\s+(?:quote|price)|주가\\s*알림|증시\\s*시황)(?![\\p{L}\\p{M}])"
+    );
+    private static final Pattern PROMOTIONAL_MESSAGE_LABEL = Pattern.compile(
+        "(?imu)^\\s*(?:(?:(?:카드|결제|구매|이용|신규가입)\\s*){1,3}이벤트|(?:특가|혜택|이벤트)\\s*(?:안내|알림)|"
+        + "(?:(?:card|payment|purchase|refund)\\s+)?(?:promotion|offer|coupon)(?:s)?|"
+        + "offre\\s+(?:sp[ée]ciale|exclusive|de\\s+cr[ée]dit)|offerta\\s+speciale|oferta\\s+especial|sonderangebot|"
+        + "セールのお知らせ|优惠活动|優惠活動)(?=$|[:：!]|\\s+(?:[\\d€$£₩]|EUR\\b|USD\\b|GBP\\b|KRW\\b))"
+    );
     private static final Pattern REVERSAL = Pattern.compile(
         "(?iu)(\\b(?:refund(?:ed)?|revers(?:al|e[sd]?)|reverted|cancelled|canceled|chargeback|voided)\\b|rembours[ée]?|annul[ée]?|erstattet|storniert|rückbuchung|widerrufen|rückgängig|reversad[oa]?|revertid[oa]?|reembolsad[oa]?|reembolso|estornad[oa]?|estorno|cancelad[oa]?|rimborsat[oa]?|annullat[oa]?|stornat[oa]?|返金|取消|キャンセル|退款|撤销|撤銷|환불|결제 ?취소|승인 ?취소|취소 ?완료|(?<![\\p{L}\\p{N}])취소(?![\\p{L}\\p{N}])|استرداد|إلغاء|रिफंड|वापसी)"
     );
@@ -408,7 +450,25 @@ final class PaymentNotificationParser {
     ) {
         String safeTitle = clean(title);
         String body = join(text, bigText, subText);
+        if (hasNonTransactionMessage(safeTitle)) return null;
+        // Do not let a collapsed receipt-looking preview hide the ad label in
+        // its expanded counterpart. Inspect each original field before joining.
+        for (String field : new String[] {text, bigText, subText}) {
+            if (hasLeadingAdvertisingLabel(field)) return null;
+        }
+        // A marketing footer must not hide a later authorization challenge or
+        // failed/negated transaction. These guards always see the full alert.
+        String original = join(safeTitle, body);
+        if (hasNegatedExecution(original) || NOT_EXECUTED_PAYMENT.matcher(original).find()
+            || AUTHORIZATION_ACTION_REQUEST.matcher(AUTHORIZATION_NOT_REQUIRED.matcher(original).replaceAll("")).find()
+            || ALWAYS_IGNORE.matcher(original).find()) return null;
+        // A separate ad/points footer is not part of the receipt. Only keep an
+        // independently complete monetary receipt before it, never the other
+        // way round (an ad quoting a sample receipt remains an ad).
+        body = receiptBeforePromotion(safeTitle, body, currencyHint);
+        if (body == null) return null;
         String combined = join(safeTitle, body);
+        if (hasNonTransactionMessage(combined)) return null;
         AmountMatch grantedReward = null;
         boolean rewardOnly = false;
         if (CASH_REWARD.matcher(combined).find()) {
@@ -575,6 +635,53 @@ final class PaymentNotificationParser {
         } catch (JSONException ignored) {
             return null;
         }
+    }
+
+    static boolean hasExplicitAdvertisingLabel(String content) {
+        return content != null && ADVERTISING_LABEL.matcher(clean(content)).find();
+    }
+
+    static boolean hasLeadingAdvertisingLabel(String content) {
+        Matcher label = ADVERTISING_LABEL.matcher(clean(content));
+        return label.find() && label.start() == 0;
+    }
+
+    static boolean hasLeakedPromotion(String merchant) {
+        // Raw text is deliberately not retained. Only explicit advertising
+        // labels/opt-outs prove an old draft is an ad, not a real shop name.
+        if (merchant == null) return false;
+        String value = clean(merchant);
+        return ADVERTISING_LABEL.matcher(value).find() || ADVERTISING_OPTOUT.matcher(value).find();
+    }
+
+    private static boolean hasNonTransactionMessage(String content) {
+        return ADVERTISING_LABEL.matcher(content).find() || ADVERTISING_OPTOUT.matcher(content).find()
+            || LOAN_OR_LIMIT_OFFER.matcher(content).find() || REWARD_PROMOTION.matcher(content).find()
+            || CONDITIONAL_PROMOTION.matcher(content).find() || NON_TRANSACTION_SUMMARY.matcher(content).find()
+            || PROMOTIONAL_MESSAGE_LABEL.matcher(content).find();
+    }
+
+    private static String receiptBeforePromotion(String title, String body, String currencyHint) {
+        List<String> receiptLines = new ArrayList<>();
+        for (String line : LINE_BREAK.split(body)) {
+            if (hasNonTransactionMessage(line)) {
+                // A bare opt-out at the end identifies the whole message as
+                // advertising. Only an earlier, explicit promo section can be
+                // split off from a receipt; do not rescue fake receipt prose.
+                if (ADVERTISING_OPTOUT.matcher(line).find() && !hasExplicitAdvertisingLabel(line)) return null;
+                String prefix = join(title, String.join("\n", receiptLines));
+                AmountMatch amount = findSingleAmount(prefix, currencyHint, false, 0);
+                // A title alone cannot establish a receipt; retain real body
+                // evidence and require a transaction signal before the footer.
+                boolean receipt = amount != null && !receiptLines.isEmpty()
+                    && (hasKoreanCardReceiptShape(prefix) || hasApprovalReceiptLine(prefix, amount.raw)
+                        || EXECUTED_DEBIT.matcher(prefix).find() && (PAYMENT_SIGNAL.matcher(prefix).find()
+                            || TRANSFER_CONTEXT.matcher(prefix).find() || CASH_WITHDRAWAL_CONTEXT.matcher(prefix).find()));
+                return receipt ? String.join("\n", receiptLines) : null;
+            }
+            receiptLines.add(line);
+        }
+        return body;
     }
 
     private static MerchantMatch findCashWithdrawalLocation(String value, String sourceName, String rawAmount) {
