@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createLedgerSharePayload, parseLedgerShareDocument } from "../src/lib/share";
+import { applyHighConfidenceCardAutomation, type NativeCardCandidate } from "../src/lib/cardAutomation";
+import { rememberMerchantDescription } from "../src/lib/merchantDescriptions";
 import { applyStatementImport, detectStatementColumns, parseStatementAmount, parseStatementDate, parseStatementDateWithContext, statementContextYears, previewExpenseDocument, validateStatementImportRow, type ReadExpenseDocument, type StatementImportRow } from "../src/lib/statementImport";
-import { EMPTY_WALLET_STATE, type WalletState } from "../src/lib/types";
+import { EMPTY_WALLET_STATE, type GeneralLedger, type WalletState } from "../src/lib/types";
 import { createLedger, parseWalletStateStrict, settleTravelExpenses } from "../src/lib/wallet";
 
 function document(rows: readonly (readonly string[])[], overrides: Partial<ReadExpenseDocument> = {}): ReadExpenseDocument {
@@ -14,6 +16,45 @@ function preview(rows: readonly (readonly string[])[]) {
 function row(overrides: Partial<StatementImportRow> = {}): StatementImportRow {
   return { id: "statement-test-1", sourceRow: 2, description: "Café Test", occurredOn: "2026-09-06", currency: "EUR", minorUnits: 1_001, category: "food", raw: ["2026-09-06", "Café Test", "-10.01"], selected: true, reviewReasons: [], ...overrides };
 }
+
+function renamedNotificationState(): WalletState {
+  const bank = "com.example.synthetic.statementbank";
+  const ledger = { ...createLedger("general", "Synthetic alias", "EUR"), automationSources: [{ packageName: bank, displayName: "Synthetic bank", trustedDirectApp: true as const }] };
+  const source: NativeCardCandidate = { id: "synthetic-notification", queueToken: "synthetic-token", packageName: bank, sourceName: "Synthetic bank", merchant: "Synthetic Market North", currency: "EUR", minorUnits: 2000, occurredOn: "2026-11-01", occurredAt: "2026-11-01T12:00:00Z", eventType: "purchase", confidence: "high", manualOnly: false };
+  const received = applyHighConfidenceCardAutomation({ ...EMPTY_WALLET_STATE, activeLedgerId: ledger.id, ledgers: [ledger] }, [source]).state;
+  const current = received.ledgers[0] as GeneralLedger;
+  const previous = current.expenses[0];
+  const changed = { ...previous, description: "Family groceries" };
+  const renamed = rememberMerchantDescription({ ...current, expenses: [changed] }, changed, previous);
+  return { ...received, ledgers: [renamed] };
+}
+
+test("a statement's original merchant still detects a renamed notification expense as a duplicate", () => {
+  const state = renamedNotificationState();
+  const source = document([["Date", "Description", "Amount", "Currency", "Type", "Status"], ["2026-11-01", "Synthetic Market North", "-20", "EUR", "payment", "completed"]]);
+  const result = previewExpenseDocument(source, {}, state);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].selected, false);
+  assert.ok(result.rows[0].reviewReasons.includes("duplicate"));
+  const applied = applyStatementImport(state, result.rows, { kind: "existing", ledgerId: state.ledgers[0].id });
+  assert.equal(applied.added, 0);
+  assert.equal(applied.duplicates, 1);
+  assert.equal(applied.state.ledgers[0].expenses.length, 1);
+  assert.equal(applied.state.ledgers[0].expenses[0].description, "Family groceries");
+});
+
+test("refund statements without a linked transaction ID still target the renamed original merchant", () => {
+  const state = renamedNotificationState();
+  const source = document([["Date", "Description", "Amount", "Currency", "Type", "Status", "Transaction ID", "Related Transaction ID"], ["2026-11-02", "Refund Synthetic Market North", "5", "EUR", "refund", "completed", "synthetic-refund", ""]]);
+  const result = previewExpenseDocument(source, {}, state);
+  assert.equal(result.adjustments.length, 1);
+  assert.equal(result.adjustments[0].targetExpenseId, state.ledgers[0].expenses[0].id);
+  assert.equal(result.adjustments[0].selected, false);
+  const applied = applyStatementImport(state, [], { kind: "existing", ledgerId: state.ledgers[0].id }, result.adjustments.map((item) => ({ ...item, selected: true })));
+  assert.equal(applied.adjusted, 1);
+  assert.equal(applied.state.ledgers[0].expenses[0].minorUnits, 1500);
+  assert.equal(applied.state.ledgers[0].expenses[0].description, "Family groceries");
+});
 
 test("statement amounts preserve locale separators, minor units, signs and precision", () => {
   const cases: [string, string, number][] = [

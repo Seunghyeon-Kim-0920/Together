@@ -33,6 +33,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 /dist/
+/hosting-dist/
+/tmp/
+/.agents/
+firebase-debug.log
+firestore-debug.log
 /.firebase/
 /outputs/
 /work/

@@ -1,14 +1,17 @@
-import { Cloud, Share2, Users } from "lucide-react";
+import { Cloud, Copy, Share2, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { SHARED_TRAVEL_FIREBASE_CONFIG } from "../lib/sharedTravelConfig";
 import { MAX_SHARED_PARTICIPANTS, normalizeSharedError, SharedTravelError, type SharedTravelClient, type SharedTripSnapshot } from "../lib/sharedTravel";
 import { acknowledgeSharedMutation, connectSharedLedger, disconnectSharedLedger, receiveSharedSnapshot, resolveSharedConflict } from "../lib/sharedTravelLocal";
 import { sharedText as s } from "../lib/sharedTravelI18n";
+import { buildInviteLink, parseInviteInput } from "../lib/inviteLink";
+import { inviteShareMessage, inviteText as i } from "../lib/inviteLinkI18n";
 import { formatMoney } from "../lib/currency";
 import type { Locale, Participant, TravelExpense, TravelLedger } from "../lib/types";
 import { orphanedPendingHistoryExpenses, repairPendingHistoryShares } from "../lib/sharedHistoryRepair";
 import { travelParticipantText as p } from "../lib/travelParticipantI18n";
 import "./shared-travel.css";
+import "./invite-fx.css";
 
 type Props = {
   ledger: TravelLedger; locale: Locale;
@@ -126,7 +129,7 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
     if (!join && (!getLatest().participants.length || getLatest().participants.length > MAX_SHARED_PARTICIPANTS)) { onNotify(s(locale, "warning"), "error"); return; }
     const current = getLatest();
     if (join && (current.expenses.length || current.participants.length)) { onNotify(s(locale, "joinEmpty"), "error"); return; }
-    const connection = join ? await client.joinTrip(inviteInput.trim(), displayName.trim()) : await client.createTrip(current, displayName.trim());
+    const connection = join ? await client.joinTrip(parseInviteInput(inviteInput) ?? inviteInput.trim(), displayName.trim()) : await client.createTrip(current, displayName.trim());
     const trip = connection.trip;
     try {
       const snapshot = join ? await client.getSnapshot(trip.id) : undefined;
@@ -169,12 +172,26 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
     finally { actionLock.current = false; setBusy(false); }
   };
 
+  const copyInvite = async () => {
+    try { await navigator.clipboard.writeText(buildInviteLink(inviteCode)); onNotify(i(locale, "copied"), "success"); }
+    catch { onNotify(i(locale, "copyFailed"), "error"); }
+  };
+  const shareInvite = async () => {
+    const text = inviteShareMessage(locale, ledger.title, buildInviteLink(inviteCode));
+    try { const { Share } = await import("@capacitor/share"); await Share.share({ title: ledger.title, text }); }
+    catch (error) {
+      // Closing the share sheet is not a failure; a browser without one copies the link instead.
+      if (error instanceof Error && /abort|cancel/i.test(`${error.name} ${error.message}`)) return;
+      await copyInvite();
+    }
+  };
+
   return <section className="mobile-panel shared-travel-panel">
     <button className="summary-setting-row" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}><Cloud aria-hidden="true" /><span className="summary-setting-copy"><strong>{s(locale, "title")}</strong><small>{!configured ? s(locale, "unavailable") : sync ? `${s(locale, phase)}${sync.pending.length ? ` · ${s(locale, "waiting")} ${sync.pending.length}` : ""}` : s(locale, "intro")}</small></span></button>
     {expanded ? <div className="shared-travel-body">
       {!sync ? <>
         <p>{s(locale, "intro")}</p><p className="storage-note">{s(locale, "warning")}</p>
-        {configured ? <><label className="field-label">{s(locale, "name")}<input maxLength={80} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label><label className="shared-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>{s(locale, "consent")}</span></label><button type="button" className="wide-secondary" disabled={busy || !consent || !displayName.trim() || !ledger.participants.length || ledger.participants.length > MAX_SHARED_PARTICIPANTS} onClick={() => void connect(false)}>{s(locale, "create")}</button><label className="field-label">{s(locale, "code")}<input autoCapitalize="none" autoComplete="off" maxLength={200} value={inviteInput} onChange={(event) => setInviteInput(event.target.value)} /></label><button className="wide-secondary" type="button" disabled={busy || !consent || !displayName.trim() || !inviteInput.trim()} onClick={() => void connect(true)}>{s(locale, "join")}</button></> : <p role="status">{s(locale, "unavailable")}</p>}
+        {configured ? <><label className="field-label">{s(locale, "name")}<input maxLength={80} value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></label><label className="shared-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>{s(locale, "consent")}</span></label><button type="button" className="wide-secondary" disabled={busy || !consent || !displayName.trim() || !ledger.participants.length || ledger.participants.length > MAX_SHARED_PARTICIPANTS} onClick={() => void connect(false)}>{s(locale, "create")}</button><label className="field-label">{i(locale, "codeOrLink")}<input autoCapitalize="none" autoComplete="off" maxLength={1000} value={inviteInput} onChange={(event) => setInviteInput(event.target.value)} /></label><button className="wide-secondary" type="button" disabled={busy || !consent || !displayName.trim() || !inviteInput.trim()} onClick={() => void connect(true)}>{s(locale, "join")}</button></> : <p role="status">{s(locale, "unavailable")}</p>}
       </> : <>
         <p className="storage-note">{s(locale, "locked")}</p><p role="status">{sync.trip.deleted ? s(locale, "deletedTrip") : s(locale, phase)}</p>
         {repairSnapshot ? <section className="delete-confirm"><p role="alert">{p(locale, "repairHelp")}</p>{orphanedPendingHistoryExpenses(ledger, repairSnapshot.trip).map((expense) => <HistorySplitRepair key={`${expense.id}-${repairSnapshot.trip.revision}`} expense={expense} participants={repairSnapshot.trip.participants.filter((person) => !repairSnapshot.trip.historyRemovedParticipantIds?.includes(person.id) && ledger.participants.some((known) => known.id === person.id))} locale={locale} busy={actionBusy} onRepair={(ids) => repairShares(expense, ids)} />)}</section> : null}
@@ -185,8 +202,8 @@ export function SharedTravelPanel({ ledger, locale, getLatest, onApply, onNotify
         })}
         <h3><Users aria-hidden="true" />{s(locale, "members")}</h3>{sync.members.map((m) => <div className="shared-member" key={m.uid}><span>{m.displayName}</span>{owner && m.uid !== uid ? <button disabled={busy} type="button" onClick={() => setRemoveUid(m.uid)}>{s(locale, "remove")}</button> : null}</div>)}
         {removeUid ? <div className="delete-confirm"><p>{s(locale, "remove")}: {sync.members.find((m) => m.uid === removeUid)?.displayName}</p><button type="button" disabled={busy} onClick={() => void action(async (client) => { await client.revokeMember(sync.tripId, removeUid); setRemoveUid(null); })}>{s(locale, "confirm")}</button><button type="button" disabled={busy} onClick={() => setRemoveUid(null)}>{s(locale, "cancel")}</button></div> : null}
-        {owner && !sync.trip.deleted ? <button className="wide-secondary" type="button" disabled={busy || !configured} onClick={() => void action(async (client) => setInviteCode(await client.createInvite(sync.tripId)))}>{s(locale, "invite")}</button> : null}
-        {inviteCode ? <div className="shared-invite"><label className="field-label">{s(locale, "code")}<textarea readOnly value={inviteCode} /></label><p>{s(locale, "expired")}</p><button type="button" onClick={() => void import("@capacitor/share").then(({ Share }) => Share.share({ title: ledger.title, text: `${ledger.title}\n${s(locale, "code")}: ${inviteCode}` })).catch(() => onNotify(s(locale, "error"), "error"))}><Share2 aria-hidden="true" />{s(locale, "share")}</button><button type="button" disabled={busy} onClick={() => void action(async (client) => { await client.revokeInvite(inviteCode); setInviteCode(""); })}>{s(locale, "revokeInvite")}</button></div> : null}
+        {owner && !sync.trip.deleted ? <button className="wide-secondary" type="button" disabled={busy || !configured} onClick={() => void action(async (client) => setInviteCode(await client.createInvite(sync.tripId)))}>{i(locale, "createLink")}</button> : null}
+        {inviteCode ? <div className="shared-invite"><label className="field-label">{i(locale, "link")}<textarea readOnly value={buildInviteLink(inviteCode)} /></label><p>{i(locale, "linkHelp")}</p><p>{s(locale, "expired")}</p><button type="button" onClick={() => void shareInvite()}><Share2 aria-hidden="true" />{i(locale, "shareLink")}</button><button type="button" onClick={() => void copyInvite()}><Copy aria-hidden="true" />{i(locale, "copyLink")}</button><details><summary>{i(locale, "codeFallback")}</summary><textarea readOnly aria-label={s(locale, "code")} value={inviteCode} /></details><button type="button" disabled={busy} onClick={() => void action(async (client) => { await client.revokeInvite(inviteCode); setInviteCode(""); })}>{i(locale, "revokeLink")}</button></div> : null}
         {confirmExit ? <div className="delete-confirm"><p>{s(locale, "confirmDelete")}</p>{sync.pending.length ? <p>{s(locale, "pendingWarning")}</p> : null}<button className="danger-button" type="button" disabled={busy} onClick={() => void exit().catch(() => onNotify(s(locale, "error"), "error"))}>{s(locale, "confirm")}</button><button type="button" disabled={busy} onClick={() => setConfirmExit(null)}>{s(locale, "cancel")}</button></div> : <button className="wide-danger" type="button" disabled={busy} onClick={() => setConfirmExit(exitMode)}>{s(locale, exitMode === "local" ? "disconnect" : exitMode === "delete" ? "closeTrip" : "leave")}</button>}
       </>}
     </div> : null}

@@ -33,7 +33,7 @@
 
 <h1>지갑의 일기 · Wallet Diary · Journal du portefeuille</h1>
 <p class="sub">개인정보처리방침 / Privacy Policy / Politique de confidentialité<br>
-최종 수정일 · Last updated · Dernière mise à jour : 2026-10-23</p>
+최종 수정일 · Last updated · Dernière mise à jour : 2026-11-18</p>
 
 <nav>
   <a href="#ko">한국어</a>
@@ -53,6 +53,8 @@
 <ul>
   <li>개인 가계부는 가입 없이 기기에 저장합니다. 실시간 공동 여행은 서비스가 연결된 버전에서 이용자가 별도로 동의한 경우에만 Firebase 익명 인증과 Cloud Firestore를 사용합니다. 서비스가 미연결된 버전에서는 서버 연결과 전송이 발생하지 않습니다.</li>
   <li>공동 여행은 익명 기기 식별자, 표시 이름, 여행 이름·참가자, 사용자가 공유한 지출의 날짜·사용처·금액·화폐·카테고리·결제자·분담액, 수정자와 버전 정보를 서버에 저장합니다. 다른 여행 참가자와 서비스 관리자가 기술적으로 접근할 수 있습니다. 종단간 암호화 서비스는 아닙니다.</li>
+  <li>초대 링크(<code>wallet-diary-c2a1a.web.app/join</code>)는 초대 코드를 주소의 <code>#</code> 뒷부분에 담으며, 이 부분은 웹 서버로 전송되지 않습니다. 앱이 없는 Android 기기에서 초대 페이지의 설치 버튼을 누르면 초대 코드가 Google Play 설치 리퍼러로 전달되어, 설치 후 첫 실행 때 앱이 한 번 읽습니다. 초대는 24시간 후 만료됩니다.</li>
+  <li>웹 버전(<code>wallet-diary-c2a1a.web.app/app/</code>)은 초대받은 공동 여행에 브라우저로 참여하는 용도입니다. 앱과 같은 Firebase 익명 인증과 Cloud Firestore를 사용하고, 참여 정보와 여행 사본을 해당 브라우저의 저장소에 보관합니다. 브라우저 데이터를 지우면 그 브라우저의 연결과 사본이 사라지며 서버의 여행 데이터는 8항에 따릅니다. 웹 페이지는 Firebase Hosting으로 제공되어 접속 시 IP 주소 등 접속 정보가 Google에 의해 처리될 수 있습니다.</li>
 </ul>
 
 <h3>2. 기기에 저장되는 정보</h3>
@@ -75,6 +77,10 @@
   <li>알림 접근은 Android 설정에서 언제든 해제할 수 있고, 해제하면 즉시 중단됩니다.</li>
 </ul>
 
+<h3>3a. iPhone 단축어 입력 (지원 버전)</h3>
+<p>iPhone에서는 모든 앱 알림이나 문자함을 직접 읽는 권한을 사용하지 않습니다. 별도 동의 후 이용자가 설정한 Apple 단축어가 선택한 은행·카드 알림, 문자 또는 지갑 거래를 앱에 전달합니다. 출처 이름은 은행의 진위를 인증하지 않으며 새 출처는 검토해야 합니다.</p>
+<p>앱이 닫혀 있으면 전달된 원문과 출처·수신 시각을 기기의 비공개 파일 대기함에 보관합니다. 대기함은 기기 보호 기능을 사용하며 백업에서 제외합니다. 서버·외부 AI로 보내지 않습니다. 앱을 열어 처리한 뒤 기록·제외·삭제가 확정된 입력은 삭제하고, 검토 중인 입력은 처리할 때까지 보관합니다. 입력 받기를 끄면 미처리 원문을 지우며 이미 저장한 지출은 유지합니다. 대기함이 가득 차면 저장을 거부하고 단축어에 오류를 표시합니다.</p>
+<p>iOS 잠금·자동화 설정에 따라 전달되지 않을 수 있습니다. 가계부와 예산 알림은 앱을 열어 처리한 뒤 갱신됩니다. 단축어의 실행과 최종 결제 승인은 동일하지 않으며 인식하지 못하는 언어·형식이 있을 수 있습니다. 인증번호나 개인 대화를 전달하도록 설정하지 마세요. 사용자가 별도로 만든 단축어의 다른 동작과 Apple의 데이터 처리는 해당 설정 및 정책에 따릅니다.</p>
 <h3>4. 파일 가져오기와 문자 인식</h3>
 <ul>
   <li>이용자가 선택한 명세서 파일(PDF, 엑셀, CSV 등)은 기기 안에서만 읽습니다.</li>
@@ -85,14 +91,17 @@
 <h3>5. 공유와 내보내기</h3>
 <p>PDF 저장이나 동행에게 보내기는 <strong>이용자가 직접 실행할 때만</strong> 동작하며, 이용자가 고른 앱이나 저장 위치로만 전달됩니다. 본인 선택, 신뢰 앱 목록, 예산, 자동기록 식별자는 공유 파일에 포함되지 않습니다.</p>
 
+<h3>5a. 환율 조회 (선택 기능)</h3>
+<p>생활 또는 여행 가계부에서 이용자가 환산 표시를 켠 경우에만 동작합니다. 앱은 지출 <strong>날짜와 화폐 코드</strong>만 공개 환율 서비스 Frankfurter(<code>api.frankfurter.dev</code>)에 요청하고, 응답이 없을 때는 예비 출처인 currency-api(<code>cdn.jsdelivr.net</code>, <code>currency-api.pages.dev</code>)에 요청합니다. 금액·사용처·참가자 이름·여행 이름은 보내지 않습니다. 요청 과정에서 IP 주소 등 접속 정보가 해당 서비스에 전달될 수 있습니다. 받은 환율, 직접 입력한 환율, 표시 통화 선택은 기기에만 저장하며 공동 여행 서버에 올리지 않습니다. 기능을 끄면 더 이상 요청하지 않습니다.</p>
+
 <h3>6. 광고·분석·제3자 제공</h3>
-<p>앱에는 광고가 없으며 가계부 내용을 판매하지 않습니다. 선택형 공동 여행은 Google Firebase를 사용하고, 인증 과정에서 기기 식별·접속 정보가 처리될 수 있습니다. 문자 인식 구성요소의 진단·사용량 정보는 4항과 같이 Google에 전송됩니다. 공유 여행 데이터는 선택한 서버 지역에서 처리되며 이용자의 국가 밖에 위치할 수 있습니다.</p>
+<p>앱에는 광고가 없으며 가계부 내용을 판매하지 않습니다. 선택형 공동 여행은 Google Firebase를 사용하고, 인증 과정에서 기기 식별·접속 정보가 처리될 수 있습니다. 문자 인식 구성요소의 진단·사용량 정보는 4항과 같이 Google에 전송됩니다. 선택형 환율 조회는 5a항의 서비스에 화폐 코드와 날짜만 전달합니다. 공유 여행 데이터는 선택한 서버 지역에서 처리되며 이용자의 국가 밖에 위치할 수 있습니다.</p>
 
 <h3>7. 권한</h3>
 <ul>
   <li><strong>알림 접근</strong> — 결제·이체 알림을 자동으로 기록하기 위해 사용합니다. 선택 사항입니다.</li>
   <li><strong>알림 표시</strong>(<code>POST_NOTIFICATIONS</code>) — 월 지출 한도 알림에 사용합니다. 선택 사항입니다.</li>
-  <li><strong>인터넷</strong> — 선택형 공동 여행의 인증·동기화 및 위에 설명한 구성요소 통신에 사용합니다. 개인 가계부는 오프라인에서도 사용할 수 있습니다.</li>
+  <li><strong>인터넷</strong> — 선택형 공동 여행의 인증·동기화, 선택형 환율 조회 및 위에 설명한 구성요소 통신에 사용합니다. 개인 가계부는 오프라인에서도 사용할 수 있습니다.</li>
 </ul>
 
 <h3>8. 보관과 삭제</h3>
@@ -121,6 +130,8 @@
 <ul>
   <li>Personal ledgers work on-device without registration. In versions connected to the service, optional live shared trips use Firebase anonymous authentication and Cloud Firestore only after separate consent. Unconfigured versions do not connect or upload data.</li>
   <li>Shared trips store an anonymous device identity, display name, trip name and participants, approved expenses (date, merchant, amount, currency, category, payer and splits), editor identity and revisions. Trip members and service administrators can technically access this data. This is not an end-to-end encrypted service.</li>
+  <li>Invitation links (<code>wallet-diary-c2a1a.web.app/join</code>) carry the invitation code after the <code>#</code> of the address, a part that is not sent to the web server. On an Android device without the app, choosing to install from the invitation page passes the code to the Google Play install referrer, which the app reads once on its first launch. Invitations expire after 24 hours.</li>
+  <li>The web version (<code>wallet-diary-c2a1a.web.app/app/</code>) lets an invited companion join a shared trip in a browser. It uses the same Firebase anonymous authentication and Cloud Firestore as the app and keeps the membership and a copy of the trip in that browser's storage. Clearing browser data removes that browser's connection and copy; trip data on the server follows section 8. The pages are served by Firebase Hosting, so connection information such as your IP address may be processed by Google.</li>
 </ul>
 
 <h3>2. Information stored on your device</h3>
@@ -143,6 +154,10 @@
   <li>You can revoke notification access at any time in Android settings; recording stops immediately.</li>
 </ul>
 
+<h3>3a. iPhone Shortcuts input (supported builds)</h3>
+<p>On iPhone, the app does not obtain direct access to all app notifications or your message inbox. After separate consent, a user-configured Apple shortcut forwards selected bank/card notifications, messages or Wallet transactions. A source label does not authenticate a bank; new sources require review.</p>
+<p>While the app is closed, forwarded text, source and receipt time are stored in a private device-protected file inbox excluded from backups. They are not sent to servers or external AI. Opening the app processes the inbox; raw input is erased after recording, exclusion or dismissal. Items awaiting review remain until handled. Disabling capture clears unprocessed text without deleting saved expenses. A full inbox rejects new input and reports an error to Shortcuts.</p>
+<p>Device-lock and automation settings may prevent delivery. Ledger totals and budget alerts update after processing when the app opens. A trigger is not proof of final bank approval, and some languages or formats may not be recognized. Do not configure forwarding of verification codes or private conversations. Other actions in user-created shortcuts and Apple’s own processing are governed by their respective settings and policies.</p>
 <h3>4. File import and text recognition</h3>
 <ul>
   <li>Statement files you choose (PDF, spreadsheet, CSV and others) are read on your device only.</li>
@@ -153,14 +168,17 @@
 <h3>5. Sharing and export</h3>
 <p>Saving a PDF or sending a ledger to a travel companion happens <strong>only when you start it</strong>, and only to the app or location you choose. Your own-participant selection, trusted app list, budget and automation identifiers are excluded from shared files.</p>
 
+<h3>5a. Exchange-rate lookup (optional)</h3>
+<p>This runs only after you enable currency conversion in a personal or travel ledger. The app requests only <strong>expense dates and currency codes</strong> from the public rate service Frankfurter (<code>api.frankfurter.dev</code>) and, if it does not answer, from the backup source currency-api (<code>cdn.jsdelivr.net</code>, <code>currency-api.pages.dev</code>). Amounts, merchants, participant names and trip names are never sent. Connection information such as your IP address may reach these services with the request. Downloaded rates, rates you enter and your display currency are stored only on the device and are not uploaded to the shared-trip server. Turning the feature off stops the requests.</p>
+
 <h3>6. Advertising, analytics and third parties</h3>
-<p>The app contains no advertising and does not sell ledger contents. Optional shared trips use Google Firebase; authentication may process device identifiers and connection information. The text-recognition component sends diagnostics and usage data to Google as described in section 4. Shared data is processed in the configured server region, which may be outside your country.</p>
+<p>The app contains no advertising and does not sell ledger contents. Optional shared trips use Google Firebase; authentication may process device identifiers and connection information. The text-recognition component sends diagnostics and usage data to Google as described in section 4. The optional exchange-rate lookup sends only currency codes and dates to the services in section 5a. Shared data is processed in the configured server region, which may be outside your country.</p>
 
 <h3>7. Permissions</h3>
 <ul>
   <li><strong>Notification access</strong> — used to record payment and transfer alerts automatically. Optional.</li>
   <li><strong>Post notifications</strong> (<code>POST_NOTIFICATIONS</code>) — used for monthly spending limit alerts. Optional.</li>
-  <li><strong>Internet</strong> — used for optional shared-trip authentication and synchronization and the component communications described above. Personal ledgers remain usable offline.</li>
+  <li><strong>Internet</strong> — used for optional shared-trip authentication and synchronization, the optional exchange-rate lookup and the component communications described above. Personal ledgers remain usable offline.</li>
 </ul>
 
 <h3>8. Retention and deletion</h3>
@@ -189,6 +207,8 @@
 <ul>
   <li>Les carnets personnels fonctionnent sur l’appareil sans inscription. Dans les versions connectées au service, les voyages partagés facultatifs utilisent l’authentification anonyme Firebase et Cloud Firestore après un consentement distinct. Les versions non configurées ne se connectent pas et n’envoient aucune donnée.</li>
   <li>Les voyages partagés enregistrent une identité anonyme d’appareil, un nom affiché, le nom du voyage et ses participants, les dépenses validées (date, commerçant, montant, devise, catégorie, payeur et répartition), l’auteur des modifications et les versions. Les membres et les administrateurs du service peuvent techniquement accéder à ces données. Le service n’est pas chiffré de bout en bout.</li>
+  <li>Les liens d’invitation (<code>wallet-diary-c2a1a.web.app/join</code>) portent le code d’invitation après le <code>#</code> de l’adresse, une partie qui n’est pas envoyée au serveur web. Sur un appareil Android sans l’application, choisir l’installation depuis la page d’invitation transmet le code au référent d’installation de Google Play, que l’application lit une seule fois à son premier lancement. Les invitations expirent après 24 heures.</li>
+  <li>La version web (<code>wallet-diary-c2a1a.web.app/app/</code>) permet à un compagnon invité de rejoindre un voyage partagé dans un navigateur. Elle utilise la même authentification anonyme Firebase et Cloud Firestore que l’application et conserve la participation ainsi qu’une copie du voyage dans le stockage de ce navigateur. Effacer les données du navigateur supprime cette connexion et cette copie ; les données du voyage sur le serveur suivent la section 8. Les pages sont servies par Firebase Hosting ; des informations de connexion telles que votre adresse IP peuvent donc être traitées par Google.</li>
 </ul>
 
 <h3>2. Informations conservées sur votre appareil</h3>
@@ -211,6 +231,10 @@
   <li>Vous pouvez révoquer l'accès à tout moment dans les réglages Android ; l'enregistrement cesse immédiatement.</li>
 </ul>
 
+<h3>3a. Données de Raccourcis sur iPhone (versions compatibles)</h3>
+<p>Sur iPhone, l’app n’obtient pas d’accès direct à toutes les notifications ni à votre boîte de messages. Après un consentement distinct, un raccourci configuré par l’utilisateur transmet certaines notifications bancaires, des messages ou des opérations Cartes. Le nom d’une source ne prouve pas son identité bancaire ; les nouvelles sources sont à vérifier.</p>
+<p>Quand l’app est fermée, le texte, la source et l’heure de réception restent dans une file privée protégée sur l’appareil et exclue des sauvegardes. Ils ne sont envoyés ni à un serveur ni à une IA externe. La file est traitée à l’ouverture ; les données brutes sont effacées après enregistrement, exclusion ou suppression. Les éléments à vérifier restent jusqu’à leur traitement. Désactiver la réception efface les textes en attente, pas les dépenses enregistrées. Une file pleine refuse les nouvelles données et signale une erreur à Raccourcis.</p>
+<p>Le verrouillage et les réglages d’automatisation peuvent empêcher la transmission. Totaux et alertes budgétaires sont actualisés après traitement à l’ouverture. Un déclenchement ne prouve pas une autorisation bancaire définitive ; certaines langues ou certains formats peuvent ne pas être reconnus. Ne transmettez pas de codes de vérification ni de conversations privées. Les autres actions de vos raccourcis et le traitement par Apple relèvent de leurs propres réglages et politiques.</p>
 <h3>4. Import de fichiers et reconnaissance de texte</h3>
 <ul>
   <li>Les relevés que vous sélectionnez (PDF, tableur, CSV et autres) sont lus uniquement sur votre appareil.</li>
@@ -221,14 +245,17 @@
 <h3>5. Partage et export</h3>
 <p>L'enregistrement d'un PDF ou l'envoi d'un carnet à un compagnon de voyage n'a lieu <strong>que si vous le déclenchez</strong>, et uniquement vers l'application ou l'emplacement que vous choisissez. Votre identité de participant, la liste des applications de confiance, le budget et les identifiants d'automatisation sont exclus des fichiers partagés.</p>
 
+<h3>5a. Consultation des taux de change (facultatif)</h3>
+<p>Elle ne fonctionne qu’après l’activation de la conversion des devises dans un carnet personnel ou de voyage. L’application demande uniquement <strong>les dates des dépenses et les codes des devises</strong> au service public Frankfurter (<code>api.frankfurter.dev</code>) et, s’il ne répond pas, à la source de secours currency-api (<code>cdn.jsdelivr.net</code>, <code>currency-api.pages.dev</code>). Les montants, commerçants, noms des participants et noms des voyages ne sont jamais envoyés. Des informations de connexion telles que votre adresse IP peuvent parvenir à ces services avec la requête. Les taux reçus, les taux que vous saisissez et la devise d’affichage restent sur l’appareil et ne sont pas envoyés au serveur des voyages partagés. Désactiver la fonction arrête les requêtes.</p>
+
 <h3>6. Publicité, analyse et tiers</h3>
-<p>L’application ne contient pas de publicité et ne vend pas le contenu des carnets. Les voyages partagés facultatifs utilisent Google Firebase ; l’authentification peut traiter des identifiants d’appareil et des informations de connexion. Le composant de reconnaissance de texte transmet à Google les diagnostics et données d’utilisation décrits à la section 4. Les données partagées sont traitées dans la région de serveur configurée, éventuellement hors de votre pays.</p>
+<p>L’application ne contient pas de publicité et ne vend pas le contenu des carnets. Les voyages partagés facultatifs utilisent Google Firebase ; l’authentification peut traiter des identifiants d’appareil et des informations de connexion. Le composant de reconnaissance de texte transmet à Google les diagnostics et données d’utilisation décrits à la section 4. La consultation facultative des taux de change n’envoie que des codes de devises et des dates aux services de la section 5a. Les données partagées sont traitées dans la région de serveur configurée, éventuellement hors de votre pays.</p>
 
 <h3>7. Autorisations</h3>
 <ul>
   <li><strong>Accès aux notifications</strong> — pour enregistrer automatiquement les alertes de paiement et de virement. Facultatif.</li>
   <li><strong>Affichage de notifications</strong> (<code>POST_NOTIFICATIONS</code>) — pour les alertes de plafond mensuel. Facultatif.</li>
-  <li><strong>Internet</strong> — pour l’authentification et la synchronisation facultatives des voyages partagés et les communications décrites ci-dessus. Les carnets personnels restent utilisables hors ligne.</li>
+  <li><strong>Internet</strong> — pour l’authentification et la synchronisation facultatives des voyages partagés, la consultation facultative des taux de change et les communications décrites ci-dessus. Les carnets personnels restent utilisables hors ligne.</li>
 </ul>
 
 <h3>8. Conservation et suppression</h3>

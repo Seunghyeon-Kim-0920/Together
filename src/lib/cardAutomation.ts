@@ -1,5 +1,6 @@
 import { GENERAL_CATEGORIES } from "./types";
 import { createCategoryResolver } from "./categoryInference";
+import { resolveMerchantDescription } from "./merchantDescriptions";
 import { isSmsSenderSource } from "./smsAutomation";
 export { inferGeneralCategory } from "./categoryInference";
 import { monthKey, monthTotal } from "./statistics";
@@ -206,16 +207,16 @@ export function automationReversalFingerprint(candidate: Pick<NativeCardCandidat
 function likelyExistingExpense(expenses: readonly GeneralExpense[], candidate: NativeCardCandidate): boolean {
   const merchant = merchantFingerprint(candidate.merchant); const occurredOn = candidateDate(candidate);
   const origin = automationOriginFingerprint(candidate);
-  return expenses.some((expense) => expense.automationFingerprint === origin || (expense.currency === candidate.currency && expense.minorUnits === candidate.minorUnits && expense.occurredOn === occurredOn && merchantFingerprint(expense.description) === merchant));
+  return expenses.some((expense) => expense.automationFingerprint === origin || (expense.currency === candidate.currency && expense.minorUnits === candidate.minorUnits && expense.occurredOn === occurredOn && merchantFingerprint(expense.originalMerchant ?? expense.description) === merchant));
 }
 
-function candidateExpense(candidate: NativeCardCandidate, category: GeneralCategory, id = automationExpenseId(candidate)): GeneralExpense {
+function candidateExpense(candidate: NativeCardCandidate, category: GeneralCategory, ledger: GeneralLedger, id = automationExpenseId(candidate)): GeneralExpense {
   if (candidate.eventType === "cashback") throw new Error("cashback-is-not-an-expense");
   // When a user supplies a missing merchant, retain the fingerprint of the
   // original native draft. A replay of that unchanged alert must remain an
   // idempotent acknowledgement rather than looking like a changed identity.
   const automationFingerprint = completedDraftOrigins.get(candidate) ?? automationOriginFingerprint(candidate);
-  return Object.freeze({ id, description: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits - (candidate.cashbackMinorUnits ?? 0), occurredOn: candidateDate(candidate), ...(candidate.eventType !== "reversal" ? { transactionType: candidate.eventType } : {}), automationFingerprint, automationReversalFingerprint: automationReversalFingerprint(candidate) });
+  return Object.freeze({ id, description: resolveMerchantDescription(ledger, candidate.merchant), originalMerchant: candidate.merchant, category, currency: candidate.currency, minorUnits: candidate.minorUnits - (candidate.cashbackMinorUnits ?? 0), occurredOn: candidateDate(candidate), ...(candidate.eventType !== "reversal" ? { transactionType: candidate.eventType } : {}), automationFingerprint, automationReversalFingerprint: automationReversalFingerprint(candidate) });
 }
 
 function duplicateEvidence(candidate: NativeCardCandidate, id = automationExpenseId(candidate), category?: GeneralCategory): PaymentDuplicateEvidence {
@@ -536,7 +537,7 @@ export function applyHighConfidenceCardAutomation(state: WalletState, candidates
     // legitimate second purchase. Keep fuzzy matches for explicit review and
     // only acknowledge deterministic native IDs automatically.
     if (movedExpenseIds.has(automationOriginFingerprint(candidate)) || likelyExistingExpense(ledger.expenses, candidate)) { pending.push(Object.freeze({ ...candidate, confidence: "review" })); continue; }
-    const expense = candidateExpense(candidate, resolveCategory(candidate.merchant, ledger.id, candidate.categoryHint)); globallyRecorded.set(expense.id, [expense]); insertedIds.push(candidate.id); acknowledgedIds.add(candidate.id);
+    const expense = candidateExpense(candidate, resolveCategory(candidate.merchant, ledger.id, candidate.categoryHint), ledger); globallyRecorded.set(expense.id, [expense]); insertedIds.push(candidate.id); acknowledgedIds.add(candidate.id);
     ledgers[index] = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, expense]), updatedAt: new Date().toISOString() }), candidate);
   }
   const nextState = insertedIds.length || reversedIds.length || receiptsChanged ? Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }) : state;
@@ -611,7 +612,7 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
     if (possibleDuplicate && !hasIdentityConflict) {
       if (hasKnownIdentity) return Object.freeze({ state, inserted: false, reversed: false });
       if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
-      const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category)]), updatedAt: new Date().toISOString() }), candidate);
+      const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category, ledger)]), updatedAt: new Date().toISOString() }), candidate);
       const ledgers = [...state.ledgers]; ledgers[index] = updated;
       return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: true, reversed: false });
     }
@@ -623,12 +624,12 @@ export function confirmCardCandidate(state: WalletState, ledgerId: string, candi
     if (revisionIdentity === "same" || movedExpenseIds.has(revisionId) && movedExpenseIds.has(origin) || appliedReversals.has(revisionId) && appliedReversals.has(origin)) return Object.freeze({ state, inserted: false, reversed: false });
     if (revisionIdentity === "conflict" || movedExpenseIds.has(revisionId) || appliedReversals.has(revisionId)) throw new Error("candidate-conflict");
     if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
-    const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category, revisionId)]), updatedAt: new Date().toISOString() }), candidate, revisionId); const ledgers = [...state.ledgers]; ledgers[index] = updated;
+    const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category, ledger, revisionId)]), updatedAt: new Date().toISOString() }), candidate, revisionId); const ledgers = [...state.ledgers]; ledgers[index] = updated;
     return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: true, reversed: false });
   }
   if (hasKnownIdentity) return Object.freeze({ state, inserted: false, reversed: false });
   if (ledger.expenses.length >= MAX_EXPENSES_PER_LEDGER) throw new Error("incompatible candidate");
-  const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category)]), updatedAt: new Date().toISOString() }), candidate); const ledgers = [...state.ledgers]; ledgers[index] = updated;
+  const updated = recordPaymentReceipt(Object.freeze({ ...ledger, expenses: Object.freeze([...ledger.expenses, candidateExpense(candidate, category, ledger)]), updatedAt: new Date().toISOString() }), candidate); const ledgers = [...state.ledgers]; ledgers[index] = updated;
   return Object.freeze({ state: Object.freeze({ ...state, ledgers: Object.freeze(ledgers) }), inserted: true, reversed: false });
 }
 

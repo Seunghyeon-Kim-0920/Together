@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A11819000000000000000001 /* IOSAutomationInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11819000000000000000011 /* IOSAutomationInbox.swift */; };
+		A11819000000000000000002 /* CardAutomationPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11819000000000000000012 /* CardAutomationPlugin.swift */; };
+		A11819000000000000000003 /* WalletShortcutIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11819000000000000000013 /* WalletShortcutIntents.swift */; };
+		A11819000000000000000004 /* WalletBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11819000000000000000014 /* WalletBridgeViewController.swift */; };
+		A11819000000000000000005 /* DocumentFilesPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11819000000000000000015 /* DocumentFilesPlugin.swift */; };
+		A11819000000000000000006 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A11819000000000000000016 /* Localizable.strings */; };
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
@@ -19,6 +25,14 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A11819000000000000000011 /* IOSAutomationInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSAutomationInbox.swift; sourceTree = "<group>"; };
+		A11819000000000000000012 /* CardAutomationPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardAutomationPlugin.swift; sourceTree = "<group>"; };
+		A11819000000000000000013 /* WalletShortcutIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletShortcutIntents.swift; sourceTree = "<group>"; };
+		A11819000000000000000014 /* WalletBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WalletBridgeViewController.swift; sourceTree = "<group>"; };
+		A11819000000000000000015 /* DocumentFilesPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentFilesPlugin.swift; sourceTree = "<group>"; };
+		A11819000000000000000021 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A11819000000000000000022 /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A11819000000000000000023 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/Localizable.strings; sourceTree = "<group>"; };
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
 		50379B222058CBB4000EE86E /* capacitor.config.json */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.json; path = capacitor.config.json; sourceTree = "<group>"; };
 		504EC3041FED79650016851F /* App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -64,6 +78,12 @@
 		504EC3061FED79650016851F /* App */ = {
 			isa = PBXGroup;
 			children = (
+				A11819000000000000000011 /* IOSAutomationInbox.swift */,
+				A11819000000000000000012 /* CardAutomationPlugin.swift */,
+				A11819000000000000000013 /* WalletShortcutIntents.swift */,
+				A11819000000000000000014 /* WalletBridgeViewController.swift */,
+				A11819000000000000000015 /* DocumentFilesPlugin.swift */,
+				A11819000000000000000016 /* Localizable.strings */,
 				9582B6822FE993A50072D4E8 /* SceneDelegate.swift */,
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
@@ -122,6 +142,8 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				ko,
+				fr,
 				Base,
 			);
 			mainGroup = 504EC2FB1FED79650016851F;
@@ -142,6 +164,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A11819000000000000000006 /* Localizable.strings in Resources */,
 				504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */,
 				50B271D11FEDC1A000F3C39B /* public in Resources */,
 				504EC30F1FED79650016851F /* Assets.xcassets in Resources */,
@@ -158,6 +181,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A11819000000000000000001 /* IOSAutomationInbox.swift in Sources */,
+				A11819000000000000000002 /* CardAutomationPlugin.swift in Sources */,
+				A11819000000000000000003 /* WalletShortcutIntents.swift in Sources */,
+				A11819000000000000000004 /* WalletBridgeViewController.swift in Sources */,
+				A11819000000000000000005 /* DocumentFilesPlugin.swift in Sources */,
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 			);
@@ -166,6 +194,16 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXVariantGroup section */
+		A11819000000000000000016 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				A11819000000000000000021 /* en */,
+				A11819000000000000000022 /* ko */,
+				A11819000000000000000023 /* fr */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
 		504EC30B1FED79650016851F /* Main.storyboard */ = {
 			isa = PBXVariantGroup;
 			children = (
@@ -300,14 +338,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 143;
+				CURRENT_PROJECT_VERSION = 146;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8.18;
+				MARKETING_VERSION = 1.8.21;
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = com.seunghyeonkim.walletdiary;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -322,14 +360,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 143;
+				CURRENT_PROJECT_VERSION = 146;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8.18;
+				MARKETING_VERSION = 1.8.21;
 				PRODUCT_BUNDLE_IDENTIFIER = com.seunghyeonkim.walletdiary;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";

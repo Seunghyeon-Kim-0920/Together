@@ -19,6 +19,22 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Shared-trip invitation links. The invitation code stays in the
+                 URL fragment. Until hosting/.well-known/assetlinks.json lists
+                 the installed signing certificate the https link opens the
+                 landing page, whose button uses the custom scheme below. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="wallet-diary-c2a1a.web.app" android:pathPrefix="/join" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="walletdiary" android:host="join" />
+            </intent-filter>
         </activity>
 
         <provider

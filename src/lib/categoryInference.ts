@@ -29,11 +29,13 @@ const TERMS: readonly [GeneralCategory, string, string][] = [
   ["subscriptions", "netflix|spotify|deezer|icloud|subscription|subscriptions|abonnement|abonnements|adobe|chatgpt|openai|claude|anthropic|dropbox|patreon|audible|crunchyroll|paramount|hulu|canalplus|membership", "넷플릭스|스포티파이|구독료|구독|정기이용권|멤버십|유튜브프리미엄|定期購読|订阅|訂閱"],
   ["travel", "hotel|hotels|hostel|motel|resort|airbnb|booking|agoda|expedia|airline|airlines|airways|airfrance|easyjet|ryanair|lufthansa|emirates|qatar|volotea|vueling|aeroport|airport|flight|aviation|tourism|vacances", "호텔|호스텔|숙박|펜션|게스트하우스|에어비앤비|대한항공|아시아나|제주항공|진에어|티웨이|항공|여행사|航空|机场|機場|酒店|旅館|空港|フライト"],
   ["transport", "uber|bolt|taxi|sncf|ratp|eurostar|trenitalia|renfe|ouigo|flixbus|flixtrain|blablacar|train|rail|railway|metro|metropolitain|bus|tram|tramway|parking|parkhaus|fuel|petrol|diesel|gasoline|essence|station service|shell|totalenergies|esso|bp|chevron|exxon|toll|autoroute|navigo|lime|dott|tfl|lyft|grab|gojek|suica|pasmo|korail|ktx|srt", "택시|교통|주유|충전소|주차|통행료|하이패스|버스|지하철|철도|기차|코레일|카카오티|따릉이|전기차충전|タクシー|電車|鉄道|駐車|汽油|地铁|高铁|公交|出租车|交通"],
-  ["utilities", "electric|electricity|electricite|electricidad|energy|energie|water|internet|telecom|telecommunication|broadband|mobile|telephone|electricien|plomberie|edf|engie|enedis|veolia|suez|sfr|bouygues|vodafone|verizon|comcast|att", "전기요금|수도요금|가스요금|도시가스|관리비|통신비|휴대폰요금|인터넷요금|한국전력|통신요금|電気料金|水道料金|电费|水费|话费"],
+  ["telecommunications", "internet|telecom|telecommunication|telecommunications|broadband|telephone|phone bill|mobile plan|mobile bill|sfr|bouygues|vodafone|verizon|comcast|att|at&t|skt|kt|lg uplus|orange france|free mobile|lycamobile", "통신비|통신요금|휴대폰요금|휴대폰 요금|휴대전화요금|인터넷요금|인터넷 요금|전화요금|알뜰폰|에스케이텔레콤|sk텔레콤|엘지유플러스|lg유플러스|携帯料金|通信料金|话费|網路費"],
+  ["utilities", "electric|electricity|electricite|electricidad|energy|energie|water|gas bill|edf|engie|enedis|veolia|suez", "전기요금|수도요금|가스요금|도시가스|관리비|한국전력|電気料金|水道料金|电费|水费"],
+  ["living", "household|housekeeping|laundry|laundromat|dry cleaning|cleaning service|pressing|laverie|droguerie|electricien|plomberie|daiso", "생활용품|생필품|세탁소|세탁비|크린토피아|청소용품|청소비|다이소|日用品|生活用品|洗濯"],
   ["housing", "rent|rental|loyer|loyers|landlord|residence|mortgage|syndic|copropriete|immobilier|housing|apartment", "월세|전세|임대료|주거비|주택담보|기숙사비|家賃|房租|租金"],
   ["education", "school|ecole|university|universite|college|tuition|course|courses|formation|training|academy|udemy|coursera|duolingo|textbook|librairie|bookstore|kindle", "학원|교육|학교|대학교|등록금|수강료|강의|교재|교보문고|영풍문고|서점|学費|授業料|学校|教育|书店"],
   ["leisure", "cinema|theatre|museum|musee|concert|festival|ticketmaster|eventbrite|concert|bowling|karaoke|gym|fitness|piscine|sports|sport|stadium|game|gaming|steam|playstation|nintendo|xbox|disneyland|aquarium|zoo|spa|massage|salon|barber|coiffeur", "영화|롯데시네마|메가박스|씨지브이|공연|콘서트|박물관|미술관|전시|노래방|헬스|필라테스|요가|수영|볼링|게임|미용실|네일|마사지|사우나|映画|美容|健身|电影院"],
-  ["shopping", "amazon|ikea|zara|uniqlo|decathlon|action|aliexpress|temu|shein|ebay|etsy|walmart|target|sephora|primark|hennes|fnac|darty|boulanger|leroy merlin|castorama|nike|adidas|new balance|clothing|clothes|fashion|apparel|cosmetics|boutique|store|shop|shopping|market|mall", "쿠팡|네이버페이|무신사|올리브영|다이소|유니클로|백화점|아울렛|쇼핑|의류|화장품|문구|생활용품|가전|잡화|이케아|衣料|百貨店|商场|商城|购物"],
+  ["shopping", "amazon|ikea|zara|uniqlo|decathlon|action|aliexpress|temu|shein|ebay|etsy|walmart|target|sephora|primark|hennes|fnac|darty|boulanger|leroy merlin|castorama|nike|adidas|new balance|clothing|clothes|fashion|apparel|cosmetics|boutique|store|shop|shopping|market|mall", "쿠팡|네이버페이|무신사|올리브영|유니클로|백화점|아울렛|쇼핑|의류|화장품|문구|가전|잡화|이케아|衣料|百貨店|商场|商城|购物"],
 ];
 const RULES = TERMS.map(([category, latin, other]) => [category,
   new RegExp(`(?:^|[^\\p{Letter}\\p{Number}])(?:${latin})(?:$|[^\\p{Letter}\\p{Number}])|(?:${other})`, "u")] as const);
@@ -49,6 +51,7 @@ export function rememberMerchantCategory(ledger: GeneralLedger, expense: General
   const aliases = [categoryMerchantKey(expense.description, expense.id)];
   if (previous) {
     aliases.push(categoryMerchantKey(previous.description, previous.id));
+    if (previous.originalMerchant) aliases.push(categoryMerchantKey(previous.originalMerchant));
     for (const receipt of ledger.automationPaymentReceipts ?? []) if (receipt.expenseId === previous.id) aliases.push(categoryMerchantKey(receipt.merchant));
   }
   const keys = new Set(aliases.filter(Boolean)); const updatedAt = new Date().toISOString();

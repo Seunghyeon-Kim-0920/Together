@@ -1,6 +1,7 @@
 import { MAX_MERCHANT_CATEGORY_PREFERENCES } from "./categoryInference";
+import { descriptionMerchantKey, MAX_MERCHANT_DESCRIPTION_PREFERENCES } from "./merchantDescriptions";
 import { parseSharedLocal } from "./sharedTravelLocal";
-import { EXPENSE_TRANSACTION_TYPES, type ExpenseTransactionType, type MerchantCategoryPreference } from "./types";
+import { EXPENSE_TRANSACTION_TYPES, type ExpenseTransactionType, type MerchantCategoryPreference, type MerchantDescriptionPreference } from "./types";
 import { currencyDigits } from "./currency";
 import { legacyPublicExpenseId, publicExpenseId } from "./expenseIdentity";
 import { EMPTY_WALLET_STATE, GENERAL_CATEGORIES, SUPPORTED_LOCALES, TRAVEL_CATEGORIES, type AutomationPaymentReceipt, type AutomationSource, type ExpenseShare, type GeneralExpense, type GeneralLedger, type Ledger, type Locale, type Participant, type StatementImportReceipt, type TravelExpense, type TravelLedger, type WalletState } from "./types";
@@ -158,7 +159,22 @@ function parseGeneralExpense(value: unknown, ledgerCurrency: string): GeneralExp
   const automationFingerprint = value.automationFingerprint === undefined ? null : text(value.automationFingerprint, 40);
   const automationReversalFingerprint = value.automationReversalFingerprint === undefined ? null : text(value.automationReversalFingerprint, 42);
   if (!id || !description || !expenseDate || expenseCurrency !== ledgerCurrency || !minorUnits || !GENERAL_CATEGORIES.includes(value.category as never) || (value.automationFingerprint !== undefined && (!automationFingerprint || !/^card-origin-[0-9a-f]{16}$/.test(automationFingerprint))) || (value.automationReversalFingerprint !== undefined && (!automationReversalFingerprint || !/^card-reversal-[0-9a-f]{16}$/.test(automationReversalFingerprint)))) return null;
-  return Object.freeze({ id, description, category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate, ...(value.transactionType ? { transactionType: value.transactionType as ExpenseTransactionType } : {}), ...(automationFingerprint ? { automationFingerprint } : {}), ...(automationReversalFingerprint ? { automationReversalFingerprint } : {}) });
+  const originalMerchant = value.originalMerchant === undefined ? undefined : text(value.originalMerchant, 500);
+  if (originalMerchant === null) return null;
+  return Object.freeze({ id, description, ...(originalMerchant ? { originalMerchant } : {}), category: value.category as GeneralExpense["category"], currency: ledgerCurrency, minorUnits, occurredOn: expenseDate, ...(value.transactionType ? { transactionType: value.transactionType as ExpenseTransactionType } : {}), ...(automationFingerprint ? { automationFingerprint } : {}), ...(automationReversalFingerprint ? { automationReversalFingerprint } : {}) });
+}
+
+function parseMerchantDescriptionPreferences(value: unknown): readonly MerchantDescriptionPreference[] | null {
+  if (value === undefined) return Object.freeze([]);
+  if (!Array.isArray(value) || value.length > MAX_MERCHANT_DESCRIPTION_PREFERENCES) return null;
+  const keys = new Set<string>(); const result: MerchantDescriptionPreference[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return null;
+    const merchantKey = text(item.merchantKey, 500); const description = text(item.description, 500); const updatedAt = timestamp(item.updatedAt);
+    if (!merchantKey || descriptionMerchantKey(merchantKey) !== merchantKey || !description || !updatedAt || keys.has(merchantKey)) return null;
+    keys.add(merchantKey); result.push(Object.freeze({ merchantKey, description, updatedAt }));
+  }
+  return Object.freeze(result);
 }
 
 function parseMerchantCategoryPreferences(value: unknown): readonly MerchantCategoryPreference[] | null {
@@ -211,6 +227,7 @@ export function parseLedger(value: unknown): Ledger | null {
   if (value.kind === "general") {
     const ledgerCurrency = currency(value.currency);
     const merchantCategoryPreferences = parseMerchantCategoryPreferences(value.merchantCategoryPreferences);
+    const merchantDescriptionPreferences = parseMerchantDescriptionPreferences(value.merchantDescriptionPreferences);
     const monthlyLimitMinor = value.monthlyLimitMinor === undefined || value.monthlyLimitMinor === null ? null : positiveMinor(value.monthlyLimitMinor);
     const automationAllApps = value.automationAllApps === undefined ? false : value.automationAllApps;
     const automationSmsNotifications = value.automationSmsNotifications === undefined ? false : value.automationSmsNotifications;
@@ -219,14 +236,14 @@ export function parseLedger(value: unknown): Ledger | null {
     const automationReversalIds = value.automationReversalIds === undefined ? Object.freeze([]) : parseAutomationReversalIds(value.automationReversalIds);
     const movedExpenseIds = value.movedExpenseIds === undefined ? Object.freeze([]) : parseMovedExpenseIds(value.movedExpenseIds);
     const automationPaymentReceipts = ledgerCurrency ? parseAutomationPaymentReceipts(value.automationPaymentReceipts, ledgerCurrency) : null;
-    if (!merchantCategoryPreferences || !ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds || !movedExpenseIds || !automationPaymentReceipts) return null;
+    if (!merchantCategoryPreferences || !merchantDescriptionPreferences || !ledgerCurrency || typeof automationAllApps !== "boolean" || (value.monthlyLimitMinor !== undefined && value.monthlyLimitMinor !== null && monthlyLimitMinor === null) || !automationSources || !automationReversalIds || !movedExpenseIds || !automationPaymentReceipts) return null;
     const expenses: GeneralExpense[] = [];
     for (const candidate of value.expenses) {
       const expense = parseGeneralExpense(candidate, ledgerCurrency);
       if (!expense || expenseIds.has(expense.id)) return null;
       expenseIds.add(expense.id); expenses.push(expense);
     }
-    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSmsNotifications, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...(automationPaymentReceipts.length ? { automationPaymentReceipts } : {}), ...(merchantCategoryPreferences.length ? { merchantCategoryPreferences } : {}), ...privateHistory } satisfies GeneralLedger);
+    return Object.freeze({ id, title, kind: "general", createdAt, updatedAt, currency: ledgerCurrency, monthlyLimitMinor, automationAllApps, automationSmsNotifications, automationSources, automationReversalIds, movedExpenseIds, expenses: Object.freeze(expenses), ...(automationPaymentReceipts.length ? { automationPaymentReceipts } : {}), ...(merchantCategoryPreferences.length ? { merchantCategoryPreferences } : {}), ...(merchantDescriptionPreferences.length ? { merchantDescriptionPreferences } : {}), ...privateHistory } satisfies GeneralLedger);
   }
   return null;
 }
@@ -293,7 +310,7 @@ export function replaceLedger(state: WalletState, ledger: Ledger): WalletState {
 }
 
 function sameGeneralExpense(left: GeneralExpense, right: GeneralExpense): boolean {
-  return left.id === right.id && left.description === right.description && left.category === right.category && left.currency === right.currency && left.minorUnits === right.minorUnits && left.occurredOn === right.occurredOn && left.transactionType === right.transactionType && left.automationFingerprint === right.automationFingerprint && left.automationReversalFingerprint === right.automationReversalFingerprint;
+  return left.id === right.id && left.description === right.description && left.originalMerchant === right.originalMerchant && left.category === right.category && left.currency === right.currency && left.minorUnits === right.minorUnits && left.occurredOn === right.occurredOn && left.transactionType === right.transactionType && left.automationFingerprint === right.automationFingerprint && left.automationReversalFingerprint === right.automationReversalFingerprint;
 }
 
 function sameAutomationSources(left: readonly AutomationSource[], right: readonly AutomationSource[]): boolean {
@@ -327,9 +344,19 @@ export function mergeGeneralLedgerMutation(base: GeneralLedger, desired: General
     }
   }
   const merchantCategoryPreferences = Object.freeze([...mergedPreferences.values()].slice(-MAX_MERCHANT_CATEGORY_PREFERENCES));
+  const beforeNames = new Map((base.merchantDescriptionPreferences ?? []).map((entry) => [entry.merchantKey, entry]));
+  const mergedNames = new Map((latest.merchantDescriptionPreferences ?? []).map((entry) => [entry.merchantKey, entry]));
+  for (const entry of desired.merchantDescriptionPreferences ?? []) {
+    const before = beforeNames.get(entry.merchantKey);
+    if (!before || before.description !== entry.description || before.updatedAt !== entry.updatedAt) {
+      mergedNames.delete(entry.merchantKey); mergedNames.set(entry.merchantKey, entry);
+    }
+  }
+  const merchantDescriptionPreferences = Object.freeze([...mergedNames.values()].slice(-MAX_MERCHANT_DESCRIPTION_PREFERENCES));
   return Object.freeze({
     ...latest,
     ...(merchantCategoryPreferences.length ? { merchantCategoryPreferences } : {}),
+    ...(merchantDescriptionPreferences.length ? { merchantDescriptionPreferences } : {}),
     title: desired.title !== base.title ? desired.title : latest.title,
     monthlyLimitMinor: desired.monthlyLimitMinor !== base.monthlyLimitMinor ? desired.monthlyLimitMinor : latest.monthlyLimitMinor,
     automationAllApps: desired.automationAllApps !== base.automationAllApps ? desired.automationAllApps : latest.automationAllApps,

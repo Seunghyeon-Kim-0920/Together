@@ -4,8 +4,14 @@ import { GeneralLedgerView } from "./components/GeneralLedgerView";
 import { FirstUseGuide } from "./components/FirstUseGuide";
 import { AutomationHistory } from "./components/AutomationHistory";
 import { SharedTravelPanel } from "./components/SharedTravelPanel";
+import { InviteJoinSheet, WebCompanionHome, WebCompanionNotice } from "./components/InviteJoin";
+import { inviteTripId } from "./lib/inviteLink";
+import { inviteText, staleConnectionMessage } from "./lib/inviteLinkI18n";
+import { consumeInstallReferrerInvite, listenForInviteLinks } from "./lib/nativeInviteLink";
+import { SHARED_TRAVEL_FIREBASE_CONFIG } from "./lib/sharedTravelConfig";
+import { clearLocationInvite, isWebCompanion, readLocationInvite, requestPersistentStorage } from "./lib/webCompanion";
 import { undoPaymentMerge } from "./lib/paymentDuplicates";
-import { applySharedParticipantHeader, queueSharedWalletChanges, receiveSharedSnapshot } from "./lib/sharedTravelLocal";
+import { applySharedParticipantHeader, connectSharedLedger, queueSharedWalletChanges, receiveSharedSnapshot } from "./lib/sharedTravelLocal";
 import { applyConfirmedLocalHistoryRemoval } from "./lib/participantHistoryRemoval";
 import { TravelParticipantError } from "./lib/travelParticipants";
 import { travelParticipantText } from "./lib/travelParticipantI18n";
@@ -36,6 +42,8 @@ import { EMPTY_WALLET_STATE, SUPPORTED_LOCALES, type AutomationSource, type Gene
 import { createLedger, MAX_AUTOMATION_SOURCES, MAX_LEDGERS, mergeGeneralLedgerMutation, mergeTravelLedgerMutation, parseWalletStateStrict, replaceLedger } from "./lib/wallet";
 
 type Toast = { readonly id: number; readonly message: string; readonly tone: "success" | "error" | "info" } | null;
+/** The hosted browser build under /app/ only joins shared trips by invitation. */
+const WEB_COMPANION = isWebCompanion();
 
 /** A first launch opens in the device language. A saved choice always wins. */
 function deviceLocale(fallback: Locale): Locale {
@@ -66,6 +74,8 @@ export function App() {
   const [travelImport, setTravelImport] = useState<TravelLedger | null>(null);
   const [exchangeBusy, setExchangeBusy] = useState(false);
   const [documentImportOpen, setDocumentImportOpen] = useState(false);
+  const [pendingInvite, setPendingInvite] = useState<string | null>(() => WEB_COMPANION ? readLocationInvite() : null);
+  const [inviteBusy, setInviteBusy] = useState(false); const inviteLock = useRef(false);
   const saveQueue = useRef(Promise.resolve());
   const configureQueue = useRef(Promise.resolve());
   const stateRef = useRef<WalletState>(EMPTY_WALLET_STATE);
@@ -89,6 +99,17 @@ export function App() {
   }, [loadAttempt]);
   useEffect(() => { document.documentElement.lang = locale; document.title = design(locale, "brand"); document.querySelector('meta[name="description"]')?.setAttribute("content", t(locale, "appDescription")); }, [locale]);
   useEffect(() => { if (!loaded) return; void import("@capacitor/status-bar").then(({ StatusBar, Style }) => StatusBar.setStyle({ style: Style.Light }).catch(() => undefined)); }, [loaded]);
+  // Invitation links: an Android App Link or custom scheme, the one-time Play
+  // install referrer, or the fragment of the hosted web version.
+  useEffect(() => {
+    if (!loaded) return;
+    let active = true;
+    const stop = listenForInviteLinks((code) => { if (active) setPendingInvite(code); });
+    void consumeInstallReferrerInvite().then((code) => { if (active && code) setPendingInvite((current) => current ?? code); });
+    const onFragment = () => { const code = readLocationInvite(); if (code) setPendingInvite(code); };
+    if (WEB_COMPANION) window.addEventListener("hashchange", onFragment);
+    return () => { active = false; stop(); if (WEB_COMPANION) window.removeEventListener("hashchange", onFragment); };
+  }, [loaded]);
 
   const commit = useCallback((updater: WalletState | ((current: WalletState) => WalletState)): Promise<boolean> => {
     const operation = saveQueue.current.then(async () => {
@@ -166,6 +187,47 @@ export function App() {
     if (saved) { setNewLedgerOpen(false); notify(t(locale, "ledgerCreated"), "success"); }
     return saved;
   };
+  const dismissInvite = useCallback(() => { setPendingInvite(null); if (WEB_COMPANION) clearLocationInvite(); }, []);
+  /** Joining by link creates its own trip tab, so the visitor does not have to
+   * prepare an empty travel ledger first. The cloud membership is rolled back
+   * if the trip cannot be saved on this device. */
+  const joinInvitedTrip = useCallback(async (code: string, displayName: string) => {
+    if (inviteLock.current) return;
+    inviteLock.current = true; setInviteBusy(true);
+    let undo: (() => Promise<void>) | null = null;
+    try {
+      const tripId = inviteTripId(code);
+      if (!tripId) throw new SharedTravelError("not-found");
+      if (!navigator.onLine) throw new SharedTravelError("unavailable");
+      await saveQueue.current;
+      const { getSharedTravelClient } = await import("./lib/sharedTravelClient");
+      const client = await getSharedTravelClient();
+      const known = stateRef.current.ledgers.find((ledger) => ledger.kind === "travel" && ledger.sharedSync?.tripId === tripId);
+      if (known?.kind === "travel" && known.sharedSync && known.sharedSync.uid !== client.uid) { notify(staleConnectionMessage(stateRef.current.locale), "error"); return; }
+      if (known) {
+        await commit((current) => Object.freeze({ ...current, activeLedgerId: known.id }));
+        notify(inviteText(stateRef.current.locale, "already"), "info");
+      } else {
+        if (stateRef.current.ledgers.length >= MAX_LEDGERS) { notify(inviteText(stateRef.current.locale, "tooMany"), "error"); return; }
+        const connection = await client.joinTrip(code, displayName);
+        if (connection.joined) undo = () => client.leaveTrip(connection.trip.id);
+        const snapshot = await client.getSnapshot(connection.trip.id);
+        await persistWalletMutation((current) => {
+          if (current.ledgers.length >= MAX_LEDGERS || current.ledgers.some((ledger) => ledger.kind === "travel" && ledger.sharedSync?.tripId === connection.trip.id)) throw new SharedTravelError("conflict");
+          const ledger = connectSharedLedger(createLedger("travel", snapshot.trip.title, snapshot.trip.defaultCurrency), connection.trip, client.uid, snapshot);
+          return { state: Object.freeze({ ...current, activeLedgerId: ledger.id, ledgers: Object.freeze([...current.ledgers, ledger]) }), result: undefined };
+        }, false);
+        undo = null;
+        if (WEB_COMPANION) requestPersistentStorage();
+        notify(inviteText(stateRef.current.locale, "joined"), "success");
+      }
+      dismissInvite();
+    } catch (error) {
+      if (undo) await undo().catch(() => undefined);
+      const language = stateRef.current.locale; const failure = normalizeSharedError(error).code;
+      notify(failure === "not-found" || failure === "invalid-data" ? inviteText(language, "expired") : failure === "limit" ? sharedText(language, "limit") : failure === "quota" ? sharedText(language, "quota") : failure === "permission-denied" ? sharedText(language, "permission") : failure === "not-configured" ? sharedText(language, "unavailable") : !navigator.onLine ? inviteText(language, "offline") : sharedText(language, "error"), "error");
+    } finally { inviteLock.current = false; setInviteBusy(false); }
+  }, [commit, dismissInvite, notify, persistWalletMutation]);
   const updateLedger = useCallback((ledger: Ledger) => {
     const base = state.ledgers.find((candidate) => candidate.id === ledger.id);
     return commit((current) => {
@@ -336,6 +398,12 @@ export function App() {
         // has been saved successfully above.
         await cardAutomationPlugin.acknowledgeEvents({ events: [...acknowledgements.values()] });
         setPendingAutomation(result.pending);
+        // The iOS status includes inbox size; do not show the pre-ack count
+        // until the next poll. A diagnostic read failure must not undo or
+        // misreport the already durable transaction processing.
+        if (status.captureMode === "ios-shortcuts" && acknowledgements.size) {
+          try { setAutomationStatus(await cardAutomationPlugin.getStatus()); } catch { /* Next foreground poll retries status only. */ }
+        }
         if (result.insertedIds.length) notify(t(stateRef.current.locale, "automationRecorded"), "success");
         if (result.reversedIds.length) notify(t(stateRef.current.locale, "automationCancellationApplied"), "success");
       } catch {
@@ -476,18 +544,24 @@ export function App() {
     } catch { notify(sharedText(stateRef.current.locale, "undoFailed"), "error"); return false; }
   }, [activeGeneralLedgerId, persistWalletMutation, notify]);
 
+  const invitedTripId = pendingInvite ? inviteTripId(pendingInvite) : null;
+  const invitedLedger = invitedTripId ? state.ledgers.find((ledger) => ledger.kind === "travel" && ledger.sharedSync?.tripId === invitedTripId) ?? null : null;
+
   if (!loaded) return <main className="mobile-app loading-screen"><img className="loading-brand" src="/brand/wallet-diary-mark.png" alt="" />{loadFailed ? <div role="alert"><p>{t(locale, "storageError")}</p><button className="primary-button" type="button" onClick={() => { setLoadFailed(false); setLoadAttempt((attempt) => attempt + 1); }}>{t(locale, "refresh")}</button></div> : <p role="status">{t(locale, "loading")}</p>}</main>;
   return (
     <main className="mobile-app">
-      <header className="app-header"><div className="app-brand"><img src="/brand/wallet-diary-mark.png" alt="" width="48" height="48" /><h1>{design(locale, "brand")}</h1></div><div className="header-tools"><label className="language-control"><Languages aria-hidden="true" /><span className="sr-only">{t(locale, "language")}</span><select value={locale} onChange={(event) => changeLocale(event.target.value as Locale)}>{SUPPORTED_LOCALES.map((code) => <option value={code} key={code}>{new Intl.DisplayNames([locale], { type: "language" }).of(code)}</option>)}</select></label><button className="import-button" type="button" onClick={() => setDocumentImportOpen(true)} aria-label={documentText(locale, "title")} title={documentText(locale, "title")}><FileInput aria-hidden="true" /><span>{documentText(locale, "title")}</span></button></div></header>
-      <LedgerTabs ledgers={state.ledgers} activeId={activeLedger?.id ?? null} locale={locale} onSelect={selectLedger} onAdd={() => setNewLedgerOpen(true)} onMenu={setMenuLedger} />
+      <header className="app-header"><div className="app-brand"><img src="/brand/wallet-diary-mark.png" alt="" width="48" height="48" /><h1>{design(locale, "brand")}</h1></div><div className="header-tools"><label className="language-control"><Languages aria-hidden="true" /><span className="sr-only">{t(locale, "language")}</span><select value={locale} onChange={(event) => changeLocale(event.target.value as Locale)}>{SUPPORTED_LOCALES.map((code) => <option value={code} key={code}>{new Intl.DisplayNames([locale], { type: "language" }).of(code)}</option>)}</select></label>{WEB_COMPANION ? null : <button className="import-button" type="button" onClick={() => setDocumentImportOpen(true)} aria-label={documentText(locale, "title")} title={documentText(locale, "title")}><FileInput aria-hidden="true" /><span>{documentText(locale, "title")}</span></button>}</div></header>
+      <LedgerTabs ledgers={state.ledgers} activeId={activeLedger?.id ?? null} locale={locale} onSelect={selectLedger} onAdd={WEB_COMPANION ? undefined : () => setNewLedgerOpen(true)} onMenu={setMenuLedger} />
       {activeLedger?.kind === "travel" ? <>
         <SharedTravelPanel key={`shared-${activeLedger.id}`} ledger={activeLedger} locale={locale} getLatest={getLatestTravel} onApply={applyTravelSync} onNotify={notify} />
-        <TravelLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} onImport={() => setDocumentImportOpen(true)} onChange={updateLedger} onParticipantsChange={updateParticipants} onRemoveParticipantHistory={removeParticipantHistory} onNotify={notify} />
+        <TravelLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} onImport={WEB_COMPANION ? undefined : () => setDocumentImportOpen(true)} onChange={updateLedger} onParticipantsChange={updateParticipants} onRemoveParticipantHistory={removeParticipantHistory} onNotify={notify} />
       </> : activeLedger?.kind === "general" ? <>
         <AutomationHistory key={`history-${activeLedger.id}`} ledger={activeLedger} locale={locale} onUndo={undoAutomationMerge} />
         <GeneralLedgerView key={activeLedger.id} ledger={activeLedger} locale={locale} automationStatus={automationStatus} pendingAutomation={pendingForActiveLedger} automationBusy={automationBusy} onAutomationRefresh={refreshCardAutomation} onOpenAutomationSettings={openAutomationSettings} onRequestAutomationAlertPermission={requestAutomationAlertPermission} onToggleAllPaymentApps={toggleAllAppsForActiveLedger} onRegisterAutomationSource={registerSourceForActiveLedger} onRemoveAutomationSource={removeSourceFromActiveLedger} onConfirmAutomationExpense={confirmExpenseForActiveLedger} onDismissAutomationCandidate={dismissAutomationCandidate} onMove={(expense) => setMoveRequest({ sourceLedgerId: activeLedger.id, expense })} onChange={updateLedger} onNotify={notify} />
-      </> : <FirstUseGuide locale={locale} onCreate={async (kind, title, currency) => { if (!await addLedger(kind, title, currency)) throw new Error("create failed"); }} />}
+      </> : WEB_COMPANION ? <WebCompanionHome locale={locale} inviteCode={pendingInvite} configured={SHARED_TRAVEL_FIREBASE_CONFIG !== null} busy={inviteBusy} onJoin={(displayName) => { if (pendingInvite) void joinInvitedTrip(pendingInvite, displayName); }} />
+        : <FirstUseGuide locale={locale} onCreate={async (kind, title, currency) => { if (!await addLedger(kind, title, currency)) throw new Error("create failed"); }} />}
+      {WEB_COMPANION && activeLedger ? <WebCompanionNotice locale={locale} inviteCode={null} /> : null}
+      {pendingInvite && (!WEB_COMPANION || activeLedger) ? <InviteJoinSheet key={pendingInvite} locale={locale} configured={SHARED_TRAVEL_FIREBASE_CONFIG !== null} existingTitle={invitedLedger?.title ?? null} busy={inviteBusy} onJoin={(displayName) => void joinInvitedTrip(pendingInvite, displayName)} onOpenExisting={() => { if (invitedLedger) selectLedger(invitedLedger.id); dismissInvite(); }} onClose={dismissInvite} /> : null}
       {newLedgerOpen ? <NewLedgerSheet locale={locale} onClose={() => setNewLedgerOpen(false)} onCreate={addLedger} /> : null}
       {moveRequest ? <MoveExpenseSheet expense={moveRequest.expense} travels={travelLedgers} locale={locale} busy={exchangeBusy} onClose={() => setMoveRequest(null)} onMove={(selection) => void moveExpense(selection)} /> : null}
       {travelImport ? <TravelImportSheet incoming={travelImport} travels={travelLedgers} preferredId={activeLedger?.id ?? null} locale={locale} busy={exchangeBusy} onClose={() => setTravelImport(null)} onConfirm={(selection) => void confirmTravelImport(selection)} /> : null}

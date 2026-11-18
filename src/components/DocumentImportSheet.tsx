@@ -29,7 +29,7 @@ export function DocumentImportSheet({ state, locale, onClose, onTravel, onConfir
       setSource(parsed); setGeneration((value) => value + 1);
     } catch (cause) {
       const code = cause instanceof Error ? cause.message : "";
-      setError(d(locale, code === "ocr-android" ? "ocrAndroid" : code === "size" || code === "limit" || code === "encrypted" || code === "unsupported" ? code : "failed"));
+      setError(d(locale, code === "ocr-android" || code === "ocr-native-required" ? "ocrAndroid" : code === "ocr-language-unavailable" ? "ocrLanguageUnavailable" : code === "size" || code === "limit" || code === "encrypted" || code === "unsupported" ? code : "failed"));
     } finally { setReading(false); }
   };
   const confirm = async (selection: DocumentImportSelection) => { setImporting(true); try { await onConfirm(selection); } finally { setImporting(false); } };

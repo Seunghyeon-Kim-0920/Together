@@ -37,4 +37,19 @@ public class PaymentCategoryHintsTest {
         assertEquals(token, PaymentNotificationParser.contentToken(event));
         assertFalse(event.has("body")); assertFalse(event.has("title")); assertFalse(event.has("text"));
     }
+    @Test public void livingUtilitiesAndTelecommunicationsAreSeparate() {
+        assertEquals("living", PaymentCategoryHints.infer("다이소 여의도점", "", ""));
+        assertEquals("living", PaymentCategoryHints.infer("세탁소", "", ""));
+        assertEquals("living", PaymentCategoryHints.infer("Laverie Exemple", "", ""));
+        assertEquals("utilities", PaymentCategoryHints.infer("한국전력 전기요금", "", ""));
+        assertEquals("utilities", PaymentCategoryHints.infer("EDF", "", ""));
+        assertEquals("telecommunications", PaymentCategoryHints.infer("SK텔레콤", "", ""));
+        assertEquals("telecommunications", PaymentCategoryHints.infer("KT", "", ""));
+        assertEquals("telecommunications", PaymentCategoryHints.infer("LG유플러스", "", ""));
+        assertEquals("telecommunications", PaymentCategoryHints.infer("SFR", "", ""));
+        assertEquals("telecommunications", PaymentCategoryHints.infer("Example XYZ", "자동이체 완료", "휴대폰 요금 35,000원"));
+        assertEquals("food", PaymentCategoryHints.infer("이마트 여의도점", "", ""));
+        assertEquals("subscriptions", PaymentCategoryHints.infer("Netflix", "", ""));
+        assertNull(PaymentCategoryHints.infer("Mobile Games XYZ", "", ""));
+    }
 }

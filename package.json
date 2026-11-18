@@ -1,6 +1,6 @@
 {
   "name": "wallet-diary",
-  "version": "1.8.18",
+  "version": "1.8.21",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -9,12 +9,16 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts tests/wallet-document-import.test.ts tests/wallet-document-reader.test.ts tests/wallet-pdf.test.ts tests/wallet-category-learning.test.ts tests/wallet-payment-duplicates.test.ts tests/wallet-shared-travel.test.ts tests/wallet-shared-local.test.ts tests/wallet-travel-participants.test.ts tests/wallet-participant-history-confirmation.test.ts tests/wallet-shared-history-repair.test.ts tests/wallet-ledger-deletion.test.ts tests/wallet-privacy.test.ts tests/wallet-ios-project.test.ts",
+    "test": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts tests/wallet-document-import.test.ts tests/wallet-document-reader.test.ts tests/wallet-pdf.test.ts tests/wallet-category-learning.test.ts tests/wallet-merchant-descriptions.test.ts tests/wallet-payment-duplicates.test.ts tests/wallet-shared-travel.test.ts tests/wallet-shared-local.test.ts tests/wallet-travel-participants.test.ts tests/wallet-participant-history-confirmation.test.ts tests/wallet-shared-history-repair.test.ts tests/wallet-ledger-deletion.test.ts tests/wallet-privacy.test.ts tests/wallet-ios-project.test.ts tests/wallet-ios-transaction-input.test.ts tests/wallet-ios-automation-bridge.test.ts tests/wallet-ios-documents.test.ts tests/wallet-invite-link.test.ts tests/wallet-converted-settlement.test.ts tests/wallet-exchange-rates.test.ts tests/wallet-fx-display.test.ts tests/wallet-general-fx.test.ts",
+    "test:android": "tsx --test tests/wallet-domain.test.ts tests/wallet-storage.test.ts tests/wallet-i18n.test.ts tests/wallet-card-automation.test.ts tests/wallet-bank-sync.test.ts tests/wallet-move-expense.test.ts tests/wallet-travel-exchange.test.ts tests/wallet-document-import.test.ts tests/wallet-document-reader.test.ts tests/wallet-pdf.test.ts tests/wallet-category-learning.test.ts tests/wallet-merchant-descriptions.test.ts tests/wallet-payment-duplicates.test.ts tests/wallet-shared-travel.test.ts tests/wallet-shared-local.test.ts tests/wallet-travel-participants.test.ts tests/wallet-participant-history-confirmation.test.ts tests/wallet-shared-history-repair.test.ts tests/wallet-ledger-deletion.test.ts tests/wallet-privacy.test.ts tests/wallet-invite-link.test.ts tests/wallet-converted-settlement.test.ts tests/wallet-exchange-rates.test.ts tests/wallet-fx-display.test.ts tests/wallet-general-fx.test.ts",
     "test:shared:emulator": "firebase emulators:exec --only firestore --project demo-wallet-diary \"tsx --test tests/wallet-shared-travel-emulator.test.ts\"",
     "android:sync": "npm run build && cap sync android",
     "ios:sync": "npm run build && cap sync ios",
+    "ios:check": "bash scripts/check-ios.sh",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src tests --ignore-pattern dist"
+    "lint": "eslint src tests --ignore-pattern dist",
+    "build:web": "tsc --noEmit && vite build --base=/app/ --outDir hosting-dist/app",
+    "build:hosting": "npm run build:web && node scripts/build-hosting.mjs"
   },
   "dependencies": {
     "@capacitor-community/sqlite": "^8.1.1",

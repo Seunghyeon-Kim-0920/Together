@@ -151,6 +151,7 @@ button:disabled { cursor: default; opacity: .44; }
 .year-bars strong { font-size: 10px; white-space: nowrap; }
 .category-color { width: 12px; height: 36px; border-radius: 99px; background: var(--jade); }
 .category-food { background:#ee5b59 }.category-transport { background:#3879da }.category-housing { background:#00a66a }.category-utilities { background:#22a6b3 }.category-shopping { background:#7b61d9 }.category-health { background:#f39c25 }.category-leisure { background:#d95f9f }.category-education { background:#4669aa }.category-subscriptions { background:#687487 }.category-travel { background:#00a4a8 }.category-other { background:#a0a9b4 }
+.category-living { background:#b69539 }.category-telecommunications { background:#4389b6 }
 .limit-card .section-heading h3, .automation-card .section-heading h3 { display: inline-flex; align-items: center; gap: 7px; }
 .limit-card .section-heading h3 svg, .automation-card .section-heading h3 svg { width: 18px; color: var(--jade); }
 .limit-card-body { display: grid; gap: 10px; padding: 15px; }

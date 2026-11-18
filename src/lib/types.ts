@@ -4,7 +4,7 @@ export type LedgerKind = "travel" | "general";
 
 export const TRAVEL_CATEGORIES = ["accommodation", "transport", "food", "activities", "shopping", "insurance", "other"] as const;
 export type TravelCategory = (typeof TRAVEL_CATEGORIES)[number];
-export const GENERAL_CATEGORIES = ["food", "transport", "housing", "utilities", "shopping", "health", "leisure", "education", "subscriptions", "travel", "other"] as const;
+export const GENERAL_CATEGORIES = ["food", "transport", "housing", "living", "utilities", "telecommunications", "shopping", "health", "leisure", "education", "subscriptions", "travel", "other"] as const;
 export type GeneralCategory = (typeof GENERAL_CATEGORIES)[number];
 export const EXPENSE_TRANSACTION_TYPES = ["purchase", "outgoing_transfer", "direct_debit", "standing_order", "cash_withdrawal"] as const;
 export type ExpenseTransactionType = (typeof EXPENSE_TRANSACTION_TYPES)[number];
@@ -33,6 +33,8 @@ export interface TravelExpense {
 export interface GeneralExpense {
   readonly id: string;
   readonly description: string;
+  /** Private source name, never replaced by an editable display description. */
+  readonly originalMerchant?: string;
   readonly category: GeneralCategory;
   readonly currency: string;
   readonly minorUnits: number;
@@ -56,6 +58,13 @@ export interface AutomationSource {
 export interface MerchantCategoryPreference {
   readonly merchantKey: string;
   readonly category: GeneralCategory;
+  readonly updatedAt: string;
+}
+
+/** Local display-name choices. Never exported as shared settings. */
+export interface MerchantDescriptionPreference {
+  readonly merchantKey: string;
+  readonly description: string;
   readonly updatedAt: string;
 }
 
@@ -142,6 +151,7 @@ export interface GeneralLedger extends LedgerBase {
   readonly movedExpenseIds: readonly string[];
   readonly automationPaymentReceipts?: readonly AutomationPaymentReceipt[];
   readonly merchantCategoryPreferences?: readonly MerchantCategoryPreference[];
+  readonly merchantDescriptionPreferences?: readonly MerchantDescriptionPreference[];
   readonly expenses: readonly GeneralExpense[];
 }
 

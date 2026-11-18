@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#F7F8FC">
+<title>지갑의 일기 · 여행 초대</title>
+<meta property="og:type" content="website">
+<meta property="og:title" content="지갑의 일기 · 여행 가계부 초대">
+<meta property="og:description" content="링크를 눌러 여행 가계부에 참여하세요. 함께 기록하고 한 번에 정산합니다.">
+<meta property="og:image" content="https://wallet-diary-c2a1a.web.app/brand/wallet-diary-mark.png">
+<link rel="icon" type="image/png" href="/brand/wallet-diary-mark.png">
+<style>
+  :root { color-scheme: light; --ink:#17233b; --muted:#66738c; --line:#e5eaf4; --paper:#f7f8fc; --accent:#3555d5; --accent-dark:#2945ae; --soft:#eef2ff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { min-height: 100vh; background: var(--paper); color: var(--ink); font-family: Inter, Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; line-height: 1.6; -webkit-text-size-adjust: 100%; }
+  main { width: min(100%, 460px); margin: 0 auto; padding: max(40px, env(safe-area-inset-top)) 20px calc(40px + env(safe-area-inset-bottom)); }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 22px; padding: 28px 22px 24px; box-shadow: 0 6px 24px rgba(23, 35, 59, .05); }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .brand img { width: 48px; height: 48px; border-radius: 12px; }
+  .brand strong { font-size: 17px; letter-spacing: -.02em; }
+  h1 { margin: 0 0 10px; font-size: 24px; line-height: 1.3; letter-spacing: -.035em; }
+  p { margin: 0 0 12px; font-size: 15px; color: var(--muted); }
+  .actions { display: grid; gap: 10px; margin: 22px 0 6px; }
+  .button { display: flex; align-items: center; justify-content: center; min-height: 54px; padding: 12px 16px; border-radius: 14px; border: 1px solid var(--line); background: #fff; color: var(--accent-dark); font-size: 16px; font-weight: 750; text-decoration: none; text-align: center; overflow-wrap: anywhere; }
+  .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .button:active { transform: translateY(1px); }
+  .quiet { display: block; padding: 12px 8px; color: var(--muted); font-size: 14px; text-align: center; }
+  .note { margin: 14px 0 0; padding: 12px 14px; border-radius: 12px; background: var(--soft); color: #32406b; font-size: 13px; }
+  .warn { background: #fff4ef; color: #8a3b2b; font-weight: 650; }
+  footer { margin-top: 18px; text-align: center; font-size: 12px; color: var(--muted); }
+  footer a { color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <div class="brand"><img src="/brand/wallet-diary-mark.png" alt="" width="48" height="48"><strong id="brand">지갑의 일기</strong></div>
+    <h1 id="title">여행 가계부 초대</h1>
+    <p id="lead">동행이 보낸 초대 링크입니다. 참여하면 여행 지출을 함께 기록하고 한 번에 정산할 수 있습니다.</p>
+    <p id="warning" class="note warn" hidden></p>
+    <div id="actions" class="actions"></div>
+    <p id="note" class="note" hidden></p>
+    <noscript><p class="note">이 페이지는 JavaScript가 필요합니다. · This page needs JavaScript. · Cette page nécessite JavaScript.</p></noscript>
+  </section>
+  <footer><a id="privacy" href="/">개인정보처리방침</a></footer>
+</main>
+<script>
+(function () {
+  "use strict";
+  // Keep these values in step with src/lib/inviteLink.ts.
+  var PACKAGE = "com.seunghyeonkim.walletdiary";
+  var SCHEME = "walletdiary";
+  var APP_PATH = "/app/";
+  var CODE = /^[A-Za-z0-9_-]{1,100}\.[a-f0-9]{64}$/;
+  var TEXT = {
+    ko: {
+      page: "지갑의 일기 · 여행 초대", brand: "지갑의 일기", privacy: "개인정보처리방침",
+      title: "여행 가계부 초대", lead: "동행이 보낸 초대 링크입니다. 참여하면 여행 지출을 함께 기록하고 한 번에 정산할 수 있습니다.",
+      openApp: "앱에서 열기", install: "Play 스토어에서 앱 설치", web: "웹에서 참여하기", webQuiet: "설치 없이 웹에서 참여", stay: "이 브라우저에서 계속",
+      openBrowser: "기본 브라우저에서 열기",
+      androidNote: "앱이 설치되어 있으면 바로 열립니다. 설치 후 처음 열면 이 초대가 자동으로 이어집니다. 초대는 24시간 동안 유효합니다.",
+      inApp: "지금은 메신저 안의 브라우저입니다. 여기서 참여하면 Safari에서는 다른 사람으로 인식됩니다. 화면의 메뉴(⋯ 또는 공유 버튼)에서 ‘Safari로 열기’를 선택한 뒤 참여하는 것을 권장합니다.",
+      desktopNote: "Android 휴대폰에서 이 링크를 열면 앱으로 참여할 수 있습니다. 초대는 24시간 동안 유효합니다.",
+      moving: "웹 버전으로 이동하는 중…",
+      noCodeTitle: "초대 링크를 확인해 주세요", noCodeLead: "초대 정보가 없는 주소입니다. 동행에게 받은 초대 링크 전체를 다시 눌러 주세요.", store: "Play 스토어에서 지갑의 일기 보기"
+    },
+    en: {
+      page: "Wallet Diary · Trip invitation", brand: "Wallet Diary", privacy: "Privacy policy",
+      title: "Trip invitation", lead: "A travel companion sent you this invitation. Join to record trip expenses together and settle up in one go.",
+      openApp: "Open in the app", install: "Install from Google Play", web: "Join on the web", webQuiet: "Join on the web without installing", stay: "Continue in this browser",
+      openBrowser: "Open in default browser",
+      androidNote: "If the app is installed it opens right away. After installing, the first launch continues with this invitation. Invitations are valid for 24 hours.",
+      inApp: "You are inside a messenger's built-in browser. If you join here, Safari will treat you as a different person. Choosing “Open in Safari” from the menu (⋯ or the share button) before joining is recommended.",
+      desktopNote: "Open this link on an Android phone to join in the app. Invitations are valid for 24 hours.",
+      moving: "Opening the web version…",
+      noCodeTitle: "Check your invitation link", noCodeLead: "This address has no invitation in it. Tap the complete link your companion sent you again.", store: "See Wallet Diary on Google Play"
+    },
+    fr: {
+      page: "Journal du portefeuille · Invitation au voyage", brand: "Journal du portefeuille", privacy: "Politique de confidentialité",
+      title: "Invitation au voyage", lead: "Un compagnon de voyage vous a envoyé cette invitation. Participez pour noter les dépenses ensemble et tout régler en une fois.",
+      openApp: "Ouvrir dans l’application", install: "Installer depuis Google Play", web: "Participer sur le web", webQuiet: "Participer sur le web sans installer", stay: "Continuer dans ce navigateur",
+      openBrowser: "Ouvrir dans le navigateur par défaut",
+      androidNote: "Si l’application est installée, elle s’ouvre aussitôt. Après l’installation, le premier lancement reprend cette invitation. Les invitations sont valables 24 heures.",
+      inApp: "Vous êtes dans le navigateur intégré d’une messagerie. Si vous participez ici, Safari vous verra comme une autre personne. Il est conseillé de choisir « Ouvrir dans Safari » dans le menu (⋯ ou le bouton de partage) avant de participer.",
+      desktopNote: "Ouvrez ce lien sur un téléphone Android pour participer dans l’application. Les invitations sont valables 24 heures.",
+      moving: "Ouverture de la version web…",
+      noCodeTitle: "Vérifiez votre lien d’invitation", noCodeLead: "Cette adresse ne contient pas d’invitation. Touchez à nouveau le lien complet envoyé par votre compagnon de voyage.", store: "Voir Journal du portefeuille sur Google Play"
+    }
+  };
+
+  function language() {
+    var tags = [navigator.language].concat(navigator.languages || []);
+    for (var index = 0; index < tags.length; index += 1) {
+      var base = String(tags[index] || "").toLowerCase().split("-")[0];
+      if (TEXT.hasOwnProperty(base)) return base;
+    }
+    return "en";
+  }
+  function element(id) { return document.getElementById(id); }
+  function show(id, text) { var node = element(id); node.textContent = text; node.hidden = false; }
+  function button(label, href, kind) {
+    var link = document.createElement("a");
+    link.className = kind === "quiet" ? "quiet" : kind === "primary" ? "button primary" : "button";
+    link.href = href; link.textContent = label;
+    element("actions").appendChild(link);
+  }
+
+  var lang = language(); var t = TEXT[lang];
+  document.documentElement.lang = lang; document.title = t.page;
+  element("brand").textContent = t.brand; element("privacy").textContent = t.privacy; element("privacy").href = "/#" + lang;
+
+  var fragment = location.hash.slice(1);
+  try { fragment = decodeURIComponent(fragment); } catch (error) { /* keep the raw fragment */ }
+  var code = CODE.test(fragment) ? fragment : "";
+  var ua = navigator.userAgent || "";
+  var android = /Android/i.test(ua);
+  var ios = /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  var kakao = /KAKAOTALK/i.test(ua);
+  var inApp = kakao || /Instagram|FBAN|FBAV|FB_IAB|\bLine\/|NAVER\(inapp|DaumApps|Twitter|TikTok|Snapchat|;\s*wv\)/i.test(ua);
+  var store = "https://play.google.com/store/apps/details?id=" + PACKAGE + (code ? "&referrer=" + encodeURIComponent("invite=" + code) : "");
+  var web = APP_PATH + (code ? "#" + code : "");
+
+  if (!code) {
+    element("title").textContent = t.noCodeTitle; element("lead").textContent = t.noCodeLead;
+    if (!ios) button(t.store, store, "plain");
+    return;
+  }
+  element("title").textContent = t.title; element("lead").textContent = t.lead;
+
+  if (android) {
+    // The custom scheme opens the installed app; otherwise the browser follows the store fallback.
+    button(t.openApp, "intent://join/" + code + "#Intent;scheme=" + SCHEME + ";package=" + PACKAGE + ";S.browser_fallback_url=" + encodeURIComponent(store) + ";end", "primary");
+    button(t.install, store, "plain");
+    button(t.webQuiet, web, "quiet");
+    show("note", t.androidNote);
+  } else if (ios && inApp) {
+    show("warning", t.inApp);
+    if (kakao) button(t.openBrowser, "kakaotalk://web/openExternal?url=" + encodeURIComponent(location.href), "primary");
+    button(t.stay, web, kakao ? "plain" : "primary");
+  } else if (ios) {
+    // There is no iOS app to open: continue on the web straight away.
+    show("note", t.moving);
+    button(t.web, web, "primary");
+    location.replace(web);
+  } else {
+    button(t.web, web, "primary");
+    show("note", t.desktopNote);
+  }
+})();
+</script>
+</body>
+</html>

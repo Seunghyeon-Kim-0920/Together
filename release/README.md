@@ -1,4 +1,28 @@
-# 지갑의 일기 v1.8.17 — 보안 의존성 업데이트
+# v1.8.19 iPhone 소스 전달 — 2026-11-11
+
+- 전달 파일: `Wallet-Diary-v1.8.19-iOS-source.zip` (빌드용 소스, **설치용 IPA 아님**).
+- 동생분의 Mac에서 압축을 풀고 ZIP 안의 `docs/IOS_PERSONAL_INSTALL_KO.md`를 따르세요. Xcode/Node 준비 후 `npm run ios:check`, 성공하면 `npx cap open ios`를 실행하고 본인의 Personal Team으로 설치합니다.
+- 단축어 알림·문자·Wallet 입력, 승인 요청/완료 구분, 중복·취소 연결, 새 카테고리·편집 이름 기억, PDF/OCR 연결 포함. 입력은 기기에 대기 저장하고 앱을 열 때 가계부에 처리합니다.
+- 전체 JavaScript 테스트 **372/372**, TypeScript·ESLint·웹 빌드 성공. 프로덕션 의존성 감사 알려진 취약점 0건. 자세한 검증/한계는 `QA-v1.8.19-iOS.md` 참고.
+- **Windows에서 Swift/Xcode 빌드·아이폰 설치는 검증할 수 없어 아직 남아 있습니다.** 무료 Personal Team의 7일 프로비저닝 제한이 있습니다. GitHub/App Store에 올리지 않았고 기존 Android APK/AAB는 그대로 유지했습니다.
+
+---
+
+# 지갑의 일기 v1.8.19 — 생활·공과금·통신비 분리 및 사용처 이름 기억
+
+- 검증 완료일: 2026-11-10. 직접 설치/업데이트: `Wallet-Diary-v1.8.19.apk`, Google Play 업로드용: `Wallet-Diary-v1.8.19.aab`.
+- 패키지 `com.seunghyeonkim.walletdiary`, 버전 코드 **144**. 기존 서명 키 유지.
+- 일반 가계부의 생활·공과금을 **생활 / 공과금**으로 분리하고 **통신비** 추가. 한국어·영어·프랑스어 선택 목록·통계·자동 분류 힌트에 반영. 기존 공과금 ID와 기록은 보존하며 과거 기록을 임의로 재분류하지 않음.
+- 지출 내용을 `이마트여의도점`에서 `이마트 장보기`로 수정하면, 이후 같은 가계부에서 원본 사용처가 같은 알림을 편집한 이름으로 기록. 업데이트 후 실제 편집·저장한 시점부터 기억하며 다른 지점·가계부의 이름이나 과거 내역은 일괄 변경하지 않음.
+- 원본 사용처는 중복·취소·캐시백·명세서 환불 비교에 유지. 이름 규칙은 기기 내 비공개이며 공유 파일/PDF에는 노출하지 않음. 새 권한·서버·유료 API·AI 호출 없음.
+- 공통/Android JavaScript **331/331**, Android JVM **220/220**, native ICU 정규식 **118개**·매칭 사례 **321개** 통과. TypeScript·ESLint·웹/Android 빌드 성공. 프로덕션 의존성 감사 알려진 취약점 0건.
+- APK/AAB 서명·버전·번들 구조·웹 자산 일치, APK ZIP 및 64비트 ELF 16KB 정렬 확인. APK와 AAB DEX 2개·네이티브 라이브러리 8개 일치. 체크섬은 `SHA256SUMS.txt`, 상세 범위는 `QA-v1.8.19.md`.
+- **한계:** 실기기 설치·실제 알림 수신은 미검증. iPhone 작업은 중단 상태로 보존했으며 미완성 iOS 테스트 1건 실패는 이번 범위에서 수정하지 않음. Android 릴리스는 명시적 `-AndroidOnly` 테스트 범위로 빌드했고 전체 플랫폼 테스트 성공을 의미하지 않음.
+- 가계부 백업 후 기존 앱을 삭제하지 말고 업데이트. Play 설치본은 Play Console에 새 AAB를 올려 업데이트. **이번 Android 작업에서 GitHub 업로드·Play 제출·Firebase 배포는 하지 않음.**
+
+---
+
+# 이전 릴리스: 지갑의 일기 v1.8.17 — 보안 의존성 업데이트
 
 - 검증 완료일: 2026-11-02. 직접 설치/업데이트: `Wallet-Diary-v1.8.17.apk`, Google Play 업로드용: `Wallet-Diary-v1.8.17.aab`.
 - 패키지: `com.seunghyeonkim.walletdiary`, version code **142**. 기존 서명 키를 유지했습니다. Play Console에 아직 제출하지 않은 v1.8.16/code 141 대신 이 AAB를 사용하세요.

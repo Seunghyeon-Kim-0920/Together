@@ -126,6 +126,8 @@ html[lang="fr"] .app-header h1 { font-size: 17px; letter-spacing: -.035em; max-w
 .category-icon.category-transport { color: #3c5bac; background: #eaf0ff; }
 .category-icon.category-shopping { color: #7551af; background: #f0eaff; }
 .category-icon.category-housing, .category-icon.category-accommodation { color: #317862; background: #e7f4ee; }
+.category-icon.category-living { color: #88702a; background: #faf3dd; }
+.category-icon.category-telecommunications { color: #326b91; background: #e6f3fb; }
 .category-icon.category-health { color: #b44853; background: #fdecef; }
 .category-icon.category-leisure, .category-icon.category-activity { color: #b35282; background: #fdeef5; }
 .category-icon.category-utilities, .category-icon.category-education, .category-icon.category-subscriptions, .category-icon.category-travel, .category-icon.category-other { background: #edf1ff; color: #5166a3; }

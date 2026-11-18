@@ -15,11 +15,13 @@ final class PaymentCategoryHints {
         {"subscriptions", "netflix|spotify|deezer|icloud|subscription|abonnement|adobe|chatgpt|openai|넷플릭스|구독|멤버십|订阅"},
         {"travel", "hotel|hostel|airbnb|agoda|airline|airways|airfrance|easyjet|ryanair|airport|flight|호텔|숙박|항공|여행사|酒店|航空"},
         {"transport", "uber|bolt|taxi|sncf|ratp|eurostar|trenitalia|renfe|flixbus|train|railway|metro|bus|tram|parking|fuel|petrol|diesel|essence|toll|shell|totalenergies|택시|주유|주차|교통|통행료|철도|버스|지하철|汽油|地铁"},
-        {"utilities", "electricity|electricite|energy|energie|water|internet|telecom|telephone|broadband|edf|engie|veolia|sfr|vodafone|전기요금|수도요금|가스요금|관리비|통신비|한국전력|电费|水费"},
+        {"telecommunications", "internet|telecom|telecommunication|telecommunications|telephone|broadband|phone bill|mobile plan|mobile bill|sfr|bouygues|vodafone|verizon|comcast|att|at&t|skt|kt|lg uplus|orange france|free mobile|lycamobile|통신비|통신요금|휴대폰요금|휴대폰 요금|휴대전화요금|인터넷요금|인터넷 요금|전화요금|알뜰폰|에스케이텔레콤|sk텔레콤|엘지유플러스|lg유플러스|携帯料金|通信料金|话费|網路費"},
+        {"utilities", "electricity|electricite|energy|energie|water|gas bill|edf|engie|veolia|전기요금|수도요금|가스요금|도시가스|관리비|한국전력|电费|水费"},
+        {"living", "household|housekeeping|laundry|laundromat|dry cleaning|cleaning service|pressing|laverie|droguerie|electricien|plomberie|daiso|생활용품|생필품|세탁소|세탁비|크린토피아|청소용품|청소비|다이소|日用品|生活用品|洗濯"},
         {"housing", "rent|loyer|landlord|residence|mortgage|syndic|housing|월세|전세|임대료|주거비|기숙사|家賃|房租"},
         {"education", "school|ecole|university|universite|tuition|course|formation|academy|udemy|coursera|librairie|bookstore|학원|교육|등록금|수강료|교재|서점|学費"},
         {"leisure", "cinema|theatre|museum|musee|concert|festival|gym|fitness|sports|gaming|steam|playstation|nintendo|spa|coiffeur|영화|공연|헬스|필라테스|게임|미용실|마사지"},
-        {"shopping", "amazon|ikea|zara|uniqlo|decathlon|aliexpress|temu|ebay|etsy|sephora|fnac|clothing|fashion|apparel|boutique|store|shop|shopping|쿠팡|무신사|올리브영|다이소|백화점|쇼핑|의류|화장품"}
+        {"shopping", "amazon|ikea|zara|uniqlo|decathlon|aliexpress|temu|ebay|etsy|sephora|fnac|clothing|fashion|apparel|boutique|store|shop|shopping|쿠팡|무신사|올리브영|백화점|쇼핑|의류|화장품"}
     };
     private static final Pattern[] PATTERNS = new Pattern[RULES.length];
     static {

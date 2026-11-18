@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.seunghyeonkim.walletdiary",
+      "sha256_cert_fingerprints": [
+        "41:36:1B:49:E8:7E:19:97:1B:8A:AD:7C:21:AB:56:D0:DD:EE:17:8B:26:B9:4E:1D:B0:56:31:9E:F1:A3:16:01"
+      ]
+    }
+  }
+]

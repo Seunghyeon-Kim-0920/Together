@@ -36,9 +36,9 @@ const travelLabels: Record<Locale, Record<TravelCategory, string>> = {
   fr: { accommodation: "Hébergement", transport: "Transport", food: "Repas", activities: "Activités", shopping: "Achats", insurance: "Assurance", other: "Autres" },
 };
 const generalLabels: Record<Locale, Record<GeneralCategory, string>> = {
-  ko: { food: "식비", transport: "교통비", housing: "주거", utilities: "생활·공과금", shopping: "쇼핑", health: "의료", leisure: "여가", education: "교육", subscriptions: "구독", travel: "여행", other: "기타" },
-  en: { food: "Food", transport: "Transport", housing: "Housing", utilities: "Utilities", shopping: "Shopping", health: "Health", leisure: "Leisure", education: "Education", subscriptions: "Subscriptions", travel: "Travel", other: "Other" },
-  fr: { food: "Alimentation", transport: "Transport", housing: "Logement", utilities: "Factures", shopping: "Achats", health: "Santé", leisure: "Loisirs", education: "Éducation", subscriptions: "Abonnements", travel: "Voyage", other: "Autres" },
+  ko: { food: "식비", transport: "교통비", housing: "주거", living: "생활", utilities: "공과금", telecommunications: "통신비", shopping: "쇼핑", health: "의료", leisure: "여가", education: "교육", subscriptions: "구독", travel: "여행", other: "기타" },
+  en: { food: "Food", transport: "Transport", housing: "Housing", living: "Household", utilities: "Utilities", telecommunications: "Phone & internet", shopping: "Shopping", health: "Health", leisure: "Leisure", education: "Education", subscriptions: "Subscriptions", travel: "Travel", other: "Other" },
+  fr: { food: "Alimentation", transport: "Transport", housing: "Logement", living: "Vie quotidienne", utilities: "Eau, gaz et électricité", telecommunications: "Télécommunications", shopping: "Achats", health: "Santé", leisure: "Loisirs", education: "Éducation", subscriptions: "Abonnements", travel: "Voyage", other: "Autres" },
 };
 export function travelCategoryLabel(locale: Locale, category: TravelCategory): string { return travelLabels[locale][category]; }
 export function generalCategoryLabel(locale: Locale, category: GeneralCategory): string { return generalLabels[locale][category]; }

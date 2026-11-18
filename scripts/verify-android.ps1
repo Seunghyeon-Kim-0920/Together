@@ -59,7 +59,7 @@ try {
     if (-not $entry) { throw "APK missing web asset: $relative" }
     $stream = $entry.Open()
     $hasher = [System.Security.Cryptography.SHA256]::Create()
-    try { $apkHash = [Convert]::ToHexString($hasher.ComputeHash($stream)) } finally { $stream.Dispose(); $hasher.Dispose() }
+    try { $apkHash = ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-', '') } finally { $stream.Dispose(); $hasher.Dispose() }
     if ($apkHash -ne (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash) { throw "APK stale web asset: $relative" }
   }
   "APK web assets match final build: $($webFiles.Count) files"

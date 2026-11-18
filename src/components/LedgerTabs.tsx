@@ -4,7 +4,8 @@ import { t } from "../lib/i18n";
 
 export function LedgerTabs({ ledgers, activeId, locale, onSelect, onAdd, onMenu }: {
   ledgers: readonly Ledger[]; activeId: string | null; locale: Locale;
-  onSelect: (id: string) => void; onAdd: () => void; onMenu: (ledger: Ledger) => void;
+  /** Omitted in the hosted web version, where trips are joined by invitation only. */
+  onSelect: (id: string) => void; onAdd?: () => void; onMenu: (ledger: Ledger) => void;
 }) {
   return (
     <nav id="wallet-ledger-tabs" className="ledger-tabs" tabIndex={-1} aria-label={t(locale, "ledgers")}>
@@ -19,7 +20,7 @@ export function LedgerTabs({ ledgers, activeId, locale, onSelect, onAdd, onMenu 
           </div>
         );
       })}
-      <button className="new-ledger-tab" type="button" onClick={onAdd}><Plus aria-hidden="true" /><span>{t(locale, "newLedger")}</span></button>
+      {onAdd ? <button className="new-ledger-tab" type="button" onClick={onAdd}><Plus aria-hidden="true" /><span>{t(locale, "newLedger")}</span></button> : null}
     </nav>
   );
 }

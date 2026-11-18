@@ -2,7 +2,7 @@ import type { Locale } from "./types";
 
 /** Native-generated, package-scoped sender identity, never a real app package. */
 export function isSmsSenderSource(value: string): boolean {
-  return /^walletdiary\.sms\.s[0-9a-f]{64}$/.test(value);
+  return /^walletdiary\.sms\.s[0-9a-f]{64}$/.test(value) || /^walletdiary\.ios\.message\.s[0-9a-f]{32}$/.test(value);
 }
 
 const ko = {

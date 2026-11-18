@@ -5,12 +5,43 @@ import { applyHighConfidenceCardAutomation, confirmCardCandidate, parseNativeCar
 import { createLedger, mergeGeneralLedgerMutation, parseLedger, parseWalletStateStrict } from "../src/lib/wallet";
 import { createLedgerSharePayload, parseLedgerSharePayload } from "../src/lib/share";
 import type { GeneralCategory, GeneralExpense, GeneralLedger, WalletState } from "../src/lib/types";
+import { GENERAL_CATEGORIES } from "../src/lib/types";
+import { generalCategoryLabel } from "../src/lib/i18n";
 
 const candidate: NativeCardCandidate = { id: "learn-1", queueToken: "token-1", packageName: "com.example.bank", sourceName: "Example bank", merchant: "Lidl Paris", currency: "EUR", minorUnits: 1000, occurredAt: "2026-09-01T12:00:00+02:00", occurredOn: "2026-09-01", confidence: "high", manualOnly: false, eventType: "purchase" };
 function ledger(currency = "EUR"): GeneralLedger { return { ...createLedger("general", "Test", currency), automationSources: [{ packageName: candidate.packageName, displayName: "Test", trustedDirectApp: true }] }; }
 function wallet(...ledgers: GeneralLedger[]): WalletState { return { version: 2, locale: "ko", activeLedgerId: ledgers[0].id, ledgers }; }
 function expense(description = "Lidl Paris", category: GeneralCategory = "shopping", id = "edited"): GeneralExpense { return { id, description, category, currency: "EUR", minorUnits: 1234, occurredOn: "2026-08-01" }; }
 function general(state: WalletState, index = 0): GeneralLedger { const item = state.ledgers[index]; assert.equal(item.kind, "general"); return item as GeneralLedger; }
+
+test("household, utilities and telecommunications use separate stable category IDs", () => {
+  assert.equal(new Set(GENERAL_CATEGORIES).size, GENERAL_CATEGORIES.length);
+  assert.equal(generalCategoryLabel("ko", "living"), "생활");
+  assert.equal(generalCategoryLabel("ko", "utilities"), "공과금");
+  assert.equal(generalCategoryLabel("ko", "telecommunications"), "통신비");
+  for (const [merchant, expected] of [["다이소 여의도점", "living"], ["크린토피아 세탁비", "living"], ["Laverie Exemple", "living"], ["Household supplies", "living"], ["한국전력 전기요금", "utilities"], ["수도요금", "utilities"], ["EDF", "utilities"], ["SK텔레콤", "telecommunications"], ["KT", "telecommunications"], ["LG유플러스", "telecommunications"], ["SFR", "telecommunications"], ["Phone bill", "telecommunications"], ["이마트 여의도점", "food"], ["Netflix", "subscriptions"]] as const) {
+    assert.equal(inferGeneralCategory(merchant), expected, merchant);
+  }
+  assert.equal(inferGeneralCategory("Mobile Games XYZ"), "other");
+});
+
+test("existing combined-category expenses and explicit choices are never silently recategorized", () => {
+  const old = expense("SFR", "utilities");
+  const existing = { ...ledger(), expenses: [old] };
+  const parsed = parseLedger(existing); assert.ok(parsed); assert.equal(parsed.kind, "general");
+  assert.equal(parsed.expenses[0].category, "utilities");
+  assert.equal(createCategoryResolver([existing])("SFR", existing.id), "utilities");
+  const changed = { ...old, category: "telecommunications" as const };
+  const learned = rememberMerchantCategory(existing, changed, old);
+  assert.equal(createCategoryResolver([learned])("SFR", existing.id), "telecommunications");
+  for (const category of ["living", "telecommunications"] as const) {
+    const next = { ...ledger(), expenses: [expense("Synthetic merchant", category)] };
+    assert.ok(parseLedger(next));
+    assert.equal(parseLedgerSharePayload(createLedgerSharePayload(next))?.expenses[0].category, category);
+    const result = applyHighConfidenceCardAutomation(wallet(ledger()), [{ ...candidate, merchant: "Unknown XYZ", categoryHint: category }]);
+    assert.equal(general(result.state).expenses[0].category, category);
+  }
+});
 
 test("category suggestions understand multilingual merchants and specific brands", () => {
   const cases: [string, GeneralCategory][] = [["Uber Eats", "food"], ["Uber trip", "transport"], ["Amazon Prime", "subscriptions"], ["Amazon marketplace", "shopping"], ["PHARMACIE DU CENTRE", "health"], ["Café Étoile", "food"], ["월세 이체", "housing"], ["한국전력 전기요금", "utilities"], ["스타벅스 강남점", "food"], ["서울약국", "health"], ["SNCF CONNECT", "transport"], ["Université test", "education"], ["NETFLIX.COM", "subscriptions"], ["博物館 超市", "food"], ["Unidentified XYZ", "other"]];

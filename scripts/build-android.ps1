@@ -1,6 +1,9 @@
 param(
     [string]$JavaHome = "$env:LOCALAPPDATA\TogetherToolchain\jdk21\jdk-21.0.12.1+1",
-    [string]$AndroidSdk = "$env:LOCALAPPDATA\TogetherToolchain\android-sdk"
+    [string]$AndroidSdk = "$env:LOCALAPPDATA\TogetherToolchain\android-sdk",
+    # Explicitly scope a release to Android while unrelated iOS work is paused.
+    # Default still runs the complete cross-platform suite.
+    [switch]$AndroidOnly
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -20,8 +23,13 @@ try {
     & npm.cmd audit --omit=dev --audit-level=moderate | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Production dependency security audit failed; do not package a release.' }
     Write-Output "WALLET_SECURITY_AUDIT_PASSED $version"
-    & npm.cmd test | Out-Host
+    if ($AndroidOnly) {
+        & npm.cmd run test:android | Out-Host
+    } else {
+        & npm.cmd test | Out-Host
+    }
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+    Write-Output "WALLET_TEST_SCOPE $(if ($AndroidOnly) { 'android-and-shared' } else { 'all-platforms' })"
     & npm.cmd run lint | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Lint failed.' }
     # Build outside OneDrive and the non-ASCII checkout path. No global tool

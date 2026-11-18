@@ -29,3 +29,22 @@ test("iOS app and Android builds identify the same source release", () => {
   assert.ok(androidCode);
   assert.deepEqual(codes, [androidCode, androidCode]);
 });
+
+test("custom iOS plugins and shortcut actions are included in the application target", () => {
+  const sourcePhase = project.split("/* Begin PBXSourcesBuildPhase section */")[1]?.split("/* End PBXSourcesBuildPhase section */")[0];
+  assert.ok(sourcePhase);
+  for (const filename of ["IOSAutomationInbox.swift", "CardAutomationPlugin.swift", "WalletShortcutIntents.swift", "WalletBridgeViewController.swift", "DocumentFilesPlugin.swift"]) {
+    assert.ok(existsSync(resolve(root, "ios/App/App", filename)), `Missing native source: ${filename}`);
+    assert.ok(sourcePhase.includes(`/* ${filename} in Sources */`), `Native source not compiled by target: ${filename}`);
+  }
+  const controller = readFileSync(resolve(root, "ios/App/App/WalletBridgeViewController.swift"), "utf8");
+  for (const plugin of ["CardAutomationPlugin", "DocumentFilesPlugin"]) assert.ok(controller.includes(`registerPluginInstance(${plugin}())`));
+  const scene = readFileSync(resolve(root, "ios/App/App/SceneDelegate.swift"), "utf8");
+  assert.match(scene, /rootViewController = WalletBridgeViewController\(\)/);
+  const storyboard = readFileSync(resolve(root, "ios/App/App/Base.lproj/Main.storyboard"), "utf8");
+  assert.match(storyboard, /customClass="WalletBridgeViewController"/);
+  for (const locale of ["ko", "en", "fr"]) {
+    assert.ok(existsSync(resolve(root, `ios/App/App/${locale}.lproj/Localizable.strings`)));
+    assert.ok(project.includes(`${locale}.lproj/Localizable.strings`));
+  }
+});

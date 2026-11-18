@@ -287,7 +287,8 @@ function existingIndex(state?: WalletState): { ids: Set<string>; signatures: Map
     for (const expense of ledger.expenses) {
       ids.add(expense.id); ids.add(publicExpenseId(ledger.id, expense.id));
       if (ledger.kind === "general") { const general = expense as GeneralExpense; if (general.automationFingerprint) ids.add(general.automationFingerprint); }
-      const key = semanticKey({ ...expense, description: merchantDisplayName(expense.description, expense.id) });
+      const original = ledger.kind === "general" ? (expense as GeneralExpense).originalMerchant : undefined;
+      const key = semanticKey({ ...expense, description: original ?? merchantDisplayName(expense.description, expense.id) });
       signatures.set(key, (signatures.get(key) ?? 0) + 1);
       if (!expense.id.startsWith("statement-t-")) weakSignatures.set(key, (weakSignatures.get(key) ?? 0) + 1);
     }
@@ -406,7 +407,7 @@ function savedRefundCandidates(state: WalletState | undefined, reversal: ParsedS
   for (const ledger of state.ledgers) {
     if (ledger.kind !== "general") continue;
     for (const expense of ledger.expenses) {
-      const merchant = merchantKey(merchantDisplayName(expense.description, expense.id));
+      const merchant = merchantKey(expense.originalMerchant ?? merchantDisplayName(expense.description, expense.id));
       const matchedSource = sourceId && (expense.id === sourceId || ledger.statementImportHistory?.some((receipt) => receipt.id === sourceId && receipt.expenseId === expense.id));
       const matchedRelation = relatedKey && ledger.statementImportHistory?.some((receipt) => receipt.transactionKey === relatedKey && receipt.expenseId === expense.id);
       if (expense.currency !== reversal.row.currency || expense.occurredOn > reversal.row.occurredOn) continue;

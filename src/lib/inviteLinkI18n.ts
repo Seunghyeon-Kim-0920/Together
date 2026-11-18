@@ -1,0 +1,122 @@
+import { sharedText } from "./sharedTravelI18n";
+import type { Locale } from "./types";
+
+const copy = {
+  ko: {
+    link: "초대 링크",
+    createLink: "초대 링크 만들기",
+    revokeLink: "이 초대 취소",
+    linkHelp: "링크를 누르면 참여 화면이 바로 열립니다. Android는 앱에서, iPhone·PC는 웹에서 참여할 수 있습니다.",
+    shareLink: "초대 링크 공유",
+    copyLink: "링크 복사",
+    copied: "초대 링크를 복사했습니다.",
+    copyFailed: "복사하지 못했습니다. 링크를 길게 눌러 직접 복사해 주세요.",
+    codeFallback: "링크가 열리지 않을 때 쓰는 초대 코드",
+    codeOrLink: "초대 링크 또는 코드",
+    sheetTitle: "여행 초대",
+    sheetIntro: "초대받은 여행 가계부에 참여합니다. 참여하면 새 여행 탭이 만들어지고 내역이 함께 동기화됩니다.",
+    nameHelp: "관리자가 명단에 넣어 둔 이름이 있다면 똑같이 입력하세요. 그 사람으로 연결됩니다. 없으면 새 참가자로 추가됩니다.",
+    joinShort: "참여하기",
+    joining: "참여하는 중…",
+    joined: "여행에 참여했습니다.",
+    already: "이미 참여 중인 여행입니다.",
+    open: "여행 열기",
+    later: "나중에",
+    expired: "초대 링크가 만료되었거나 취소되었습니다. 관리자에게 새 링크를 요청해 주세요.",
+    offline: "인터넷에 연결한 뒤 다시 시도해 주세요.",
+    stale: "이 기기에 이전 연결이 남아 있습니다. 해당 여행 탭의 ‘{panel}’에서 ‘{action}’을 누른 뒤 링크를 다시 열어 주세요.",
+    tooMany: "가계부 탭이 너무 많습니다. 쓰지 않는 탭을 삭제한 뒤 다시 시도해 주세요.",
+    webBadge: "웹 버전",
+    webTitle: "초대받은 여행에 참여하기",
+    webNoInviteTitle: "초대 링크로 들어와 주세요",
+    webNoInvite: "이 페이지는 초대받은 여행 가계부를 브라우저에서 함께 쓰는 웹 버전입니다. 동행이 보낸 초대 링크를 눌러 다시 들어와 주세요.",
+    webStore: "Android 앱 받기",
+    webAndroid: "Android에서는 앱으로 참여하면 카드 결제 알림 자동 기록도 쓸 수 있습니다.",
+    webStorage: "웹 버전은 이 브라우저에 참여 정보를 보관합니다. 브라우저 데이터를 지우면 연결이 끊기고, 다시 들어올 때 새 참가자로 추가됩니다. 홈 화면에 추가해 두면 더 안전합니다.",
+    webInApp: "지금은 메신저 안의 브라우저입니다. 여기서 참여하면 Safari·Chrome에서는 다른 사람으로 인식됩니다. 기본 브라우저에서 여는 것을 권장합니다.",
+    webOpenExternal: "기본 브라우저에서 열기",
+  },
+  en: {
+    link: "Invitation link",
+    createLink: "Create invitation link",
+    revokeLink: "Cancel this invitation",
+    linkHelp: "Tapping the link opens the join screen. Android opens the app; iPhone and desktop join on the web.",
+    shareLink: "Share invitation link",
+    copyLink: "Copy link",
+    copied: "Invitation link copied.",
+    copyFailed: "Could not copy. Press and hold the link to copy it yourself.",
+    codeFallback: "Invitation code, if the link does not open",
+    codeOrLink: "Invitation link or code",
+    sheetTitle: "Trip invitation",
+    sheetIntro: "Join the trip you were invited to. A new trip tab is created and its entries stay in sync.",
+    nameHelp: "If the organizer already listed you, enter exactly that name to be linked to it. Otherwise you are added as a new participant.",
+    joinShort: "Join",
+    joining: "Joining…",
+    joined: "You joined the trip.",
+    already: "You are already part of this trip.",
+    open: "Open trip",
+    later: "Not now",
+    expired: "This invitation has expired or was cancelled. Ask the organizer for a new link.",
+    offline: "Connect to the internet and try again.",
+    stale: "An earlier connection is still stored on this device. In that trip’s “{panel}” panel choose “{action}”, then open the link again.",
+    tooMany: "There are too many notebook tabs. Delete one you no longer use and try again.",
+    webBadge: "Web version",
+    webTitle: "Join the trip you were invited to",
+    webNoInviteTitle: "Open your invitation link",
+    webNoInvite: "This page is the browser version for trips you were invited to. Open the invitation link your companion sent to come back here.",
+    webStore: "Get the Android app",
+    webAndroid: "On Android, joining in the app also lets you record card payment notifications automatically.",
+    webStorage: "The web version keeps your membership in this browser. Clearing browser data disconnects it, and you would rejoin as a new participant. Adding the page to your home screen is safer.",
+    webInApp: "You are inside a messenger's built-in browser. If you join here, Safari or Chrome will treat you as a different person. Opening your default browser is recommended.",
+    webOpenExternal: "Open in default browser",
+  },
+  fr: {
+    link: "Lien d’invitation",
+    createLink: "Créer un lien d’invitation",
+    revokeLink: "Annuler cette invitation",
+    linkHelp: "Le lien ouvre directement l’écran de participation. Android ouvre l’application ; iPhone et ordinateur participent sur le web.",
+    shareLink: "Partager le lien d’invitation",
+    copyLink: "Copier le lien",
+    copied: "Lien d’invitation copié.",
+    copyFailed: "Copie impossible. Appuyez longuement sur le lien pour le copier.",
+    codeFallback: "Code d’invitation, si le lien ne s’ouvre pas",
+    codeOrLink: "Lien ou code d’invitation",
+    sheetTitle: "Invitation au voyage",
+    sheetIntro: "Rejoignez le voyage auquel vous êtes invité. Un nouvel onglet est créé et ses dépenses restent synchronisées.",
+    nameHelp: "Si l’organisateur vous a déjà ajouté, saisissez exactement ce nom pour y être associé. Sinon, vous êtes ajouté comme nouveau participant.",
+    joinShort: "Participer",
+    joining: "Participation en cours…",
+    joined: "Vous avez rejoint le voyage.",
+    already: "Vous participez déjà à ce voyage.",
+    open: "Ouvrir le voyage",
+    later: "Plus tard",
+    expired: "Cette invitation a expiré ou a été annulée. Demandez un nouveau lien à l’organisateur.",
+    offline: "Connectez-vous à Internet puis réessayez.",
+    stale: "Une ancienne connexion est encore enregistrée sur cet appareil. Dans le panneau « {panel} » de ce voyage, choisissez « {action} », puis rouvrez le lien.",
+    tooMany: "Il y a trop d’onglets. Supprimez-en un que vous n’utilisez plus, puis réessayez.",
+    webBadge: "Version web",
+    webTitle: "Rejoindre le voyage auquel vous êtes invité",
+    webNoInviteTitle: "Ouvrez votre lien d’invitation",
+    webNoInvite: "Cette page est la version navigateur pour les voyages auxquels vous êtes invité. Ouvrez le lien d’invitation envoyé par votre compagnon de voyage pour revenir ici.",
+    webStore: "Obtenir l’application Android",
+    webAndroid: "Sur Android, participer dans l’application permet aussi d’enregistrer automatiquement les notifications de paiement.",
+    webStorage: "La version web conserve votre participation dans ce navigateur. Effacer les données du navigateur la déconnecte, et vous reviendriez comme nouveau participant. Ajouter la page à l’écran d’accueil est plus sûr.",
+    webInApp: "Vous êtes dans le navigateur intégré d’une messagerie. Si vous participez ici, Safari ou Chrome vous verra comme une autre personne. Il est conseillé d’ouvrir votre navigateur par défaut.",
+    webOpenExternal: "Ouvrir dans le navigateur par défaut",
+  },
+} as const;
+
+export type InviteTextKey = keyof typeof copy.en;
+export function inviteText(locale: Locale, key: InviteTextKey): string { return copy[locale][key]; }
+
+/** The message a companion receives. The link alone is enough to join. */
+export function inviteShareMessage(locale: Locale, tripTitle: string, link: string): string {
+  if (locale === "ko") return `[지갑의 일기] ‘${tripTitle}’ 여행 가계부에 초대합니다.\n아래 링크를 누르면 바로 참여할 수 있어요. (24시간 유효)\n${link}`;
+  if (locale === "fr") return `[Journal du portefeuille] Vous êtes invité au voyage « ${tripTitle} ».\nOuvrez ce lien pour participer (valable 24 heures) :\n${link}`;
+  return `[Wallet Diary] You are invited to the trip “${tripTitle}”.\nOpen this link to join (valid for 24 hours):\n${link}`;
+}
+
+/** Names the exact controls of the shared-trip panel, so the two texts cannot drift apart. */
+export function staleConnectionMessage(locale: Locale): string {
+  return copy[locale].stale.replace("{panel}", sharedText(locale, "title")).replace("{action}", sharedText(locale, "disconnect"));
+}

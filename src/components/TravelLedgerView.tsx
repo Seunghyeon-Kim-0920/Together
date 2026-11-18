@@ -9,6 +9,12 @@ import type { Locale, TravelCategory, TravelExpense, TravelLedger } from "../lib
 import { TRAVEL_CATEGORIES } from "../lib/types";
 import { createTravelExpense, defaultDate, newestExpensesFirst, preserveTravelShares, replaceExpenseById, settleTravelExpenses } from "../lib/wallet";
 import { SheetFrame } from "./Sheets";
+import { ConvertedSettlement } from "./ConvertedSettlement";
+import { useTravelFx, type TravelFxState } from "./useTravelFx";
+import "./invite-fx.css";
+import { fxText as f } from "../lib/fxI18n";
+import { formatRate } from "../lib/fxSummary";
+import { rateKey } from "../lib/exchangeRates";
 import { sharedText } from "../lib/sharedTravelI18n";
 import { MAX_SHARED_DESCRIPTION_LENGTH } from "../lib/sharedTravel";
 import { activeTravelParticipants, addTravelParticipant, participantIsReferenced, previewParticipantHistoryRemoval, removeTravelParticipant, restoreTravelParticipant, travelExpenseParticipants, TravelParticipantError } from "../lib/travelParticipants";
@@ -21,7 +27,18 @@ function CategoryIcon({ category }: { category: TravelCategory }) {
   return <Icon aria-hidden="true" />;
 }
 
-export function TravelLedgerView({ ledger, locale, onImport, onChange, onParticipantsChange, onRemoveParticipantHistory, onNotify }: { ledger: TravelLedger; locale: Locale; onImport: () => void; onChange: (ledger: TravelLedger) => Promise<boolean>; onParticipantsChange: (ledger: TravelLedger) => Promise<boolean>; onRemoveParticipantHistory: (ledger: TravelLedger, participantId: string) => Promise<boolean>; onNotify: Notify }) {
+function TravelExpenseAmount({ expense, locale, fx }: { expense: TravelExpense; locale: Locale; fx: TravelFxState }) {
+  const amount = fx.amounts.get(expense.id);
+  const manual = Object.hasOwn(fx.manualRates, expense.currency) ? fx.manualRates[expense.currency] : undefined;
+  const point = manual === undefined ? fx.rates.get(rateKey(expense.currency, expense.occurredOn)) : undefined;
+  const rate = manual ?? point?.rate;
+  const showConversion = fx.settings.enabled && expense.currency !== fx.settings.target;
+  const rateNote = rate === undefined ? null : `1 ${expense.currency} = ${formatRate(rate, fx.settings.target, locale)} · ${manual !== undefined ? f(locale, "manual") : `${point?.rateDate ?? expense.occurredOn} · ${point?.source === "frankfurter" ? "Frankfurter" : "currency-api"}`}`;
+  return <div className="travel-expense-amount"><b>{formatMoney(expense.minorUnits, expense.currency, locale)} <small>{expense.currency}</small></b>{showConversion ? <span className="fx-reference-amount" title={rateNote ?? undefined}>{amount === null || amount === undefined ? f(locale, fx.ready ? "unavailable" : "loading") : `≈ ${formatMoney(amount, fx.settings.target, locale)} ${fx.settings.target}`}</span> : null}</div>;
+}
+
+export function TravelLedgerView({ ledger, locale, onImport, onChange, onParticipantsChange, onRemoveParticipantHistory, onNotify }: { ledger: TravelLedger; locale: Locale; onImport?: () => void; onChange: (ledger: TravelLedger) => Promise<boolean>; onParticipantsChange: (ledger: TravelLedger) => Promise<boolean>; onRemoveParticipantHistory: (ledger: TravelLedger, participantId: string) => Promise<boolean>; onNotify: Notify }) {
+  const fx = useTravelFx(ledger, locale);
   const [formOpen, setFormOpen] = useState(false); const [expenseToEdit, setExpenseToEdit] = useState<TravelExpense | null>(null); const [participantName, setParticipantName] = useState(""); const [filter, setFilter] = useState<TravelCategory | "all">("all"); const [currencyToAdd, setCurrencyToAdd] = useState("USD"); const [currencyEditorOpen, setCurrencyEditorOpen] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false); const pdfLock = useRef(false);
   const canEditExpense = (id: string) => !ledger.sharedSync || ledger.sharedSync.trip.ownerUid === ledger.sharedSync.uid || !ledger.sharedSync.records.some((record) => record.id === id && record.authorUid !== ledger.sharedSync!.uid);
@@ -111,15 +128,17 @@ export function TravelLedgerView({ ledger, locale, onImport, onChange, onPartici
       <div className="travel-summary-card">
         <span className="travel-summary-label">{ui(locale, "travelTotal")}</span>
         <div className="travel-summary-amounts">{totals.map(({ currency, total }) => <div key={currency}><strong>{formatMoney(total, currency, locale)}</strong><small>{currency}</small></div>)}</div>
+        {fx.settings.enabled && fx.foreign.length > 0 ? <div className="travel-summary-converted" role="status"><strong title={f(locale, "referenceTotal")}>{!fx.ready ? f(locale, "loading") : fx.settlement?.complete ? `≈ ${formatMoney(fx.settlement.totalMinor, fx.settings.target, locale)} ${fx.settings.target}` : f(locale, "unavailable")}</strong></div> : null}
         <span className="travel-summary-people"><Users aria-hidden="true" />{ui(locale, "people")} <b>{activeParticipants.length}</b></span>
       </div>
       <div className="ledger-segments" role="group" aria-label={ledger.title}>
         {(["entries", "settle", "people"] as const).map((name) => <button type="button" key={name} className={section === name ? "active" : ""} aria-pressed={section === name} onClick={() => setSection(name)}>{ui(locale, name)}</button>)}
       </div>
       <section className="mobile-panel travel-sharing-toolbar">
-        <div className="exchange-buttons"><button type="button" disabled={pdfBusy} onClick={() => void exportPdf("share")} title={d(locale, "shareHelp")}><Share2 aria-hidden="true" />{ui(locale, "sharePdf")}</button><button type="button" onClick={onImport}><Download aria-hidden="true" />{ui(locale, "mergeEntries")}</button></div>
+        <div className="exchange-buttons"><button type="button" disabled={pdfBusy} onClick={() => void exportPdf("share")} title={d(locale, "shareHelp")}><Share2 aria-hidden="true" />{ui(locale, "sharePdf")}</button>{onImport ? <button type="button" onClick={onImport}><Download aria-hidden="true" />{ui(locale, "mergeEntries")}</button> : null}</div>
         {pdfBusy ? <p role="status">{d(locale, "saving")}</p> : null}
       </section>
+      {section !== "people" ? <ConvertedSettlement ledger={ledger} locale={locale} onNotify={onNotify} fx={fx} showSettlement={section === "settle"} /> : null}
       <div className="travel-panel-content">
         {ledger.participants.length === 0 && section !== "people" ? <section className="mobile-panel people-empty-state"><span className="empty-state-icon"><Users aria-hidden="true" /></span><h3>{ui(locale, "peopleFirst")}</h3><p>{ui(locale, "peopleFirstHelp")}</p><button className="primary-button" type="button" onClick={showPeople}><UserPlus aria-hidden="true" />{t(locale, "addParticipant")}</button></section> : null}
         {section === "people" ? <section className="mobile-panel participant-panel">
@@ -132,7 +151,7 @@ export function TravelLedgerView({ ledger, locale, onImport, onChange, onPartici
         {section === "entries" && ledger.participants.length > 0 ? <section className="mobile-panel expense-history">
           <div className="section-heading"><h3>{ui(locale, "entries")}</h3><span className="entry-count">{visibleExpenses.length}</span></div>
           <div className="category-rail"><button className={filter === "all" ? "active" : ""} aria-pressed={filter === "all"} type="button" onClick={() => setFilter("all")}>{t(locale, "allCategories")}</button>{TRAVEL_CATEGORIES.map((category) => <button className={filter === category ? "active" : ""} aria-pressed={filter === category} type="button" key={category} onClick={() => setFilter(category)}>{travelCategoryLabel(locale, category)}</button>)}</div>
-          {visibleExpenses.length ? <div className="expense-list">{newestExpensesFirst(visibleExpenses).map((expense) => <article key={expense.id}><span className="category-icon"><CategoryIcon category={expense.category} /></span><div><strong>{expense.description}</strong><small>{travelCategoryLabel(locale, expense.category)} · {participantNames.get(expense.paidBy)} · {expense.occurredOn}</small><SharedExpenseAttribution ledger={ledger} expenseId={expense.id} locale={locale} /></div><b>{formatMoney(expense.minorUnits, expense.currency, locale)}</b><span className="expense-actions"><button type="button" disabled={!canEditExpense(expense.id)} aria-label={`${t(locale, "edit")}: ${expense.description}`} onClick={() => { setExpenseToEdit(expense); setFormOpen(true); }}><Pencil aria-hidden="true" /></button><button type="button" disabled={!canEditExpense(expense.id)} aria-label={`${t(locale, "delete")}: ${expense.description}`} onClick={() => removeExpense(expense.id)}><Trash2 aria-hidden="true" /></button></span></article>)}</div> : <p className="ledger-empty">{t(locale, "noExpenses")}</p>}
+          {visibleExpenses.length ? <div className="expense-list">{newestExpensesFirst(visibleExpenses).map((expense) => <article key={expense.id}><span className="category-icon"><CategoryIcon category={expense.category} /></span><div><strong>{expense.description}</strong><small>{travelCategoryLabel(locale, expense.category)} · {participantNames.get(expense.paidBy)} · {expense.occurredOn}</small><SharedExpenseAttribution ledger={ledger} expenseId={expense.id} locale={locale} /></div><TravelExpenseAmount expense={expense} locale={locale} fx={fx} /><span className="expense-actions"><button type="button" disabled={!canEditExpense(expense.id)} aria-label={`${t(locale, "edit")}: ${expense.description}`} onClick={() => { setExpenseToEdit(expense); setFormOpen(true); }}><Pencil aria-hidden="true" /></button><button type="button" disabled={!canEditExpense(expense.id)} aria-label={`${t(locale, "delete")}: ${expense.description}`} onClick={() => removeExpense(expense.id)}><Trash2 aria-hidden="true" /></button></span></article>)}</div> : <p className="ledger-empty">{t(locale, "noExpenses")}</p>}
         </section> : null}
       </div>
       <button className="floating-add" type="button" onClick={activeParticipants.length === 0 ? showPeople : openExpenseForm}>{activeParticipants.length === 0 ? <UserPlus aria-hidden="true" /> : <Plus aria-hidden="true" />}{activeParticipants.length === 0 ? t(locale, "addParticipant") : ui(locale, "recordExpense")}</button>
